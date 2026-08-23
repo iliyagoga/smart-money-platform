@@ -5,9 +5,13 @@ import { useState } from "react";
 import { isValidAssetSymbol, normalizeAssetSymbol, useTradingAssets } from "../../hooks/useTradingAssets";
 import { useAuth } from "../auth/AuthProvider";
 
-interface AssetManagerProps { selectedAsset: string; onSelect: (asset: string) => void }
+interface AssetManagerProps {
+  onAssetsChanged?: () => void;
+  onSelect: (asset: string) => void;
+  selectedAsset: string;
+}
 
-export function AssetManager({ onSelect, selectedAsset }: AssetManagerProps) {
+export function AssetManager({ onAssetsChanged, onSelect, selectedAsset }: AssetManagerProps) {
   const { assets, addAsset, removeAsset } = useTradingAssets();
   const { roles } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
@@ -24,6 +28,7 @@ export function AssetManager({ onSelect, selectedAsset }: AssetManagerProps) {
     try {
       if (!await addAsset(newAsset)) return;
       onSelect(normalizedAsset);
+      onAssetsChanged?.();
       setNewAsset("");
       setIsOpen(false);
     } catch (reason) {
@@ -37,6 +42,7 @@ export function AssetManager({ onSelect, selectedAsset }: AssetManagerProps) {
     if (assets.length === 1) return;
     try {
       await removeAsset(asset);
+      onAssetsChanged?.();
       if (selectedAsset === asset) onSelect(assets.find((item) => item !== asset) ?? assets[0]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));

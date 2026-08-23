@@ -51,8 +51,8 @@ const timeframes = ["M1", "M5", "M15", "H1", "H4", "D1"];
 
 export default function BacktestPage() {
   const { roles } = useAuth();
-  const [asset, setAsset] = useState("BTC-USDT-SWAP");
-  const { assets } = useTradingAssets();
+  const [asset, setAsset] = useState("");
+  const { assets, reload: reloadAssets } = useTradingAssets();
   const [timeframe, setTimeframe] = useState("M15");
   const [selectedTimeframes, setSelectedTimeframes] = useState(timeframes);
   const [candleLimit, setCandleLimit] = useState(10_000);
@@ -68,7 +68,7 @@ export default function BacktestPage() {
   const [isRunning, setIsRunning] = useState(false);
   const [progress, setProgress] = useState(0);
   const runsResource = useApiResource<BacktestRunsResponse>("/api/v1/backtest/backtests");
-  const selectedAsset = assets.includes(asset) ? asset : assets[0];
+  const selectedAsset = asset || assets[0];
 
   const run = async () => {
     setIsRunning(true);
@@ -176,7 +176,7 @@ export default function BacktestPage() {
   return <SectionPage title="Бэктест" description="Проверка торговых стратегий на исторических данных без отправки ордеров.">
     <Paper variant="outlined" sx={{ p: 3, mb: 1.5 }}>
       <Typography variant="h6" sx={{ mb: 2 }}>Активы и исторические данные</Typography>
-      <AssetManager selectedAsset={selectedAsset} onSelect={setAsset} />
+      <AssetManager selectedAsset={selectedAsset} onSelect={setAsset} onAssetsChanged={reloadAssets} />
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mt: 2.5 }}>
         <TextField select label="Основной таймфрейм" value={timeframe} onChange={(event) => {
           const value = event.target.value;
