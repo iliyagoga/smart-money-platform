@@ -138,6 +138,11 @@ services:
       CONFIDENCE_THRESHOLD: ${CONFIDENCE_THRESHOLD:-0.60}
       CONFLICT_MIN_DELTA: ${CONFLICT_MIN_DELTA:-0.10}
       DEFAULT_CAPITAL: ${DEFAULT_CAPITAL:-10000}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-CHANGE_ME_MINIO}
+      MODEL_BUCKET: models
+      ADAPTIVE_MODEL_WEIGHT: ${ADAPTIVE_MODEL_WEIGHT:-0.35}
     ports:
       - "8020:8020"
     depends_on:
@@ -147,6 +152,8 @@ services:
         condition: service_started
       smc-service:
         condition: service_healthy
+      minio:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8020/health')\""]
       interval: 10s

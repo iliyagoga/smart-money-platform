@@ -6,4 +6,9 @@ class Settings(BaseSettings):
     confidence_threshold:float=.60
     conflict_min_delta:float=.10
     default_capital:float=10000
+    minio_endpoint:str="http://minio:9000"
+    minio_access_key:str="minioadmin"
+    minio_secret_key:str="minioadmin"
+    model_bucket:str="models"
+    adaptive_model_weight:float=.35
 settings=Settings()

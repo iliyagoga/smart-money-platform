@@ -3,17 +3,20 @@ import asyncio,json,logging
 from time import time
 from uuid import uuid4
 import asyncpg
+import boto3
 from redis.asyncio import Redis
 from .models import *
 from .probability import ProbabilityEngine
 from .resolver import ConflictResolver
 from .risk import RiskManager
+from .adaptive import AdaptiveModel
 
 log=logging.getLogger(__name__)
 class DecisionService:
-    def __init__(self,database_url,redis_url,threshold=.6,min_delta=.1,default_capital=10000):
+    def __init__(self,database_url,redis_url,threshold=.6,min_delta=.1,default_capital=10000,minio_endpoint="http://minio:9000",minio_access_key="minioadmin",minio_secret_key="minioadmin",model_bucket="models",adaptive_weight=.35):
         self.database_url=database_url;self.redis_url=redis_url;self.default_capital=default_capital
-        self.db=None;self.redis=None;self.probability=ProbabilityEngine();self.resolver=ConflictResolver(threshold,min_delta);self.risk=RiskManager()
+        self.db=None;self.redis=None;self.adaptive=AdaptiveModel(adaptive_weight);self.probability=ProbabilityEngine(self.adaptive);self.resolver=ConflictResolver(threshold,min_delta);self.risk=RiskManager();self.model_bucket=model_bucket
+        self.s3=boto3.client("s3",endpoint_url=minio_endpoint,aws_access_key_id=minio_access_key,aws_secret_access_key=minio_secret_key)
         self.scenarios:dict[str,Scenario]={};self.signals:dict[str,TradeSignal]={};self.tasks=[];self.pending:dict[str,asyncio.Task]={}
     async def start(self):
         self.db=await asyncpg.create_pool(self.database_url,min_size=1,max_size=5);self.redis=Redis.from_url(self.redis_url,decode_responses=True);await self.redis.ping()
@@ -27,6 +30,7 @@ class DecisionService:
             try:
                 s=Scenario.model_validate(row["data"]);self.scenarios[s.id]=s
             except Exception:pass
+        await self.load_active_model()
         self.tasks=[asyncio.create_task(self.listen())]
     async def stop(self):
         for task in self.tasks:task.cancel()
@@ -39,17 +43,18 @@ class DecisionService:
     async def stream(self,topic,event_type,payload):await self.redis.xadd(topic,{"data":json.dumps(await self.envelope(event_type,payload),separators=(",",":"))},maxlen=100000,approximate=True)
     async def listen(self):
         while True:
-            pubsub=self.redis.pubsub();await pubsub.subscribe("scenario.update")
+            pubsub=self.redis.pubsub();await pubsub.subscribe("scenario.update","system.state")
             try:
                 async for message in pubsub.listen():
                     if message["type"]!="message":continue
                     event=json.loads(message["data"])
                     if event.get("source")=="decision-service":continue
+                    if event.get("event_type")=="model.updated":await self.load_model(event["payload"]);continue
                     if event.get("event_type") in {"scenario.created","scenario.updated"}:await self.evaluate(Scenario.model_validate(event["payload"]))
             except asyncio.CancelledError:await pubsub.aclose();raise
             except Exception:log.exception("Scenario listener failed");await pubsub.aclose();await asyncio.sleep(2)
     async def evaluate(self,scenario:Scenario):
-        score=self.probability.calculate(self.probability.scenario_features(scenario));scenario.confidence=score.confidence
+        preference=await self.bandit_preference(scenario);score=self.probability.calculate(self.probability.scenario_features(scenario),scenario,preference);scenario.confidence=score.confidence
         self.scenarios[scenario.id]=scenario
         payload={"scenario_id":scenario.id,"confidence":score.confidence,"confidence_details":score.confidence_details.model_dump()}
         await self.pub("scenario.update","scenario.confidence_updated",payload)
@@ -57,6 +62,16 @@ class DecisionService:
         if old:old.cancel()
         self.pending[scenario.symbol]=asyncio.create_task(self.resolve_after_delay(scenario.symbol))
         return score
+    async def bandit_preference(self,scenario):
+        regime=await self.redis.get(f"regime:{scenario.symbol}:{scenario.timeframe}") or "UNKNOWN";value=await self.redis.hget(f"bandit:{regime}",scenario.setup_type);return float(value) if value is not None else None
+    async def load_active_model(self):
+        try:row=await self.db.fetchrow("SELECT version,path FROM model_versions WHERE is_active=true ORDER BY training_date DESC LIMIT 1")
+        except asyncpg.UndefinedTableError:return
+        if row:await self.load_model(dict(row))
+    async def load_model(self,payload):
+        path=payload.get("path","");prefix=f"s3://{self.model_bucket}/"
+        if not path.startswith(prefix):raise ValueError("Unexpected model path")
+        obj=await asyncio.to_thread(self.s3.get_object,Bucket=self.model_bucket,Key=path[len(prefix):]);artifact=json.loads(await asyncio.to_thread(obj["Body"].read));self.adaptive.load(artifact)
     async def resolve_after_delay(self,symbol):
         await asyncio.sleep(.15);await self.resolve(symbol)
     async def resolve(self,symbol):
