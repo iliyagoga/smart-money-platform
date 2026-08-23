@@ -11,7 +11,7 @@ interface HistoryJob {
   ingested: number;
   progress: number;
   requests: number;
-  status: "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED";
+  status: "QUEUED" | "RUNNING" | "PAUSED" | "CANCELLED" | "COMPLETED" | "FAILED";
 }
 
 interface HistoryLoaderProps {
@@ -32,6 +32,20 @@ export function HistoryLoader({ canManage, from, symbol, timeframes, to }: Histo
   const [error, setError] = useState("");
   const dataset = useApiResource<DatasetResponse>(`/api/v1/backtest/datasets/${encodeURIComponent(symbol)}`);
 
+  const watch = async (jobId: string) => {
+    for (let attempt = 0; attempt < 3600; attempt += 1) {
+      const current = await api<HistoryJob>(`/api/v1/exchange/exchange/history/${jobId}`);
+      setJob(current);
+      if (current.status === "FAILED") throw new Error(current.error ?? "Ошибка загрузки OKX");
+      if (["COMPLETED", "PAUSED", "CANCELLED"].includes(current.status)) {
+        dataset.reload();
+        return;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    }
+    throw new Error("Превышено время ожидания загрузки");
+  };
+
   const start = async () => {
     setError("");
     try {
@@ -46,22 +60,23 @@ export function HistoryLoader({ canManage, from, symbol, timeframes, to }: Histo
         }),
       });
       setJob(created);
-      for (let attempt = 0; attempt < 3600; attempt += 1) {
-        const current = await api<HistoryJob>(`/api/v1/exchange/exchange/history/${created.id}`);
-        setJob(current);
-        if (current.status === "FAILED") throw new Error(current.error ?? "Ошибка загрузки OKX");
-        if (current.status === "COMPLETED") {
-          dataset.reload();
-          break;
-        }
-        await new Promise((resolve) => window.setTimeout(resolve, 1000));
-      }
+      await watch(created.id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     }
   };
 
   const active = job?.status === "QUEUED" || job?.status === "RUNNING";
+  const control = async (action: "pause" | "resume" | "cancel") => {
+    if (!job) return;
+    try {
+      const changed = await api<HistoryJob>(`/api/v1/exchange/exchange/history/${job.id}/${action}`, { method: "POST" });
+      setJob(changed);
+      if (action === "resume") await watch(job.id);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
   return <Paper variant="outlined" sx={{ p: 2.5, mt: 2 }}>
     <Typography variant="h6">История OKX</Typography>
     <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 2 }}>
@@ -73,6 +88,9 @@ export function HistoryLoader({ canManage, from, symbol, timeframes, to }: Histo
       <Button variant="contained" disabled={!canManage || active || maximum < 1} onClick={() => void start()}>
         {active ? "Загружаем…" : "Загрузить свечи"}
       </Button>
+      {job?.status === "RUNNING" && <Button onClick={() => void control("pause")}>Пауза</Button>}
+      {job?.status === "PAUSED" && <Button onClick={() => void control("resume")}>Продолжить</Button>}
+      {active && <Button color="error" onClick={() => void control("cancel")}>Отменить</Button>}
     </Stack>
     {job && <Stack spacing={0.75} sx={{ mt: 2 }}>
       <LinearProgress variant="determinate" value={job.progress} />

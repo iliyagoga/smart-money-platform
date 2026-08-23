@@ -1,0 +1,16 @@
+{
+  "id": "FVG_CONTINUATION",
+  "name": "Продолжение через дисбаланс FVG",
+  "version": 1,
+  "required_objects": [
+    { "kind": "ORDER_BLOCK", "min_strength": 0.35 },
+    { "kind": "FVG", "min_strength": 0 }
+  ],
+  "relations": ["OB_OVERLAPS_FVG", "STRUCTURE_BOS"],
+  "allowed_timeframes": ["M1", "M5", "M15", "H1"],
+  "entry_rule": "OB_FVG_INTERSECTION",
+  "stop_rule": "ORDER_BLOCK_EDGE",
+  "target_rule": "FIXED_RR",
+  "risk_reward": [2, 3],
+  "base_confidence": 0.57
+}

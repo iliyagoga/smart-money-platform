@@ -1,0 +1,13 @@
+{
+  "id": "BOS_CONTINUATION",
+  "name": "Продолжение после слома структуры",
+  "version": 1,
+  "required_objects": [{ "kind": "ORDER_BLOCK", "min_strength": 0.4 }],
+  "relations": ["STRUCTURE_BOS", "LIQUIDITY_IN_DIRECTION"],
+  "allowed_timeframes": ["M5", "M15", "H1", "H4", "D1"],
+  "entry_rule": "ORDER_BLOCK",
+  "stop_rule": "ORDER_BLOCK_EDGE",
+  "target_rule": "LIQUIDITY_THEN_RR",
+  "risk_reward": [2, 4],
+  "base_confidence": 0.56
+}

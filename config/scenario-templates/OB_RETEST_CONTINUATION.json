@@ -1,0 +1,13 @@
+{
+  "id": "OB_RETEST_CONTINUATION",
+  "name": "Продолжение на ретесте Order Block",
+  "version": 1,
+  "required_objects": [{ "kind": "ORDER_BLOCK", "min_strength": 0.5 }],
+  "relations": ["OB_RETESTED", "STRUCTURE_BOS"],
+  "allowed_timeframes": ["M5", "M15", "H1", "H4"],
+  "entry_rule": "ORDER_BLOCK",
+  "stop_rule": "ORDER_BLOCK_EDGE",
+  "target_rule": "FIXED_RR",
+  "risk_reward": [2, 3],
+  "base_confidence": 0.62
+}

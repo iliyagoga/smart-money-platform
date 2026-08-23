@@ -1,0 +1,13 @@
+{
+  "id": "OTE_ENTRY",
+  "name": "Оптимальная точка входа OTE",
+  "version": 1,
+  "required_objects": [{ "kind": "ORDER_BLOCK", "min_strength": 0.4 }],
+  "relations": ["PREMIUM_DISCOUNT", "LIQUIDITY_IN_DIRECTION"],
+  "allowed_timeframes": ["M5", "M15", "H1", "H4"],
+  "entry_rule": "OTE",
+  "stop_rule": "LAST_SWING",
+  "target_rule": "LIQUIDITY_THEN_RR",
+  "risk_reward": [2.5, 4],
+  "base_confidence": 0.6
+}
