@@ -95,6 +95,33 @@ services:
       timeout: 5s
       retries: 10
 
+  decision-service:
+    build:
+      context: ./services/decision-service
+      dockerfile: Dockerfile
+    container_name: smart-money-decision-service
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: ${REDIS_URL}
+      CONFIDENCE_THRESHOLD: ${CONFIDENCE_THRESHOLD:-0.60}
+      CONFLICT_MIN_DELTA: ${CONFLICT_MIN_DELTA:-0.10}
+      DEFAULT_CAPITAL: ${DEFAULT_CAPITAL:-10000}
+    ports:
+      - "8020:8020"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      smc-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8020/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
 volumes:
   postgres_data:
   redis_data:

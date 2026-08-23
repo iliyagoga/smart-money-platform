@@ -10,3 +10,5 @@ docker compose up --build
 После старта API доступен на `http://localhost:8000`, Swagger UI — на `http://localhost:8000/swagger-ui.html`.
 
 Модули SMC-анализа находятся в [`services/smc-service`](services/smc-service/README.md). API сервиса доступен на `http://localhost:8010`, OpenAPI — на `http://localhost:8010/docs`.
+
+Probability Engine, Conflict Resolver и Risk Manager находятся в [`services/decision-service`](services/decision-service/README.md). API доступен на `http://localhost:8020`.
