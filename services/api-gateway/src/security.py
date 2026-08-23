@@ -88,10 +88,13 @@ def authorize(principal: Principal, method: str, service: str, path: str) -> Non
         normalized.startswith("/internal")
         or service == "decision" and normalized.startswith("/risk/config") and method != "GET"
         or service == "learning" and normalized == "/learning/train" and method == "POST"
+        or service == "backtest" and normalized.startswith("/assets") and method != "GET"
         or service == "exchange" and normalized.startswith("/exchange/account")
     )
     if admin_only:
         raise HTTPException(status_code=403, detail="Admin role is required")
+    if service == "backtest" and normalized == "/backtests" and method == "POST":
+        return
     if method in {"GET", "HEAD", "OPTIONS"}:
         return
     if "trader" not in principal.roles:

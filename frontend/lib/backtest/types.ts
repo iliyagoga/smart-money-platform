@@ -2,9 +2,11 @@ import type { Candle } from "../types";
 
 export type TradeDirection = "LONG" | "SHORT";
 export type DirectionMode = "LONG" | "SHORT" | "BOTH";
+export type StrategyType = "SMA_CROSS" | "RSI" | "MACD" | "BOLLINGER";
 
 export interface BacktestSettings {
   initialCapital: number;
+  strategy: StrategyType;
   fastPeriod: number;
   slowPeriod: number;
   feePercent: number;
@@ -12,6 +14,9 @@ export interface BacktestSettings {
   stopLossPercent: number;
   takeProfitPercent: number;
   positionSizePercent: number;
+  leverage: number;
+  fundingPercentPerDay: number;
+  trailingStopPercent?: number;
   directionMode: DirectionMode;
 }
 
@@ -40,6 +45,8 @@ export interface BacktestResult {
   profitFactor?: number;
   totalTrades: number;
   averageTrade: number;
+  sharpeRatio?: number;
+  benchmarkReturnPercent?: number;
   trades: BacktestTrade[];
   equity: EquityPoint[];
 }

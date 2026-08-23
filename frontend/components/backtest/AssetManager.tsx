@@ -3,27 +3,44 @@
 import { Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle, Stack, TextField, Typography } from "@mui/material";
 import { useState } from "react";
 import { isValidAssetSymbol, normalizeAssetSymbol, useTradingAssets } from "../../hooks/useTradingAssets";
+import { useAuth } from "../auth/AuthProvider";
 
 interface AssetManagerProps { selectedAsset: string; onSelect: (asset: string) => void }
 
 export function AssetManager({ onSelect, selectedAsset }: AssetManagerProps) {
   const { assets, addAsset, removeAsset } = useTradingAssets();
+  const { roles } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   const [newAsset, setNewAsset] = useState("");
+  const [error, setError] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
   const normalizedAsset = normalizeAssetSymbol(newAsset);
   const isValid = isValidAssetSymbol(normalizedAsset) && !assets.includes(normalizedAsset);
+  const canManage = roles.includes("admin");
 
-  const add = () => {
-    if (!addAsset(newAsset)) return;
-    onSelect(normalizedAsset);
-    setNewAsset("");
-    setIsOpen(false);
+  const add = async () => {
+    setIsSaving(true);
+    setError("");
+    try {
+      if (!await addAsset(newAsset)) return;
+      onSelect(normalizedAsset);
+      setNewAsset("");
+      setIsOpen(false);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setIsSaving(false);
+    }
   };
 
-  const remove = (asset: string) => {
+  const remove = async (asset: string) => {
     if (assets.length === 1) return;
-    removeAsset(asset);
-    if (selectedAsset === asset) onSelect(assets.find((item) => item !== asset) ?? assets[0]);
+    try {
+      await removeAsset(asset);
+      if (selectedAsset === asset) onSelect(assets.find((item) => item !== asset) ?? assets[0]);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
   };
 
   return <>
@@ -34,9 +51,9 @@ export function AssetManager({ onSelect, selectedAsset }: AssetManagerProps) {
         color={asset === selectedAsset ? "primary" : "default"}
         variant={asset === selectedAsset ? "filled" : "outlined"}
         onClick={() => onSelect(asset)}
-        onDelete={assets.length > 1 ? () => remove(asset) : undefined}
+        onDelete={canManage && assets.length > 1 ? () => void remove(asset) : undefined}
       />)}
-      <Button variant="outlined" onClick={() => setIsOpen(true)}>+ Добавить актив</Button>
+      <Button variant="outlined" onClick={() => setIsOpen(true)} disabled={!canManage}>+ Добавить актив</Button>
     </Stack>
     <Dialog open={isOpen} onClose={() => setIsOpen(false)} fullWidth maxWidth="xs">
       <DialogTitle>Добавить торговый актив</DialogTitle>
@@ -53,10 +70,13 @@ export function AssetManager({ onSelect, selectedAsset }: AssetManagerProps) {
           error={Boolean(newAsset) && !isValid}
           helperText={newAsset && !isValid ? "Проверьте формат или актив уже добавлен" : "Формат: BASE-QUOTE-SWAP"}
         />
+        {error && <Typography variant="caption" color="error.main">{error}</Typography>}
       </DialogContent>
       <DialogActions>
         <Button onClick={() => setIsOpen(false)}>Отмена</Button>
-        <Button variant="contained" onClick={add} disabled={!isValid}>Добавить</Button>
+        <Button variant="contained" onClick={() => void add()} disabled={!isValid || isSaving}>
+          {isSaving ? "Добавляем…" : "Добавить"}
+        </Button>
       </DialogActions>
     </Dialog>
   </>;

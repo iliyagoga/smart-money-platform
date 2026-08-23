@@ -23,6 +23,10 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
       <Grid size={{ xs: 6, lg: 3 }}><Metric label="Profit factor" value={result.profitFactor?.toFixed(2) ?? "—"} /></Grid>
       <Grid size={{ xs: 6, lg: 3 }}><Metric label="Средняя сделка" value={result.averageTrade.toFixed(2)} /></Grid>
       <Grid size={{ xs: 6, lg: 3 }}><Metric label="Чистый PnL" value={result.netProfit.toFixed(2)} tone={profitTone} /></Grid>
+      <Grid size={{ xs: 6, lg: 3 }}><Metric label="Sharpe ratio" value={result.sharpeRatio?.toFixed(2) ?? "—"} /></Grid>
+      <Grid size={{ xs: 6, lg: 3 }}>
+        <Metric label="Buy & hold" value={`${(result.benchmarkReturnPercent ?? 0).toFixed(2)}%`} />
+      </Grid>
     </Grid>
     <EquityChart points={result.equity} />
     <Paper variant="outlined" sx={{ mt: 1.5, p: { xs: 1, md: 2.5 } }}>

@@ -1,39 +1,31 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { api } from "../lib/api";
 
-const storageKey = "smart-money-trading-assets";
-const changeEvent = "smart-money-assets-change";
-const defaultAssets = ["BTC-USDT-SWAP", "ETH-USDT-SWAP"];
-let cachedValue = "";
-let cachedAssets = defaultAssets;
+export interface TradingAsset {
+  symbol: string;
+  display_name?: string;
+  category: string;
+  enabled: boolean;
+  price_precision: number;
+  quantity_precision: number;
+  minimum_order_size: number;
+  validation_status: string;
+}
 
-const readAssets = (): string[] => {
-  const value = localStorage.getItem(storageKey) ?? JSON.stringify(defaultAssets);
-  if (value === cachedValue) return cachedAssets;
-  cachedValue = value;
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    cachedAssets = Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : defaultAssets;
-  } catch {
-    cachedAssets = defaultAssets;
-  }
-  return cachedAssets;
-};
+interface AssetsResponse { assets: TradingAsset[] }
 
-const subscribe = (listener: () => void) => {
-  window.addEventListener("storage", listener);
-  window.addEventListener(changeEvent, listener);
-  return () => {
-    window.removeEventListener("storage", listener);
-    window.removeEventListener(changeEvent, listener);
-  };
-};
-
-const saveAssets = (assets: string[]) => {
-  localStorage.setItem(storageKey, JSON.stringify(assets));
-  window.dispatchEvent(new Event(changeEvent));
-};
+const defaultAssets: TradingAsset[] = [
+  {
+    symbol: "BTC-USDT-SWAP", category: "crypto", enabled: true, price_precision: 2,
+    quantity_precision: 6, minimum_order_size: .000001, validation_status: "ACTIVE",
+  },
+  {
+    symbol: "ETH-USDT-SWAP", category: "crypto", enabled: true, price_precision: 2,
+    quantity_precision: 6, minimum_order_size: .000001, validation_status: "ACTIVE",
+  },
+];
 
 export function normalizeAssetSymbol(value: string): string {
   return value.trim().toUpperCase().replaceAll("/", "-").replaceAll("_", "-");
@@ -44,15 +36,37 @@ export function isValidAssetSymbol(value: string): boolean {
 }
 
 export function useTradingAssets() {
-  const assets = useSyncExternalStore(subscribe, readAssets, () => defaultAssets);
+  const [items, setItems] = useState<TradingAsset[]>(defaultAssets);
+  const [error, setError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
+  const reload = useCallback(() => setReloadKey((current) => current + 1), []);
+
+  useEffect(() => {
+    let active = true;
+    api<AssetsResponse>("/api/v1/backtest/assets")
+      .then((response) => { if (active) setItems(response.assets); })
+      .catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : String(reason)); });
+    return () => { active = false; };
+  }, [reloadKey]);
+
   return {
-    assets,
-    addAsset: (value: string) => {
+    assets: items.map((asset) => asset.symbol),
+    assetDetails: items,
+    error,
+    reload,
+    addAsset: async (value: string) => {
       const symbol = normalizeAssetSymbol(value);
-      if (!isValidAssetSymbol(symbol) || assets.includes(symbol)) return false;
-      saveAssets([...assets, symbol]);
+      if (!isValidAssetSymbol(symbol) || items.some((asset) => asset.symbol === symbol)) return false;
+      await api("/api/v1/backtest/assets", {
+        method: "POST",
+        body: JSON.stringify({ symbol, category: "crypto" }),
+      });
+      reload();
       return true;
     },
-    removeAsset: (symbol: string) => saveAssets(assets.filter((asset) => asset !== symbol)),
+    removeAsset: async (symbol: string) => {
+      await api(`/api/v1/backtest/assets/${encodeURIComponent(symbol)}`, { method: "DELETE" });
+      reload();
+    },
   };
 }

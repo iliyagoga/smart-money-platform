@@ -20,6 +20,7 @@ SERVICE_URLS = {
     "analytics": settings.analytics_service_url,
     "learning": settings.learning_service_url,
     "exchange": settings.exchange_service_url,
+    "backtest": settings.backtest_service_url,
 }
 verifier = TokenVerifier(settings.keycloak_issuer, settings.keycloak_jwks_url, settings.keycloak_client_id)
 

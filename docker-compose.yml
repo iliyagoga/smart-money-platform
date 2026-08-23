@@ -244,6 +244,29 @@ services:
       timeout: 5s
       retries: 10
 
+  backtest-service:
+    build:
+      context: ./services/backtest-service
+      dockerfile: Dockerfile
+    container_name: smart-money-backtest-service
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATA_SERVICE_URL: http://data-service:8000
+      MAX_CANDLES: ${BACKTEST_MAX_CANDLES:-10000}
+    ports:
+      - "8085:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      data-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   exchange-gateway:
     build:
       context: ./services/exchange-gateway
@@ -290,6 +313,7 @@ services:
       EXECUTION_SERVICE_URL: http://execution-service:8030
       ANALYTICS_SERVICE_URL: http://analytics-service:8040
       LEARNING_SERVICE_URL: http://learning-service:8060
+      BACKTEST_SERVICE_URL: http://backtest-service:8080
       EXCHANGE_SERVICE_URL: http://exchange-gateway:8070
       REDIS_URL: ${REDIS_URL}
     ports:
@@ -310,6 +334,8 @@ services:
       analytics-service:
         condition: service_healthy
       learning-service:
+        condition: service_healthy
+      backtest-service:
         condition: service_healthy
       exchange-gateway:
         condition: service_healthy

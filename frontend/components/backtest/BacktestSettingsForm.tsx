@@ -1,16 +1,17 @@
 "use client";
 
 import { Button, MenuItem, Paper, Stack, TextField, Typography } from "@mui/material";
-import type { BacktestSettings, DirectionMode } from "../../lib/backtest/types";
+import type { BacktestSettings, DirectionMode, StrategyType } from "../../lib/backtest/types";
 
 interface BacktestSettingsFormProps {
   isRunning: boolean;
   onChange: (settings: BacktestSettings) => void;
   onRun: () => void;
+  progress: number;
   settings: BacktestSettings;
 }
 
-export function BacktestSettingsForm({ isRunning, onChange, onRun, settings }: BacktestSettingsFormProps) {
+export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, settings }: BacktestSettingsFormProps) {
   const updateNumber = (key: keyof BacktestSettings, value: string) => onChange({ ...settings, [key]: Number(value) });
   const isValid = settings.initialCapital > 0
     && settings.fastPeriod >= 2
@@ -22,6 +23,17 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, settings }: B
     <Typography variant="h6">Параметры стратегии</Typography>
     <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 2.5 }}>Пересечение двух скользящих средних.</Typography>
     <Stack spacing={2}>
+      <TextField
+        select
+        label="Стратегия"
+        value={settings.strategy}
+        onChange={(event) => onChange({ ...settings, strategy: event.target.value as StrategyType })}
+      >
+        <MenuItem value="SMA_CROSS">Пересечение MA</MenuItem>
+        <MenuItem value="RSI">RSI reversal</MenuItem>
+        <MenuItem value="MACD">MACD crossover</MenuItem>
+        <MenuItem value="BOLLINGER">Bollinger reversal</MenuItem>
+      </TextField>
       <TextField
         select
         label="Направление"
@@ -40,6 +52,8 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, settings }: B
         onChange={(event) => updateNumber("initialCapital", event.target.value)} />
       <TextField label="Размер позиции, %" value={settings.positionSizePercent} type="number"
         onChange={(event) => updateNumber("positionSizePercent", event.target.value)} />
+      <TextField label="Плечо" value={settings.leverage} type="number"
+        onChange={(event) => updateNumber("leverage", event.target.value)} />
       <Stack direction="row" spacing={1.5}>
         <TextField fullWidth label="Stop Loss, %" value={settings.stopLossPercent} type="number"
           onChange={(event) => updateNumber("stopLossPercent", event.target.value)} />
@@ -52,8 +66,17 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, settings }: B
         <TextField fullWidth label="Проскальзывание, %" value={settings.slippagePercent} type="number"
           onChange={(event) => updateNumber("slippagePercent", event.target.value)} />
       </Stack>
+      <Stack direction="row" spacing={1.5}>
+        <TextField fullWidth label="Funding в день, %" value={settings.fundingPercentPerDay} type="number"
+          onChange={(event) => updateNumber("fundingPercentPerDay", event.target.value)} />
+        <TextField fullWidth label="Trailing Stop, %" value={settings.trailingStopPercent ?? ""} type="number"
+          onChange={(event) => onChange({
+            ...settings,
+            trailingStopPercent: event.target.value ? Number(event.target.value) : undefined,
+          })} />
+      </Stack>
       <Button variant="contained" size="large" disabled={!isValid || isRunning} onClick={onRun}>
-        {isRunning ? "Выполняем расчёт…" : "Запустить бэктест"}
+        {isRunning ? `Выполняем расчёт… ${progress}%` : "Запустить бэктест"}
       </Button>
       {!isValid && <Typography variant="caption" color="error.main">
         Медленная MA должна быть больше быстрой, остальные значения — положительными.

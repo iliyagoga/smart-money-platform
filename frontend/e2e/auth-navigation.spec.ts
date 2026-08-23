@@ -25,18 +25,43 @@ test("user can sign in, switch theme and open every section", async ({ page }) =
 });
 
 test("user can add an asset and run an isolated backtest", async ({ page }) => {
-  const candles = Array.from({ length: 80 }, (_, index) => {
-    const close = 100 + Math.sin(index / 5) * 10 + index * 0.1;
-    return { timestamp: index * 60_000, open: close - 1, high: close + 2, low: close - 2, close, volume: 10 };
+  await page.route("**/api/v1/backtest/backtests", async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ id: "e2e-backtest" }) });
+    } else {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ runs: [] }) });
+    }
   });
-  await page.route("**/api/v1/data/market/candles?**", async (route) => {
+  await page.route("**/api/v1/backtest/backtests/e2e-backtest", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ symbol: "SOL-USDT-SWAP", timeframe: "M15", candles }),
+      body: JSON.stringify({
+        id: "e2e-backtest",
+        symbol: "SOL-USDT-SWAP",
+        timeframe: "M15",
+        status: "COMPLETED",
+        progress: 100,
+        created_at: new Date().toISOString(),
+        result: {
+          initial_capital: 10000,
+          final_capital: 10500,
+          net_profit: 500,
+          total_return_percent: 5,
+          max_drawdown_percent: 1,
+          win_rate: 60,
+          profit_factor: 1.8,
+          total_trades: 1,
+          average_trade: 500,
+          sharpe_ratio: 1.2,
+          benchmark_return_percent: 3,
+          trades: [],
+          equity: [{ timestamp: 0, equity: 10000 }, { timestamp: 60000, equity: 10500 }],
+        },
+      }),
     });
   });
-  await signIn(page);
+  await signIn(page, "admin");
   await page.goto("/backtest");
   await page.getByRole("button", { name: "Добавить актив" }).click();
   await page.getByLabel("Символ актива").fill("SOL/USDT_SWAP");

@@ -5,6 +5,7 @@ import type { Candle } from "../types";
 
 const settings: BacktestSettings = {
   initialCapital: 10_000,
+  strategy: "SMA_CROSS",
   fastPeriod: 2,
   slowPeriod: 3,
   feePercent: 0,
@@ -12,6 +13,8 @@ const settings: BacktestSettings = {
   stopLossPercent: 20,
   takeProfitPercent: 20,
   positionSizePercent: 100,
+  leverage: 1,
+  fundingPercentPerDay: 0,
   directionMode: "BOTH",
 };
 

@@ -4,16 +4,19 @@ import { Alert, Grid, MenuItem, Paper, Stack, TextField, Typography } from "@mui
 import { useState } from "react";
 import { AssetManager } from "../../components/backtest/AssetManager";
 import { BacktestReport } from "../../components/backtest/BacktestReport";
+import { BacktestHistory } from "../../components/backtest/BacktestHistory";
 import { BacktestSettingsForm } from "../../components/backtest/BacktestSettingsForm";
 import { SectionPage } from "../../components/layout/SectionPage";
-import { api } from "../../lib/api";
+import { api, downloadApi } from "../../lib/api";
+import { useApiResource } from "../../hooks/useApiResource";
 import { useTradingAssets } from "../../hooks/useTradingAssets";
-import { runBacktest } from "../../lib/backtest/engine";
+import { mapBacktestResult } from "../../lib/backtest/apiTypes";
+import type { BacktestCreateResponse, BacktestRun, BacktestRunsResponse } from "../../lib/backtest/apiTypes";
 import type { BacktestResult, BacktestSettings } from "../../lib/backtest/types";
-import type { CandlesResponse } from "../../lib/types";
 
 const defaultSettings: BacktestSettings = {
   initialCapital: 10_000,
+  strategy: "SMA_CROSS",
   fastPeriod: 9,
   slowPeriod: 21,
   feePercent: 0.05,
@@ -21,6 +24,9 @@ const defaultSettings: BacktestSettings = {
   stopLossPercent: 2,
   takeProfitPercent: 4,
   positionSizePercent: 25,
+  leverage: 1,
+  fundingPercentPerDay: 0,
+  trailingStopPercent: undefined,
   directionMode: "BOTH",
 };
 
@@ -35,22 +41,80 @@ export default function BacktestPage() {
   const [result, setResult] = useState<BacktestResult>();
   const [error, setError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const runsResource = useApiResource<BacktestRunsResponse>("/api/v1/backtest/backtests");
   const selectedAsset = assets.includes(asset) ? asset : assets[0];
 
   const run = async () => {
     setIsRunning(true);
     setError("");
     try {
-      const query = `symbol=${encodeURIComponent(selectedAsset)}&timeframe=${timeframe}&limit=${candleLimit}`;
-      const response = await api<CandlesResponse>(`/api/v1/data/market/candles?${query}`);
-      if (response.candles.length <= settings.slowPeriod + 1) {
-        throw new Error(`Недостаточно свечей: получено ${response.candles.length}, требуется больше ${settings.slowPeriod + 1}`);
+      setProgress(0);
+      const created = await api<BacktestCreateResponse>("/api/v1/backtest/backtests", {
+        method: "POST",
+        body: JSON.stringify({
+          symbol: selectedAsset,
+          timeframe,
+          candle_limit: candleLimit,
+          config: {
+            strategy: settings.strategy,
+            initial_capital: settings.initialCapital,
+            position_size_percent: settings.positionSizePercent,
+            leverage: settings.leverage,
+            fee_percent: settings.feePercent,
+            slippage_percent: settings.slippagePercent,
+            funding_percent_per_day: settings.fundingPercentPerDay,
+            stop_loss_percent: settings.stopLossPercent,
+            take_profit_percent: settings.takeProfitPercent,
+            trailing_stop_percent: settings.trailingStopPercent,
+            fast_period: settings.fastPeriod,
+            slow_period: settings.slowPeriod,
+            direction_mode: settings.directionMode,
+          },
+        }),
+      });
+      let completed: BacktestRun | undefined;
+      for (let attempt = 0; attempt < 120; attempt += 1) {
+        const current = await api<BacktestRun>(`/api/v1/backtest/backtests/${created.id}`);
+        setProgress(current.progress);
+        if (current.status === "FAILED") throw new Error(current.error ?? "Бэктест завершился с ошибкой");
+        if (current.status === "COMPLETED") {
+          completed = current;
+          break;
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 500));
       }
-      setResult(runBacktest({ candles: response.candles, settings }));
+      if (!completed?.result) throw new Error("Превышено время ожидания результата");
+      setResult(mapBacktestResult(completed.result));
+      runsResource.reload();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setIsRunning(false);
+    }
+  };
+
+  const openRun = async (runId: string) => {
+    setError("");
+    try {
+      const runDetails = await api<BacktestRun>(`/api/v1/backtest/backtests/${runId}`);
+      if (runDetails.result) setResult(mapBacktestResult(runDetails.result));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
+  const exportRun = async (runId: string, format: "csv" | "json") => {
+    try {
+      const blob = await downloadApi(`/api/v1/backtest/backtests/${runId}/export?format=${format}`);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `backtest-${runId}.${format}`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
     }
   };
 
@@ -74,7 +138,13 @@ export default function BacktestPage() {
     {error && <Alert severity="error" sx={{ mb: 1.5 }}>{error}</Alert>}
     <Grid container spacing={1.5}>
       <Grid size={{ xs: 12, lg: 4 }}>
-        <BacktestSettingsForm settings={settings} onChange={setSettings} onRun={() => void run()} isRunning={isRunning} />
+        <BacktestSettingsForm
+          settings={settings}
+          onChange={setSettings}
+          onRun={() => void run()}
+          isRunning={isRunning}
+          progress={progress}
+        />
       </Grid>
       <Grid size={{ xs: 12, lg: 8 }}>
         {result ? <BacktestReport result={result} /> : (
@@ -85,5 +155,10 @@ export default function BacktestPage() {
         )}
       </Grid>
     </Grid>
+    <BacktestHistory
+      runs={runsResource.data?.runs ?? []}
+      onOpen={(runItem) => void openRun(runItem.id)}
+      onExport={(runItem, format) => void exportRun(runItem.id, format)}
+    />
   </SectionPage>;
 }
