@@ -10,8 +10,32 @@ export interface Position {
   symbol: string;
   direction: "LONG" | "SHORT";
   entry_price: number;
+  current_price?: number;
   quantity: number;
   status: string;
+}
+
+export interface Candle {
+  timestamp: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface CandlesResponse {
+  symbol: string;
+  timeframe: string;
+  candles: Candle[];
+}
+
+export interface MarketStructure {
+  last_swing_high?: number;
+  last_swing_low?: number;
+  trend?: { direction: string; strength: number };
+  order_blocks: Array<{ id: string; zone_high: number; zone_low: number; type: string }>;
+  fvgs: Array<{ id: string; zone_high: number; zone_low: number; type: string }>;
 }
 
 export interface ServiceStatus {
@@ -41,6 +65,10 @@ export interface Scenario {
   direction: string;
   setup_type: string;
   confidence: number;
+  entry_zone_low: number;
+  entry_zone_high: number;
+  stop_loss_price: number;
+  take_profit_prices: number[];
   status: string;
 }
 

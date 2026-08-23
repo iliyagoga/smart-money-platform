@@ -8,6 +8,7 @@ interface AuthContextValue {
   error: string;
   isAuthenticated: boolean;
   isReady: boolean;
+  roles: string[];
   username: string;
 }
 
@@ -30,6 +31,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     error,
     isAuthenticated,
     isReady,
+    roles: (keycloak().tokenParsed?.realm_access?.roles as string[] | undefined) ?? [],
     username: String(keycloak().tokenParsed?.preferred_username ?? "пользователь"),
   }), [error, isAuthenticated, isReady]);
 
