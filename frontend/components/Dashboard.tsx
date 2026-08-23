@@ -1,8 +1,70 @@
 "use client";
-import {useEffect,useState} from "react";import {api} from "../lib/api";import {keycloak} from "../lib/auth";import {EventSocket} from "../lib/socket";
-type Portfolio={total_equity:number;realized_pnl_today:number;unrealized_pnl:number;available_balance:number};
-export default function Dashboard(){const [portfolio,setPortfolio]=useState<Portfolio>(),[services,setServices]=useState<any[]>([]),[positions,setPositions]=useState<any[]>([]),[events,setEvents]=useState<any[]>([]),[live,setLive]=useState(false);const user=keycloak().tokenParsed?.preferred_username as string;
- const load=async()=>{const [p,s,pos]=await Promise.all([api<Portfolio>("/api/v1/analytics/portfolio"),api<any>("/api/v1/analytics/monitoring/services"),api<any>("/api/v1/execution/positions")]);setPortfolio(p);setServices(s.services??[]);setPositions(pos.positions??pos??[])};
- useEffect(()=>{load().catch(console.error);const socket=new EventSocket();socket.subscribe(e=>{setLive(true);setEvents(old=>[e,...old].slice(0,8));if(String(e.event_type).startsWith("position."))load()});socket.connect();return()=>socket.close()},[]);
- return <main className="shell"><header><div><span className="mark">SM</span><b>Smart Money</b></div><nav><a className="active">Обзор</a><a>Рынок</a><a>Сценарии</a><a>Сделки</a><a>Обучение</a></nav><div className="profile"><i className={live?"online":""}/><span>{user}</span><button onClick={()=>keycloak().logout({redirectUri:location.origin})}>Выйти</button></div></header><section className="intro"><div><span className="eyebrow">COMMAND CENTER · {new Date().toLocaleDateString("ru-RU")}</span><h1>Добрый день, {user}.</h1><p>Торговый контур работает в штатном режиме.</p></div><div className="mode"><small>РЕЖИМ ИСПОЛНЕНИЯ</small><strong>PAPER</strong></div></section><section className="metrics"><Card label="Общий капитал" value={money(portfolio?.total_equity)} accent/><Card label="PnL сегодня" value={signed(portfolio?.realized_pnl_today)} positive={(portfolio?.realized_pnl_today??0)>=0}/><Card label="Нереализованный PnL" value={signed(portfolio?.unrealized_pnl)}/><Card label="Доступно" value={money(portfolio?.available_balance)}/></section><section className="grid"><article className="panel wide"><Title name="Открытые позиции" meta={`${positions.length} ACTIVE`}/>{positions.length?<table><thead><tr><th>Инструмент</th><th>Направление</th><th>Вход</th><th>Количество</th><th>Статус</th></tr></thead><tbody>{positions.map((p:any)=><tr key={p.id}><td>{p.symbol}</td><td className={p.direction==="LONG"?"green":"red"}>{p.direction}</td><td>{p.entry_price}</td><td>{p.quantity}</td><td>{p.status}</td></tr>)}</tbody></table>:<Empty text="Открытых позиций нет"/>}</article><article className="panel"><Title name="Сервисы" meta={`${services.filter(s=>s.status==="UP").length}/${services.length}`}/><div className="services">{services.map(s=><div key={s.name}><i className={s.status==="UP"?"up":"down"}/><span>{s.name}</span><small>{s.status}</small></div>)}</div></article><article className="panel wide"><Title name="Поток событий" meta={live?"LIVE":"CONNECTING"}/>{events.length?<div className="events">{events.map((e,i)=><div key={i}><time>{new Date(e.timestamp).toLocaleTimeString()}</time><b>{e.event_type}</b><span>{e.payload?.symbol??e.source}</span></div>)}</div>:<Empty text="Ожидаем новые события"/>}</article><article className="panel signal"><span className="eyebrow">SYSTEM SIGNAL</span><h3>Контур готов<br/>к анализу рынка</h3><p>Данные, SMC и риск-сервисы подключены.</p><div className="pulse"/></article></section></main>}
-function Card({label,value,accent,positive}:{label:string,value:string,accent?:boolean,positive?:boolean}){return <article className={`card ${accent?"accent":""}`}><small>{label}</small><strong className={positive?"green":""}>{value}</strong><span>USDT</span></article>}function Title({name,meta}:{name:string,meta:string}){return <div className="title"><h2>{name}</h2><span>{meta}</span></div>}function Empty({text}:{text:string}){return <div className="empty"><i>◇</i><p>{text}</p></div>}const money=(v?:number)=>new Intl.NumberFormat("ru-RU",{minimumFractionDigits:2}).format(v??0);const signed=(v?:number)=>`${(v??0)>=0?"+":""}${money(v)}`;
+
+import { Box, Container, Grid, Stack, Typography } from "@mui/material";
+import { useCallback, useEffect, useState } from "react";
+import { api } from "../lib/api";
+import { keycloak } from "../lib/auth";
+import { EventSocket } from "../lib/socket";
+import type { PlatformEvent, Portfolio, Position, PositionsResponse, ServiceStatus, ServicesResponse } from "../lib/types";
+import { DashboardHeader } from "./dashboard/DashboardHeader";
+import { EventsPanel } from "./dashboard/EventsPanel";
+import { MetricsGrid } from "./dashboard/MetricsGrid";
+import { PositionsPanel } from "./dashboard/PositionsPanel";
+import { ServicesPanel } from "./dashboard/ServicesPanel";
+import { SignalPanel } from "./dashboard/SignalPanel";
+
+export default function Dashboard() {
+  const [portfolio, setPortfolio] = useState<Portfolio>();
+  const [services, setServices] = useState<ServiceStatus[]>([]);
+  const [positions, setPositions] = useState<Position[]>([]);
+  const [events, setEvents] = useState<PlatformEvent[]>([]);
+  const [isLive, setIsLive] = useState(false);
+  const username = String(keycloak().tokenParsed?.preferred_username ?? "пользователь");
+
+  const loadDashboard = useCallback(async () => {
+    const [portfolioData, servicesData, positionsData] = await Promise.all([
+      api<Portfolio>("/api/v1/analytics/portfolio"),
+      api<ServicesResponse>("/api/v1/analytics/monitoring/services"),
+      api<PositionsResponse | Position[]>("/api/v1/execution/positions"),
+    ]);
+    setPortfolio(portfolioData);
+    setServices(servicesData.services ?? []);
+    setPositions(Array.isArray(positionsData) ? positionsData : (positionsData.positions ?? []));
+  }, []);
+
+  useEffect(() => {
+    void loadDashboard().catch(console.error);
+    const socket = new EventSocket();
+    socket.subscribe((event) => {
+      setIsLive(true);
+      setEvents((currentEvents) => [event, ...currentEvents].slice(0, 8));
+      if (event.event_type.startsWith("position.")) void loadDashboard().catch(console.error);
+    });
+    void socket.connect();
+    return () => socket.close();
+  }, [loadDashboard]);
+
+  return (
+    <Container component="main" maxWidth={false} sx={{ maxWidth: 1500, pb: 7.5, px: { xs: 2, md: 4.75 } }}>
+      <DashboardHeader isLive={isLive} username={username} />
+      <Stack direction={{ xs: "column", md: "row" }} spacing={2.5} sx={{ py: 5, justifyContent: "space-between" }}>
+        <Box>
+          <Typography className="eyebrow">COMMAND CENTER · {new Date().toLocaleDateString("ru-RU")}</Typography>
+          <Typography component="h1" variant="h4" sx={{ my: 1.25 }}>Добрый день, {username}.</Typography>
+          <Typography color="text.secondary">Торговый контур работает в штатном режиме.</Typography>
+        </Box>
+        <Box sx={{ borderLeft: 1, borderColor: "primary.main", pl: 2.25, alignSelf: { md: "flex-end" } }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>РЕЖИМ ИСПОЛНЕНИЯ</Typography>
+          <Typography variant="caption" color="primary.main" sx={{ fontWeight: 700 }}>PAPER</Typography>
+        </Box>
+      </Stack>
+      <MetricsGrid portfolio={portfolio} />
+      <Grid container spacing={1.5} sx={{ mt: 0 }}>
+        <Grid size={{ xs: 12, lg: 8 }}><PositionsPanel positions={positions} /></Grid>
+        <Grid size={{ xs: 12, lg: 4 }}><ServicesPanel services={services} /></Grid>
+        <Grid size={{ xs: 12, lg: 8 }}><EventsPanel events={events} isLive={isLive} /></Grid>
+        <Grid size={{ xs: 12, lg: 4 }}><SignalPanel /></Grid>
+      </Grid>
+    </Container>
+  );
+}
