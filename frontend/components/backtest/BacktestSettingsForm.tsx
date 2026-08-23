@@ -56,19 +56,36 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
         Stop Loss рассчитывается за структурной границей OB, цели — по ликвидности и RR выбранного JSON-шаблона.
       </Typography>
       <Stack direction="row" spacing={1.5}>
-        <TextField fullWidth label="Комиссия, %" value={settings.feePercent} type="number"
-          onChange={(event) => updateNumber("feePercent", event.target.value)} />
+        <TextField fullWidth label="Maker, %" value={settings.makerFeePercent} type="number"
+          onChange={(event) => updateNumber("makerFeePercent", event.target.value)} />
+        <TextField fullWidth label="Taker, %" value={settings.takerFeePercent} type="number"
+          onChange={(event) => updateNumber("takerFeePercent", event.target.value)} />
         <TextField fullWidth label="Проскальзывание, %" value={settings.slippagePercent} type="number"
           onChange={(event) => updateNumber("slippagePercent", event.target.value)} />
       </Stack>
       <Stack direction="row" spacing={1.5}>
         <TextField fullWidth label="Funding в день, %" value={settings.fundingPercentPerDay} type="number"
           onChange={(event) => updateNumber("fundingPercentPerDay", event.target.value)} />
-        <TextField fullWidth label="Trailing Stop, %" value={settings.trailingStopPercent ?? ""} type="number"
-          onChange={(event) => onChange({
-            ...settings,
-            trailingStopPercent: event.target.value ? Number(event.target.value) : undefined,
-          })} />
+        <TextField fullWidth label="Funding интервал, ч" value={settings.fundingIntervalHours} type="number"
+          onChange={(event) => updateNumber("fundingIntervalHours", event.target.value)} />
+      </Stack>
+      <Stack direction="row" spacing={1.5}>
+        <TextField fullWidth label="Задержка, мс" value={settings.executionLatencyMs} type="number"
+          onChange={(event) => updateNumber("executionLatencyMs", event.target.value)} />
+        <TextField fullWidth label="Доля объёма, %" value={settings.volumeParticipationPercent} type="number"
+          onChange={(event) => updateNumber("volumeParticipationPercent", event.target.value)} />
+      </Stack>
+      <Stack direction="row" spacing={1.5}>
+        <TextField fullWidth label="Шаг цены" value={settings.tickSize} type="number"
+          onChange={(event) => updateNumber("tickSize", event.target.value)} />
+        <TextField fullWidth label="Шаг количества" value={settings.lotSize} type="number"
+          onChange={(event) => updateNumber("lotSize", event.target.value)} />
+      </Stack>
+      <Stack direction="row" spacing={1.5}>
+        <TextField fullWidth label="Мин. ордер" value={settings.minimumOrderSize} type="number"
+          onChange={(event) => updateNumber("minimumOrderSize", event.target.value)} />
+        <TextField fullWidth label="Ликвидация, %" value={settings.liquidationFeePercent} type="number"
+          onChange={(event) => updateNumber("liquidationFeePercent", event.target.value)} />
       </Stack>
       <Button variant="contained" size="large" disabled={!isValid || isRunning} onClick={onRun}>
         {isRunning ? `Выполняем расчёт… ${progress}%` : "Запустить бэктест"}

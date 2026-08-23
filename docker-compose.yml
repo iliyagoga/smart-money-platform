@@ -112,6 +112,7 @@ services:
       REDIS_URL: ${REDIS_URL}
       SWING_LOOKBACK: ${SWING_LOOKBACK:-5}
       SCENARIO_TEMPLATE_DIR: /app/scenario-templates
+      DEFAULT_SCENARIO_TEMPLATE_DIR: /app/default-scenario-templates
     ports:
       - "8010:8010"
     volumes:
@@ -261,6 +262,7 @@ services:
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-CHANGE_ME_MINIO}
+      JOB_CONCURRENCY: ${BACKTEST_JOB_CONCURRENCY:-2}
     ports:
       - "8085:8080"
     volumes:
@@ -297,10 +299,14 @@ services:
       SYMBOLS: ${EXCHANGE_SYMBOLS:-BTC-USDT-SWAP}
       TIMEFRAMES: ${EXCHANGE_TIMEFRAMES:-M1,M5,M15,H1,H4,D1}
       DATA_SERVICE_URL: http://data-service:8000
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      HISTORY_CONCURRENCY: ${HISTORY_CONCURRENCY:-2}
     ports:
       - "8070:8070"
     depends_on:
       data-service:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8070/health')\""]

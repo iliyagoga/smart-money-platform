@@ -1,6 +1,6 @@
 "use client";
 
-import { Alert, Checkbox, FormControlLabel, Grid, MenuItem, Paper, Stack, TextField, Typography } from "@mui/material";
+import { Alert, Checkbox, FormControlLabel, FormGroup, Grid, MenuItem, Paper, Stack, TextField, Typography } from "@mui/material";
 import { useState } from "react";
 import { AssetManager } from "../../components/backtest/AssetManager";
 import { BacktestReport } from "../../components/backtest/BacktestReport";
@@ -22,6 +22,8 @@ const defaultSettings: BacktestSettings = {
   fastPeriod: 9,
   slowPeriod: 21,
   feePercent: 0.05,
+  makerFeePercent: 0.02,
+  takerFeePercent: 0.05,
   slippagePercent: 0.02,
   stopLossPercent: 2,
   takeProfitPercent: 4,
@@ -29,6 +31,13 @@ const defaultSettings: BacktestSettings = {
   leverage: 1,
   maintenanceMarginPercent: 0.5,
   fundingPercentPerDay: 0,
+  fundingIntervalHours: 8,
+  executionLatencyMs: 0,
+  tickSize: 0.01,
+  lotSize: 0.000001,
+  minimumOrderSize: 0.000001,
+  volumeParticipationPercent: 5,
+  liquidationFeePercent: 0.5,
   trailingStopPercent: undefined,
   directionMode: "BOTH",
   riskPerTradePercent: 1,
@@ -45,6 +54,7 @@ export default function BacktestPage() {
   const [asset, setAsset] = useState("BTC-USDT-SWAP");
   const { assets } = useTradingAssets();
   const [timeframe, setTimeframe] = useState("M15");
+  const [selectedTimeframes, setSelectedTimeframes] = useState(timeframes);
   const [candleLimit, setCandleLimit] = useState(10_000);
   const today = new Date().toISOString().slice(0, 10);
   const [trainFrom, setTrainFrom] = useState("2025-01-01");
@@ -53,6 +63,7 @@ export default function BacktestPage() {
   const [testTo, setTestTo] = useState(today);
   const [settings, setSettings] = useState(defaultSettings);
   const [result, setResult] = useState<BacktestResult>();
+  const [comparison, setComparison] = useState<BacktestRun[]>([]);
   const [error, setError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -69,7 +80,7 @@ export default function BacktestPage() {
         body: JSON.stringify({
           symbol: selectedAsset,
           timeframe,
-          timeframes,
+          timeframes: selectedTimeframes,
           candle_limit: candleLimit,
           train_from: Date.parse(`${trainFrom}T00:00:00Z`),
           train_to: Date.parse(`${trainTo}T23:59:59Z`),
@@ -82,8 +93,17 @@ export default function BacktestPage() {
             leverage: settings.leverage,
             maintenance_margin_percent: settings.maintenanceMarginPercent,
             fee_percent: settings.feePercent,
+            maker_fee_percent: settings.makerFeePercent,
+            taker_fee_percent: settings.takerFeePercent,
             slippage_percent: settings.slippagePercent,
             funding_percent_per_day: settings.fundingPercentPerDay,
+            funding_interval_hours: settings.fundingIntervalHours,
+            execution_latency_ms: settings.executionLatencyMs,
+            tick_size: settings.tickSize,
+            lot_size: settings.lotSize,
+            minimum_order_size: settings.minimumOrderSize,
+            volume_participation_percent: settings.volumeParticipationPercent,
+            liquidation_fee_percent: settings.liquidationFeePercent,
             stop_loss_percent: settings.stopLossPercent,
             take_profit_percent: settings.takeProfitPercent,
             trailing_stop_percent: settings.trailingStopPercent,
@@ -143,12 +163,26 @@ export default function BacktestPage() {
     }
   };
 
+  const compareRuns = async (ids: string[]) => {
+    try {
+      const query = ids.map((id) => `ids=${encodeURIComponent(id)}`).join("&");
+      const response = await api<{ runs: BacktestRun[] }>(`/api/v1/backtest/backtests/compare?${query}`);
+      setComparison(response.runs);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
   return <SectionPage title="Бэктест" description="Проверка торговых стратегий на исторических данных без отправки ордеров.">
     <Paper variant="outlined" sx={{ p: 3, mb: 1.5 }}>
       <Typography variant="h6" sx={{ mb: 2 }}>Активы и исторические данные</Typography>
       <AssetManager selectedAsset={selectedAsset} onSelect={setAsset} />
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mt: 2.5 }}>
-        <TextField select label="Таймфрейм" value={timeframe} onChange={(event) => setTimeframe(event.target.value)} sx={{ minWidth: 150 }}>
+        <TextField select label="Основной таймфрейм" value={timeframe} onChange={(event) => {
+          const value = event.target.value;
+          setTimeframe(value);
+          setSelectedTimeframes((current) => current.includes(value) ? current : [...current, value]);
+        }} sx={{ minWidth: 180 }}>
           {timeframes.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}
         </TextField>
         <TextField
@@ -159,6 +193,15 @@ export default function BacktestPage() {
           slotProps={{ htmlInput: { min: 100, max: 1_000_000 } }}
         />
       </Stack>
+      <FormGroup row sx={{ mt: 1 }}>
+        {timeframes.map((item) => <FormControlLabel key={item} label={item} control={<Checkbox
+          checked={selectedTimeframes.includes(item)}
+          disabled={item === timeframe}
+          onChange={(event) => setSelectedTimeframes((current) => event.target.checked
+            ? [...current, item]
+            : current.filter((value) => value !== item))}
+        />} />)}
+      </FormGroup>
       <Typography variant="subtitle2" sx={{ mt: 2.5, mb: 1 }}>Периоды без пересечения</Typography>
       <Grid container spacing={1.5}>
         <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
@@ -189,7 +232,7 @@ export default function BacktestPage() {
       <HistoryLoader
         canManage={roles.includes("admin")}
         symbol={selectedAsset}
-        timeframes={timeframes}
+        timeframes={selectedTimeframes}
         from={trainFrom}
         to={testTo}
       />
@@ -218,6 +261,18 @@ export default function BacktestPage() {
       runs={runsResource.data?.runs ?? []}
       onOpen={(runItem) => void openRun(runItem.id)}
       onExport={(runItem, format) => void exportRun(runItem.id, format)}
+      onCompare={(ids) => void compareRuns(ids)}
     />
+    {comparison.length > 1 && <Paper variant="outlined" sx={{ p: 2.5, mt: 1.5 }}>
+      <Typography variant="h6" sx={{ mb: 2 }}>Сравнение запусков</Typography>
+      <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
+        {comparison.map((runItem) => <Paper key={runItem.id} variant="outlined" sx={{ p: 2, flex: 1 }}>
+          <Typography sx={{ fontWeight: 650 }}>{runItem.symbol} · {runItem.timeframe}</Typography>
+          <Typography>Доходность: {runItem.result?.total_return_percent.toFixed(2)}%</Typography>
+          <Typography>Просадка: {runItem.result?.max_drawdown_percent.toFixed(2)}%</Typography>
+          <Typography>Сделок: {runItem.result?.total_trades}</Typography>
+        </Paper>)}
+      </Stack>
+    </Paper>}
   </SectionPage>;
 }

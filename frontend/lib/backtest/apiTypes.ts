@@ -47,6 +47,13 @@ export interface BackendBacktestResult {
   benchmark_return_percent: number;
   trades: BackendTrade[];
   equity: BackendEquityPoint[];
+  decisions?: Array<{
+    confidence: number;
+    decision: string;
+    scenario_id: string;
+    template_id: string;
+    timestamp: number;
+  }>;
   dataset?: {
     closed_candles_only: boolean;
     test_candles: number;

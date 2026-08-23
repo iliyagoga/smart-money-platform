@@ -13,6 +13,7 @@ const navigation = [
   { label: "Сделки", href: "/trades" },
   { label: "Обучение", href: "/learning" },
   { label: "Бэктест", href: "/backtest" },
+  { label: "Replay", href: "/replay" },
 ];
 
 interface DashboardHeaderProps { isLive: boolean; username: string }

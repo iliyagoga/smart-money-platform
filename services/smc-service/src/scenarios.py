@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 from time import time
 from uuid import NAMESPACE_URL, uuid5
@@ -40,10 +41,13 @@ class ScenarioTemplate(BaseModel):
     @model_validator(mode="after")
     def validate_rules(self):
         supported = {
-            "relations": {"OB_OVERLAPS_FVG", "LIQUIDITY_IN_DIRECTION"},
-            "entry_rule": {"OB_FVG_INTERSECTION", "ORDER_BLOCK"},
-            "stop_rule": {"ORDER_BLOCK_EDGE"},
-            "target_rule": {"LIQUIDITY_THEN_RR", "FIXED_RR"},
+            "relations": {
+                "OB_OVERLAPS_FVG", "LIQUIDITY_IN_DIRECTION", "LIQUIDITY_SWEPT", "STRUCTURE_BOS",
+                "STRUCTURE_CHOCH_OR_MSS", "OB_RETESTED", "PREMIUM_DISCOUNT", "HIGHER_TIMEFRAME_ALIGNMENT",
+            },
+            "entry_rule": {"OB_FVG_INTERSECTION", "ORDER_BLOCK", "OTE"},
+            "stop_rule": {"ORDER_BLOCK_EDGE", "LAST_SWING"},
+            "target_rule": {"LIQUIDITY_THEN_RR", "FIXED_RR", "NEXT_ORDER_BLOCK"},
         }
         if any(item not in supported["relations"] for item in self.relations):
             raise ValueError("unsupported relation")
@@ -58,6 +62,12 @@ class TemplateStore:
         configured = directory or os.getenv("SCENARIO_TEMPLATE_DIR", "/app/scenario-templates")
         self.directory = Path(configured)
         self.directory.mkdir(parents=True, exist_ok=True)
+        defaults = Path(os.getenv("DEFAULT_SCENARIO_TEMPLATE_DIR", ""))
+        if defaults.is_dir():
+            for source in defaults.glob("*.json"):
+                destination = self.directory / source.name
+                if not destination.exists():
+                    shutil.copyfile(source, destination)
 
     def list(self, enabled_only: bool = False) -> list[ScenarioTemplate]:
         templates = [self._read(path) for path in sorted(self.directory.glob("*.json"))]
@@ -97,7 +107,8 @@ class ScenarioManager:
         self.items: dict[str, Scenario] = {}
         self.store = store or TemplateStore()
 
-    def generate(self, symbol, timeframe, obs, fvgs, liquidity, template_ids=None, now=None):
+    def generate(self, symbol, timeframe, obs, fvgs, liquidity, template_ids=None, now=None,
+                 changes=None, swings=None, trends=None):
         created = []
         timestamp = now or int(time() * 1000)
         for template in self.store.list(enabled_only=True):
@@ -105,10 +116,13 @@ class ScenarioManager:
                 continue
             if timeframe not in template.allowed_timeframes:
                 continue
-            created.extend(self._evaluate(template, symbol, timeframe, obs, fvgs, liquidity, timestamp))
+            created.extend(self._evaluate(
+                template, symbol, timeframe, obs, fvgs, liquidity, timestamp,
+                changes or [], swings or [], trends or [],
+            ))
         return created
 
-    def _evaluate(self, template, symbol, timeframe, obs, fvgs, liquidity, timestamp):
+    def _evaluate(self, template, symbol, timeframe, obs, fvgs, liquidity, timestamp, changes, swings, trends):
         created = []
         for ob in (item for item in obs if not item.is_broken):
             ob_rule = next((rule for rule in template.required_objects if rule.kind == "ORDER_BLOCK"), None)
@@ -123,10 +137,36 @@ class ScenarioManager:
                 continue
             fvg = overlaps[0] if overlaps else None
             direction = "LONG" if ob.type == Direction.BULLISH else "SHORT"
+            matching_changes = [item for item in changes if item.direction == ob.type]
+            if "STRUCTURE_BOS" in template.relations and not any(item.type == "BOS" for item in matching_changes):
+                continue
+            if "STRUCTURE_CHOCH_OR_MSS" in template.relations and not any(
+                item.type in {"CHOCH", "MSS"} for item in matching_changes
+            ):
+                continue
+            if "OB_RETESTED" in template.relations and ob.retest_count < 1:
+                continue
+            if "LIQUIDITY_SWEPT" in template.relations and not any(item.swept for item in liquidity):
+                continue
+            aligned = [
+                item for item in trends
+                if (direction == "LONG" and item.direction == "UP") or (direction == "SHORT" and item.direction == "DOWN")
+            ]
+            if "HIGHER_TIMEFRAME_ALIGNMENT" in template.relations and len(aligned) < 2:
+                continue
             entry_low = max(ob.zone_low, fvg.zone_low) if fvg else ob.zone_low
             entry_high = min(ob.zone_high, fvg.zone_high) if fvg else ob.zone_high
+            if template.entry_rule == "OTE":
+                entry_low = ob.zone_low + (ob.zone_high - ob.zone_low) * .62
+                entry_high = ob.zone_low + (ob.zone_high - ob.zone_low) * .79
             width = max(ob.zone_high - ob.zone_low, 1e-12)
             stop = ob.zone_low - template.stop_atr_buffer * width if direction == "LONG" else ob.zone_high + template.stop_atr_buffer * width
+            directional_swings = [
+                item for item in swings
+                if (direction == "LONG" and item.type == "LOW") or (direction == "SHORT" and item.type == "HIGH")
+            ]
+            if template.stop_rule == "LAST_SWING" and directional_swings:
+                stop = directional_swings[-1].price
             entry = (entry_low + entry_high) / 2
             risk = abs(entry - stop)
             matching = [
@@ -138,6 +178,11 @@ class ScenarioManager:
             ]
             if "LIQUIDITY_IN_DIRECTION" in template.relations and not matching:
                 continue
+            if "PREMIUM_DISCOUNT" in template.relations and swings:
+                prices = [item.price for item in swings[-20:]]
+                equilibrium = (min(prices) + max(prices)) / 2
+                if direction == "LONG" and entry_low > equilibrium or direction == "SHORT" and entry_high < equilibrium:
+                    continue
             targets = sorted((item.price_level for item in matching), reverse=direction == "SHORT")[:2]
             targets.extend(entry + risk * ratio * (1 if direction == "LONG" else -1) for ratio in template.risk_reward)
             targets = list(dict.fromkeys(targets))[:max(1, len(template.risk_reward))]

@@ -1,17 +1,35 @@
 import asyncio,json,random
-import httpx,websockets
+import asyncpg,httpx,websockets
 from .okx import TIMEFRAMES,REVERSE_TIMEFRAMES,auth_headers,book,candle,trade
 
 class ExchangeGateway:
     def __init__(self,s):
-        self.s=s;self.client=None;self.tasks=[];self.connected={"public":False,"business":False};self.last_error=None;self.history_jobs={}
+        self.s=s;self.client=None;self.db=None;self.tasks=set();self.connected={"public":False,"business":False};self.last_error=None
+        self.history_semaphore=asyncio.Semaphore(s.history_concurrency);self.running_history=set()
     async def start(self):
         self.client=httpx.AsyncClient(timeout=20)
+        self.db=await asyncpg.create_pool(self.s.database_url,min_size=1,max_size=5)
+        await self.db.execute("""
+          CREATE TABLE IF NOT EXISTS exchange_history_jobs(
+            id uuid PRIMARY KEY,status text NOT NULL,symbol text NOT NULL,timeframes jsonb NOT NULL,
+            from_timestamp bigint,to_timestamp bigint,max_candles integer NOT NULL,cursors jsonb NOT NULL DEFAULT '{}',
+            timeframe_counts jsonb NOT NULL DEFAULT '{}',ingested integer NOT NULL DEFAULT 0,
+            requests integer NOT NULL DEFAULT 0,progress smallint NOT NULL DEFAULT 0,error text,
+            created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now()
+          )
+        """)
+        await self.db.execute("UPDATE exchange_history_jobs SET status='QUEUED' WHERE status='RUNNING'")
+        for row in await self.db.fetch("SELECT id FROM exchange_history_jobs WHERE status='QUEUED'"):
+            self.schedule_history(row["id"])
         if self.s.market_data_enabled:
-            self.tasks=[asyncio.create_task(self.loop("public",self.s.okx_public_ws_url)),asyncio.create_task(self.loop("business",self.s.okx_business_ws_url))]
+            self.add_task(self.loop("public",self.s.okx_public_ws_url));self.add_task(self.loop("business",self.s.okx_business_ws_url))
     async def stop(self):
         for task in self.tasks:task.cancel()
+        await asyncio.gather(*self.tasks,return_exceptions=True)
         if self.client:await self.client.aclose()
+        if self.db:await self.db.close()
+    def add_task(self,coroutine):
+        task=asyncio.create_task(coroutine);self.tasks.add(task);task.add_done_callback(self.tasks.discard);return task
     @property
     def symbols(self):return [x.strip().upper() for x in self.s.symbols.split(",") if x.strip()]
     @property
@@ -57,36 +75,65 @@ class ExchangeGateway:
         response.raise_for_status();body=response.json()
         if body.get("code")!="0":raise ValueError(body.get("msg","OKX error"))
         return [candle(item,symbol,timeframe) for item in body["data"]]
-    def schedule_history(self,job_id,symbol,timeframes,start,end,max_candles):
-        self.history_jobs[job_id]={
-            "id":job_id,"status":"QUEUED","symbol":symbol,"timeframes":timeframes,"from":start,"to":end,
-            "max_candles":max_candles,"ingested":0,"requests":0,"progress":0,"error":None,
-        }
-        task=asyncio.create_task(self.download_history(job_id));self.tasks.append(task)
+    async def create_history(self,job_id,symbol,timeframes,start,end,max_candles):
+        await self.db.execute(
+            """INSERT INTO exchange_history_jobs(id,status,symbol,timeframes,from_timestamp,to_timestamp,max_candles)
+               VALUES($1::uuid,'QUEUED',$2,$3::jsonb,$4,$5,$6)""",
+            job_id,symbol,json.dumps(timeframes),start,end,max_candles,
+        )
+        self.schedule_history(job_id);return await self.history_job(job_id)
+    def schedule_history(self,job_id):
+        key=str(job_id)
+        if key in self.running_history:return
+        self.running_history.add(key);task=self.add_task(self.download_history(job_id))
+        task.add_done_callback(lambda _:self.running_history.discard(key))
+    async def history_job(self,job_id):
+        row=await self.db.fetchrow("SELECT * FROM exchange_history_jobs WHERE id=$1::uuid",job_id)
+        if not row:return None
+        item=dict(row)
+        for field in ("timeframes","cursors","timeframe_counts"):
+            if isinstance(item[field],str):item[field]=json.loads(item[field])
+        item["id"]=str(item["id"]);item["from"]=item.pop("from_timestamp");item["to"]=item.pop("to_timestamp")
+        item["created_at"]=item["created_at"].isoformat();item["updated_at"]=item["updated_at"].isoformat()
+        return item
+    async def history_jobs(self,limit=50):
+        rows=await self.db.fetch("SELECT id FROM exchange_history_jobs ORDER BY created_at DESC LIMIT $1",limit)
+        return [await self.history_job(row["id"]) for row in rows]
+    async def control_history(self,job_id,action):
+        transitions={"pause":("PAUSED",{"QUEUED","RUNNING"}),"cancel":("CANCELLED",{"QUEUED","RUNNING","PAUSED"}),"resume":("QUEUED",{"PAUSED","FAILED"})}
+        target,allowed=transitions[action];current=await self.db.fetchval("SELECT status FROM exchange_history_jobs WHERE id=$1::uuid",job_id)
+        if current not in allowed:return None
+        await self.db.execute("UPDATE exchange_history_jobs SET status=$2,error=NULL,updated_at=now() WHERE id=$1::uuid",job_id,target)
+        if action=="resume":self.schedule_history(job_id)
+        return await self.history_job(job_id)
     async def download_history(self,job_id):
-        job=self.history_jobs[job_id];job["status"]="RUNNING"
-        try:
-            total_target=job["max_candles"]*len(job["timeframes"])
-            for timeframe in job["timeframes"]:
-                cursor=job["to"]
-                timeframe_count=0
-                while timeframe_count<job["max_candles"]:
-                    page=await self.history_page(job["symbol"],timeframe,cursor)
-                    job["requests"]+=1
-                    if not page:break
-                    eligible=[item for item in page if item["is_closed"] and (job["from"] is None or item["timestamp"]>=job["from"])]
-                    remaining=job["max_candles"]-timeframe_count;eligible=eligible[:remaining]
-                    await self.ingest_batch(list(reversed(eligible)))
-                    timeframe_count+=len(eligible);job["ingested"]+=len(eligible)
-                    oldest=min(item["timestamp"] for item in page)
-                    job["cursor"]={"timeframe":timeframe,"timestamp":oldest}
-                    job["progress"]=min(99,int(job["ingested"]/max(1,total_target)*100))
-                    if len(page)<300 or (job["from"] is not None and oldest<=job["from"]):break
-                    cursor=oldest
-                    await asyncio.sleep(.12)
-            job["status"]="COMPLETED";job["progress"]=100
-        except Exception as exc:
-            job["status"]="FAILED";job["error"]=str(exc)[:2000]
+        async with self.history_semaphore:
+            await self.db.execute("UPDATE exchange_history_jobs SET status='RUNNING',updated_at=now() WHERE id=$1::uuid AND status='QUEUED'",job_id)
+            try:
+                job=await self.history_job(job_id);total_target=job["max_candles"]*len(job["timeframes"])
+                for timeframe in job["timeframes"]:
+                    count=int(job["timeframe_counts"].get(timeframe,0));cursor=job["cursors"].get(timeframe,job["to"])
+                    while count<job["max_candles"]:
+                        status=await self.db.fetchval("SELECT status FROM exchange_history_jobs WHERE id=$1::uuid",job_id)
+                        if status in {"PAUSED","CANCELLED"}:return
+                        page=await self.history_page(job["symbol"],timeframe,cursor)
+                        if not page:break
+                        eligible=[item for item in page if item["is_closed"] and (job["from"] is None or item["timestamp"]>=job["from"])]
+                        eligible=eligible[:job["max_candles"]-count];await self.ingest_batch(list(reversed(eligible)))
+                        count+=len(eligible);oldest=min(item["timestamp"] for item in page);job["cursors"][timeframe]=oldest
+                        job["timeframe_counts"][timeframe]=count;job["ingested"]+=len(eligible);job["requests"]+=1
+                        progress=min(99,int(job["ingested"]/max(1,total_target)*100))
+                        await self.db.execute(
+                            """UPDATE exchange_history_jobs SET cursors=$2::jsonb,timeframe_counts=$3::jsonb,
+                               ingested=$4,requests=$5,progress=$6,updated_at=now() WHERE id=$1::uuid""",
+                            job_id,json.dumps(job["cursors"]),json.dumps(job["timeframe_counts"]),job["ingested"],job["requests"],progress,
+                        )
+                        if len(page)<300 or (job["from"] is not None and oldest<=job["from"]):break
+                        cursor=oldest;await asyncio.sleep(.12)
+                await self.db.execute("UPDATE exchange_history_jobs SET status='COMPLETED',progress=100,updated_at=now() WHERE id=$1::uuid",job_id)
+            except asyncio.CancelledError:raise
+            except Exception as exc:
+                await self.db.execute("UPDATE exchange_history_jobs SET status='FAILED',error=$2,updated_at=now() WHERE id=$1::uuid",job_id,str(exc)[:2000])
     async def private(self,method,path,payload=None):
         if not all((self.s.okx_api_key,self.s.okx_secret_key,self.s.okx_passphrase)):raise ValueError("OKX API credentials are not configured")
         body=json.dumps(payload,separators=(",",":")) if payload else "";headers=auth_headers(self.s.okx_api_key,self.s.okx_secret_key,self.s.okx_passphrase,method,path,body,self.s.okx_demo)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from math import sqrt
+from math import floor, sqrt
 from statistics import mean, pstdev
 from math import exp
 
@@ -26,11 +26,15 @@ class VirtualPosition:
     initial_quantity: float
     realized: float = 0
     fees: float = 0
+    funding: float = 0
+    last_funding_time: int = 0
 
 
 @dataclass
 class TemplateModel:
     outcomes: dict[str, list[int]] = field(default_factory=dict)
+    metrics: dict = field(default_factory=dict)
+    folds: list[dict] = field(default_factory=list)
 
     def probability(self, template_id: str, fallback: float) -> float:
         values = self.outcomes.get(template_id, [])
@@ -96,11 +100,29 @@ def train_local_model(
         key = (candle.symbol, candle.timeframe)
         generated = manager.generate(
             candle.symbol, candle.timeframe, pipeline.obs[key], pipeline.fvgs[key], pipeline.liquidity[key],
-            set(config.template_ids) or None, candle.timestamp,
+            set(config.template_ids) or None, candle.timestamp, pipeline.changes[key], pipeline.swings[key],
+            [value for (symbol, _), value in pipeline.trends.items() if symbol == candle.symbol and value],
         )
         for scenario in generated:
             future = [item for item in primary if item.timestamp > scenario.created_at]
             model.learn(scenario.setup_type, _scenario_outcome(scenario, future))
+    all_outcomes=[(template,value) for template,values in model.outcomes.items() for value in values]
+    folds=[]
+    for fold in range(3):
+        train_end=max(1,int(len(all_outcomes)*(.5+fold*.15)));validation_end=min(len(all_outcomes),train_end+max(1,len(all_outcomes)//6))
+        training=all_outcomes[:train_end];validation=all_outcomes[train_end:validation_end]
+        probabilities={}
+        for template,value in training:probabilities.setdefault(template,[]).append(value)
+        predictions=[(sum(probabilities.get(template,[]))+1)/(len(probabilities.get(template,[]))+2) for template,_ in validation]
+        accuracy=sum((probability>=.5)==bool(item[1]) for probability,item in zip(predictions,validation))/len(validation) if validation else 0
+        brier=sum((probability-item[1])**2 for probability,item in zip(predictions,validation))/len(validation) if validation else 0
+        folds.append({"fold":fold+1,"training_samples":len(training),"validation_samples":len(validation),"accuracy":accuracy,"brier_score":brier})
+    model.folds=folds;valid=[item for item in folds if item["validation_samples"]]
+    model.metrics={
+        "accuracy":mean(item["accuracy"] for item in valid) if valid else 0,
+        "brier_score":mean(item["brier_score"] for item in valid) if valid else 0,
+        "folds":len(valid),
+    }
     return model
 
 
@@ -121,8 +143,12 @@ def run_smc_replay(
     trades = []
     decisions = []
     equity = []
-    fee_rate = config.fee_percent / 100
+    maker_rate = (config.maker_fee_percent if config.maker_fee_percent is not None else config.fee_percent) / 100
+    taker_rate = (config.taker_fee_percent if config.taker_fee_percent is not None else config.fee_percent) / 100
     slip = config.slippage_percent / 100
+
+    def price_tick(value: float) -> float:
+        return round(value / config.tick_size) * config.tick_size
 
     def close(candle, raw_price, reason, quantity=None):
         nonlocal capital, position
@@ -130,10 +156,10 @@ def run_smc_replay(
         price = raw_price * (1 - slip if position.direction == "LONG" else 1 + slip)
         side = 1 if position.direction == "LONG" else -1
         gross = (price - position.entry_price) * quantity * side
-        fees = price * quantity * fee_rate
-        days = max(0, candle.timestamp - position.entry_time) / 86_400_000
-        funding = position.entry_price * quantity * config.funding_percent_per_day / 100 * days * side
-        pnl = gross - fees - funding
+        exit_rate = maker_rate if reason == "TAKE_PROFIT" else taker_rate
+        fees = price * quantity * exit_rate
+        liquidation_fee = price * quantity * config.liquidation_fee_percent / 100 if reason == "LIQUIDATION" else 0
+        pnl = gross - fees - liquidation_fee
         capital += pnl
         position.realized += pnl
         position.fees += fees
@@ -146,7 +172,7 @@ def run_smc_replay(
             "exit_time": candle.timestamp, "entry_price": position.entry_price, "exit_price": price,
             "quantity": position.initial_quantity, "pnl": position.realized,
             "pnl_percent": position.realized / max(position.entry_price * position.initial_quantity / config.leverage, 1e-12) * 100,
-            "fees": position.fees, "funding": funding, "reason": reason,
+            "fees": position.fees + liquidation_fee, "funding": position.funding, "reason": reason,
             "scenario_id": position.scenario_id, "template_id": position.template_id,
             "confidence": position.confidence,
         })
@@ -157,7 +183,8 @@ def run_smc_replay(
         key = (candle.symbol, candle.timeframe)
         generated = manager.generate(
             candle.symbol, candle.timeframe, pipeline.obs[key], pipeline.fvgs[key], pipeline.liquidity[key],
-            set(config.template_ids) or None, candle.timestamp,
+            set(config.template_ids) or None, candle.timestamp, pipeline.changes[key], pipeline.swings[key],
+            [value for (symbol, _), value in pipeline.trends.items() if symbol == candle.symbol and value],
         )
         for scenario in generated:
             confidence = model.probability(scenario.setup_type, scenario.confidence) if model else scenario.confidence
@@ -174,6 +201,18 @@ def run_smc_replay(
             continue
         pending = [item for item in pending if item[0].expires_at >= candle.timestamp]
         if position:
+            interval = config.funding_interval_hours * 3_600_000
+            funding_events = max(0, (candle.timestamp - position.last_funding_time) // interval)
+            if funding_events:
+                funding = (
+                    position.entry_price * position.quantity * config.funding_percent_per_day / 100
+                    * config.funding_interval_hours / 24 * funding_events
+                )
+                signed_funding = funding * (1 if position.direction == "LONG" else -1)
+                capital -= signed_funding
+                position.realized -= signed_funding
+                position.funding += signed_funding
+                position.last_funding_time += funding_events * interval
             liquidation = position.entry_price * (
                 1 - 1 / config.leverage + config.maintenance_margin_percent / 100
                 if position.direction == "LONG"
@@ -194,22 +233,28 @@ def run_smc_replay(
                 position.targets.remove(target)
                 close(candle, target, "TAKE_PROFIT", position.quantity / 2 if position.targets else position.quantity)
         if position is None:
-            candidates = [item for item in pending if candle.timestamp > item[0].created_at and candle.low <= item[0].entry_zone_high and candle.high >= item[0].entry_zone_low]
+            candidates = [item for item in pending if candle.timestamp >= item[0].created_at + config.execution_latency_ms
+                          and candle.low <= item[0].entry_zone_high and candle.high >= item[0].entry_zone_low]
             if candidates:
                 scenario, confidence = max(candidates, key=lambda item: item[1])
                 raw_entry = min(max(candle.open, scenario.entry_zone_low), scenario.entry_zone_high)
-                entry = raw_entry * (1 + slip if scenario.direction == "LONG" else 1 - slip)
+                entry = price_tick(raw_entry * (1 + slip if scenario.direction == "LONG" else 1 - slip))
                 risk_distance = abs(entry - scenario.stop_loss_price)
                 kelly = max(0, 2 * confidence - 1) * config.kelly_fraction * 100
                 risk_percent = min(config.risk_per_trade_percent, kelly)
-                quantity = min(capital * risk_percent / 100 / max(risk_distance, 1e-12), capital * config.leverage / entry)
-                if quantity > 0:
-                    entry_fee = entry * quantity * fee_rate
+                quantity = min(
+                    capital * risk_percent / 100 / max(risk_distance, 1e-12),
+                    capital * config.leverage / entry,
+                    candle.volume * config.volume_participation_percent / 100,
+                )
+                quantity = floor(quantity / config.lot_size) * config.lot_size
+                if quantity >= config.minimum_order_size:
+                    entry_fee = entry * quantity * maker_rate
                     capital -= entry_fee
                     position = VirtualPosition(
                         scenario.direction, entry, candle.timestamp, quantity, scenario.stop_loss_price,
                         list(scenario.take_profit_prices), scenario.id, scenario.setup_type, confidence, quantity,
-                        fees=entry_fee,
+                        fees=entry_fee, last_funding_time=candle.timestamp,
                     )
                 pending.clear()
         unrealized = 0
@@ -259,5 +304,7 @@ def _report(config, candles, capital, trades, equity, decisions, model):
             "mode": "LOCAL_RETRAIN" if isinstance(model, TemplateModel) else "PRETRAINED" if model else "BASELINE",
             "version": model.version if isinstance(model, FrozenModel) else None,
             "samples": sum(map(len, model.outcomes.values())) if isinstance(model, TemplateModel) else 0,
+            "metrics": model.metrics if isinstance(model, TemplateModel) else {},
+            "folds": model.folds if isinstance(model, TemplateModel) else [],
         },
     }

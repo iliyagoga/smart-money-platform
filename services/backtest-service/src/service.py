@@ -20,6 +20,7 @@ class BacktestService:
         self.db: asyncpg.Pool | None = None
         self.client: httpx.AsyncClient | None = None
         self.tasks: set[asyncio.Task] = set()
+        self.semaphore = asyncio.Semaphore(settings.job_concurrency)
         self.s3 = boto3.client(
             "s3", endpoint_url=settings.minio_endpoint, aws_access_key_id=settings.minio_access_key,
             aws_secret_access_key=settings.minio_secret_key,
@@ -84,9 +85,13 @@ class BacktestService:
         return run_id
 
     async def execute(self, run_id: UUID):
+        async with self.semaphore:
+            await self._execute(run_id)
+
+    async def _execute(self, run_id: UUID):
         async with self.db.acquire() as connection:
-            row = await connection.fetchrow("SELECT request FROM backtest_runs WHERE id=$1", run_id)
-            if not row:
+            row = await connection.fetchrow("SELECT request,status FROM backtest_runs WHERE id=$1", run_id)
+            if not row or row["status"] == "CANCELLED":
                 return
             await connection.execute(
                 "UPDATE backtest_runs SET status='RUNNING',progress=10,started_at=now(),error=NULL WHERE id=$1", run_id
@@ -111,6 +116,7 @@ class BacktestService:
                         train_local_model, training_candles, request.timeframe, request.config,
                         self.settings.scenario_template_dir,
                     )
+                    artifact_path = await self.save_local_model(run_id, model, request)
                 else:
                     model = await self.load_frozen_model(request.model_version, request.test_from)
                 result = await asyncio.to_thread(
@@ -122,6 +128,8 @@ class BacktestService:
                 result["dataset"]["requested_train_to"] = request.train_to
                 result["dataset"]["requested_test_from"] = request.test_from
                 result["dataset"]["requested_test_to"] = request.test_to
+                if request.config.local_retraining:
+                    result["model_training"]["artifact_path"] = artifact_path
             else:
                 result = await asyncio.to_thread(run_backtest, test_candles[request.timeframe], request.config)
             async with self.db.acquire() as connection:
@@ -158,6 +166,20 @@ class BacktestService:
         if missing:
             raise ValueError(f"no stored closed candles for: {', '.join(missing)}")
         return result
+
+    async def save_local_model(self, run_id, model, request):
+        bucket = "models"
+        key = f"backtests/{run_id}/local-template-model.json"
+        artifact = {
+            "type": "TEMPLATE_BAYES_WALK_FORWARD", "run_id": str(run_id),
+            "train_from": request.train_from, "train_to": request.train_to,
+            "outcomes": model.outcomes, "metrics": model.metrics, "folds": model.folds,
+        }
+        await asyncio.to_thread(
+            self.s3.put_object, Bucket=bucket, Key=key, Body=json.dumps(artifact).encode(),
+            ContentType="application/json",
+        )
+        return f"s3://{bucket}/{key}"
 
     async def load_frozen_model(self, version, test_from):
         try:
@@ -202,6 +224,14 @@ class BacktestService:
             row = await connection.fetchrow("SELECT * FROM backtest_runs WHERE id=$1 AND user_id=$2", run_id, user_id)
         return self.serialize_run(row, include_result=True) if row else None
 
+    async def cancel_run(self, run_id: UUID, user_id: str):
+        async with self.db.acquire() as connection:
+            return await connection.fetchval(
+                """UPDATE backtest_runs SET status='CANCELLED',completed_at=now()
+                   WHERE id=$1 AND user_id=$2 AND status='QUEUED' RETURNING id""",
+                run_id, user_id,
+            )
+
     @staticmethod
     def serialize_run(row, include_result: bool):
         item = {key: row[key] for key in ("id", "symbol", "timeframe", "status", "progress", "error", "created_at", "completed_at")}
@@ -229,6 +259,36 @@ class BacktestService:
                 symbol.strip().upper(),
             )
         return [dict(row) for row in rows]
+
+    async def audit_dataset(self, symbol, timeframes, start=None, end=None):
+        intervals = {"M1":60_000,"M5":300_000,"M15":900_000,"H1":3_600_000,"H4":14_400_000,"D1":86_400_000}
+        reports=[]
+        async with self.db.acquire() as connection:
+            for timeframe in timeframes:
+                rows=await connection.fetch(
+                    """SELECT (extract(epoch FROM ts)*1000)::bigint timestamp,
+                              open::float8,high::float8,low::float8,close::float8,is_closed
+                       FROM candles WHERE symbol=$1 AND timeframe=$2
+                         AND ($3::bigint IS NULL OR ts>=to_timestamp($3/1000.0))
+                         AND ($4::bigint IS NULL OR ts<=to_timestamp($4/1000.0)) ORDER BY ts""",
+                    symbol.strip().upper(),timeframe,start,end,
+                )
+                timestamps=[row["timestamp"] for row in rows];step=intervals[timeframe];gaps=[]
+                for previous,current in zip(timestamps,timestamps[1:]):
+                    if current-previous>step:
+                        gaps.append({"from":previous+step,"to":current-step,"missing":(current-previous)//step-1})
+                invalid=sum(
+                    not row["is_closed"] or row["low"]>row["high"] or not row["low"]<=row["open"]<=row["high"]
+                    or not row["low"]<=row["close"]<=row["high"] for row in rows
+                )
+                coverage_start=timestamps[0] if timestamps else None;coverage_end=timestamps[-1] if timestamps else None
+                reports.append({
+                    "timeframe":timeframe,"candles":len(rows),"from_timestamp":coverage_start,"to_timestamp":coverage_end,
+                    "missing_candles":sum(item["missing"] for item in gaps),"gap_examples":gaps[:100],
+                    "invalid_candles":invalid,"covers_requested_range":bool(timestamps)
+                    and (start is None or coverage_start<=start) and (end is None or coverage_end>=end-step),
+                })
+        return reports
 
     async def add_asset(self, asset: AssetCreate):
         async with self.db.acquire() as connection:

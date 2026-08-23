@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     minio_endpoint: str = "http://minio:9000"
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "CHANGE_ME_MINIO"
+    job_concurrency: int = 2
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

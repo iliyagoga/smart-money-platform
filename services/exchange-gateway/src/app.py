@@ -31,13 +31,21 @@ async def sync(req:SyncRequest):
     except Exception as exc:raise HTTPException(502,str(exc)) from exc
 @app.post("/exchange/history",status_code=202)
 async def history(req:HistoryRequest):
-    job_id=str(uuid4());service.schedule_history(
+    job_id=str(uuid4());return await service.create_history(
         job_id,req.symbol,req.timeframes,req.from_timestamp,req.to_timestamp,req.max_candles_per_timeframe,
-    );return service.history_jobs[job_id]
+    )
+@app.get("/exchange/history")
+async def histories():return {"jobs":await service.history_jobs()}
 @app.get("/exchange/history/{job_id}")
 async def history_status(job_id:str):
-    job=service.history_jobs.get(job_id)
+    job=await service.history_job(job_id)
     if not job:raise HTTPException(404,"History job not found")
+    return job
+@app.post("/exchange/history/{job_id}/{action}")
+async def history_control(job_id:str,action:str):
+    if action not in {"pause","resume","cancel"}:raise HTTPException(422,"Unsupported action")
+    job=await service.control_history(job_id,action)
+    if not job:raise HTTPException(409,"Action is not allowed for current job state")
     return job
 @app.get("/exchange/account/balance")
 async def balance():

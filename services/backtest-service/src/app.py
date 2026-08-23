@@ -37,6 +37,18 @@ async def dataset(symbol: str):
     return {"symbol": symbol.strip().upper(), "timeframes": await service.dataset(symbol)}
 
 
+@app.get("/datasets/{symbol}/audit")
+async def audit_dataset(symbol: str, timeframes: list[str] = Query(), from_timestamp: int | None = None,
+                        to_timestamp: int | None = None):
+    supported = {"M1", "M5", "M15", "H1", "H4", "D1"}
+    if not timeframes or any(item not in supported for item in timeframes):
+        raise HTTPException(422, "Unsupported timeframe")
+    reports = await service.audit_dataset(symbol, timeframes, from_timestamp, to_timestamp)
+    return {"symbol": symbol.strip().upper(), "healthy": all(
+        not item["missing_candles"] and not item["invalid_candles"] and item["covers_requested_range"] for item in reports
+    ), "timeframes": reports}
+
+
 @app.post("/assets", status_code=201)
 async def add_asset(asset: AssetCreate):
     return await service.add_asset(asset)
@@ -75,6 +87,13 @@ async def backtest(run_id: UUID, x_user_id: str = Header(default="local")):
     if not run:
         raise HTTPException(404, "Backtest not found")
     return run
+
+
+@app.post("/backtests/{run_id}/cancel")
+async def cancel_backtest(run_id: UUID, x_user_id: str = Header(default="local")):
+    if not await service.cancel_run(run_id, x_user_id):
+        raise HTTPException(409, "Only a queued backtest can be cancelled")
+    return {"id": str(run_id), "status": "CANCELLED"}
 
 
 @app.get("/backtests/{run_id}/export")

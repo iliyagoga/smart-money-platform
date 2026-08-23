@@ -10,6 +10,8 @@ export interface BacktestSettings {
   fastPeriod: number;
   slowPeriod: number;
   feePercent: number;
+  makerFeePercent?: number;
+  takerFeePercent?: number;
   slippagePercent: number;
   stopLossPercent: number;
   takeProfitPercent: number;
@@ -17,6 +19,13 @@ export interface BacktestSettings {
   leverage: number;
   maintenanceMarginPercent: number;
   fundingPercentPerDay: number;
+  fundingIntervalHours?: number;
+  executionLatencyMs?: number;
+  tickSize?: number;
+  lotSize?: number;
+  minimumOrderSize?: number;
+  volumeParticipationPercent?: number;
+  liquidationFeePercent?: number;
   trailingStopPercent?: number;
   directionMode: DirectionMode;
   riskPerTradePercent: number;
