@@ -58,6 +58,42 @@ export interface PositionsResponse {
   positions?: Position[];
 }
 
+export interface OrderDraft {
+  symbol: string;
+  side: "BUY" | "SELL";
+  type: "MARKET" | "LIMIT" | "STOP";
+  price?: number;
+  quantity: number;
+  stop_loss_price?: number;
+  take_profit_prices: number[];
+}
+
+export interface ClosedTrade {
+  position_id: string;
+  symbol: string;
+  direction: string;
+  entry_price: number;
+  exit_price: number;
+  quantity: number;
+  pnl: number;
+  reason: string;
+  closed_at: number;
+}
+
+export interface TradesResponse {
+  trades: ClosedTrade[];
+  total: number;
+}
+
+export interface TradeStatistics {
+  total_trades: number;
+  win_rate: number;
+  profit_factor?: number;
+  avg_profit: number;
+  avg_loss: number;
+  max_drawdown: number;
+}
+
 export interface Scenario {
   id: string;
   symbol: string;

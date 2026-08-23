@@ -12,6 +12,7 @@ const navigation = [
   { label: "Сценарии", href: "/scenarios" },
   { label: "Сделки", href: "/trades" },
   { label: "Обучение", href: "/learning" },
+  { label: "Бэктест", href: "/backtest" },
 ];
 
 interface DashboardHeaderProps { isLive: boolean; username: string }
