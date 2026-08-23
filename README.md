@@ -14,3 +14,5 @@ docker compose up --build
 Probability Engine, Conflict Resolver и Risk Manager находятся в [`services/decision-service`](services/decision-service/README.md). API доступен на `http://localhost:8020`.
 
 Paper Order Service, Execution Engine и Position Manager находятся в [`services/execution-service`](services/execution-service/README.md). API доступен на `http://localhost:8030`.
+
+Portfolio Manager, Analytics и Monitoring находятся в [`services/analytics-service`](services/analytics-service/README.md). API доступен на `http://localhost:8040`.
