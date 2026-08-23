@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     execution_service_url: str = "http://execution-service:8030"
     analytics_service_url: str = "http://analytics-service:8040"
     learning_service_url: str = "http://learning-service:8060"
+    exchange_service_url: str = "http://exchange-gateway:8070"
     request_timeout: float = 30.0
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

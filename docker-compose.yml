@@ -237,6 +237,36 @@ services:
       timeout: 5s
       retries: 10
 
+  exchange-gateway:
+    build:
+      context: ./services/exchange-gateway
+      dockerfile: Dockerfile
+    container_name: smart-money-exchange-gateway
+    restart: unless-stopped
+    environment:
+      OKX_REST_URL: ${OKX_REST_URL:-https://www.okx.com}
+      OKX_PUBLIC_WS_URL: ${OKX_PUBLIC_WS_URL:-wss://ws.okx.com:8443/ws/v5/public}
+      OKX_BUSINESS_WS_URL: ${OKX_BUSINESS_WS_URL:-wss://ws.okx.com:8443/ws/v5/business}
+      OKX_API_KEY: ${OKX_API_KEY:-}
+      OKX_SECRET_KEY: ${OKX_SECRET_KEY:-}
+      OKX_PASSPHRASE: ${OKX_PASSPHRASE:-}
+      OKX_DEMO: ${OKX_DEMO:-true}
+      MARKET_DATA_ENABLED: ${MARKET_DATA_ENABLED:-false}
+      EXCHANGE_SYMBOLS: ${EXCHANGE_SYMBOLS:-BTC-USDT-SWAP}
+      SYMBOLS: ${EXCHANGE_SYMBOLS:-BTC-USDT-SWAP}
+      TIMEFRAMES: ${EXCHANGE_TIMEFRAMES:-M1,M5,M15,H1,H4,D1}
+      DATA_SERVICE_URL: http://data-service:8000
+    ports:
+      - "8070:8070"
+    depends_on:
+      data-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8070/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   api-gateway:
     build:
       context: ./services/api-gateway
@@ -253,6 +283,7 @@ services:
       EXECUTION_SERVICE_URL: http://execution-service:8030
       ANALYTICS_SERVICE_URL: http://analytics-service:8040
       LEARNING_SERVICE_URL: http://learning-service:8060
+      EXCHANGE_SERVICE_URL: http://exchange-gateway:8070
     ports:
       - "8050:8050"
     depends_on:
@@ -269,6 +300,8 @@ services:
       analytics-service:
         condition: service_healthy
       learning-service:
+        condition: service_healthy
+      exchange-gateway:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8050/health')\""]

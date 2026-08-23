@@ -20,3 +20,5 @@ Portfolio Manager, Analytics и Monitoring находятся в [`services/anal
 Защищённая внешняя точка входа находится в [`services/api-gateway`](services/api-gateway/README.md). Gateway доступен на `http://localhost:8050`, Keycloak — на `http://localhost:8080`. Внутренние порты сервисов опубликованы только для локальной разработки.
 
 Learning Platform находится в [`services/learning-service`](services/learning-service/README.md). API доступен на `http://localhost:8060`, артефакты моделей сохраняются в MinIO.
+
+Интеграция с OKX находится в [`services/exchange-gateway`](services/exchange-gateway/README.md). Сервис доступен на `http://localhost:8070`; автоматическое подключение к бирже по умолчанию выключено.
