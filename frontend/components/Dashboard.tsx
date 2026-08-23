@@ -1,6 +1,6 @@
 "use client";
 
-import { Box, Container, Grid, Stack, Typography } from "@mui/material";
+import { Alert, Box, Button, Container, Grid, Stack, Typography } from "@mui/material";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { keycloak } from "../lib/auth";
@@ -19,26 +19,36 @@ export default function Dashboard() {
   const [positions, setPositions] = useState<Position[]>([]);
   const [events, setEvents] = useState<PlatformEvent[]>([]);
   const [isLive, setIsLive] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState("");
   const username = String(keycloak().tokenParsed?.preferred_username ?? "пользователь");
 
   const loadDashboard = useCallback(async () => {
-    const [portfolioData, servicesData, positionsData] = await Promise.all([
-      api<Portfolio>("/api/v1/analytics/portfolio"),
-      api<ServicesResponse>("/api/v1/analytics/monitoring/services"),
-      api<PositionsResponse | Position[]>("/api/v1/execution/positions"),
-    ]);
-    setPortfolio(portfolioData);
-    setServices(servicesData.services ?? []);
-    setPositions(Array.isArray(positionsData) ? positionsData : (positionsData.positions ?? []));
+    setIsRefreshing(true);
+    setLoadError("");
+    try {
+      const [portfolioData, servicesData, positionsData] = await Promise.all([
+        api<Portfolio>("/api/v1/analytics/portfolio"),
+        api<ServicesResponse>("/api/v1/analytics/monitoring/services"),
+        api<PositionsResponse | Position[]>("/api/v1/execution/positions"),
+      ]);
+      setPortfolio(portfolioData);
+      setServices(servicesData.services ?? []);
+      setPositions(Array.isArray(positionsData) ? positionsData : (positionsData.positions ?? []));
+    } catch (reason) {
+      setLoadError(reason instanceof Error ? reason.message : "Не удалось загрузить данные");
+    } finally {
+      setIsRefreshing(false);
+    }
   }, []);
 
   useEffect(() => {
-    void loadDashboard().catch(console.error);
+    void loadDashboard();
     const socket = new EventSocket();
     socket.subscribe((event) => {
       setIsLive(true);
       setEvents((currentEvents) => [event, ...currentEvents].slice(0, 8));
-      if (event.event_type.startsWith("position.")) void loadDashboard().catch(console.error);
+      if (event.event_type.startsWith("position.")) void loadDashboard();
     });
     void socket.connect();
     return () => socket.close();
@@ -47,23 +57,29 @@ export default function Dashboard() {
   return (
     <Container component="main" maxWidth={false} sx={{ maxWidth: 1500, pb: 7.5, px: { xs: 2, md: 4.75 } }}>
       <DashboardHeader isLive={isLive} username={username} />
-      <Stack direction={{ xs: "column", md: "row" }} spacing={2.5} sx={{ py: 5, justifyContent: "space-between" }}>
+      <Stack id="overview" direction={{ xs: "column", md: "row" }} spacing={2.5} sx={{ py: { xs: 4, md: 6 }, justifyContent: "space-between" }}>
         <Box>
           <Typography className="eyebrow">COMMAND CENTER · {new Date().toLocaleDateString("ru-RU")}</Typography>
-          <Typography component="h1" variant="h4" sx={{ my: 1.25 }}>Добрый день, {username}.</Typography>
+          <Typography component="h1" variant="h3" sx={{ my: 1.25, fontSize: { xs: 32, md: 44 } }}>Добрый день, {username}.</Typography>
           <Typography color="text.secondary">Торговый контур работает в штатном режиме.</Typography>
         </Box>
-        <Box sx={{ borderLeft: 1, borderColor: "primary.main", pl: 2.25, alignSelf: { md: "flex-end" } }}>
-          <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>РЕЖИМ ИСПОЛНЕНИЯ</Typography>
-          <Typography variant="caption" color="primary.main" sx={{ fontWeight: 700 }}>PAPER</Typography>
-        </Box>
+        <Stack direction="row" spacing={1.5} sx={{ alignItems: "center", alignSelf: { md: "flex-end" } }}>
+          <Box sx={{ borderLeft: 2, borderColor: "primary.main", pl: 2.25 }}>
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>РЕЖИМ ИСПОЛНЕНИЯ</Typography>
+            <Typography variant="caption" color="primary.main" sx={{ fontWeight: 700 }}>PAPER</Typography>
+          </Box>
+          <Button variant="outlined" onClick={() => void loadDashboard()} disabled={isRefreshing}>
+            {isRefreshing ? "Обновляем…" : "↻ Обновить"}
+          </Button>
+        </Stack>
       </Stack>
+      {loadError && <Alert severity="error" sx={{ mb: 2 }}>{loadError}</Alert>}
       <MetricsGrid portfolio={portfolio} />
       <Grid container spacing={1.5} sx={{ mt: 0 }}>
-        <Grid size={{ xs: 12, lg: 8 }}><PositionsPanel positions={positions} /></Grid>
-        <Grid size={{ xs: 12, lg: 4 }}><ServicesPanel services={services} /></Grid>
-        <Grid size={{ xs: 12, lg: 8 }}><EventsPanel events={events} isLive={isLive} /></Grid>
-        <Grid size={{ xs: 12, lg: 4 }}><SignalPanel /></Grid>
+        <Grid id="positions" size={{ xs: 12, lg: 8 }} sx={{ scrollMarginTop: 92 }}><PositionsPanel positions={positions} /></Grid>
+        <Grid id="services" size={{ xs: 12, lg: 4 }} sx={{ scrollMarginTop: 92 }}><ServicesPanel services={services} /></Grid>
+        <Grid id="events" size={{ xs: 12, lg: 8 }} sx={{ scrollMarginTop: 92 }}><EventsPanel events={events} isLive={isLive} /></Grid>
+        <Grid id="insights" size={{ xs: 12, lg: 4 }} sx={{ scrollMarginTop: 92 }}><SignalPanel /></Grid>
       </Grid>
     </Container>
   );

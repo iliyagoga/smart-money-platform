@@ -6,7 +6,16 @@ interface MetricCardProps { label: string; value: string; accent?: boolean; posi
 
 function MetricCard({ label, value, accent = false, positive = false }: MetricCardProps) {
   return (
-    <Paper variant="outlined" sx={{ borderTop: accent ? 2 : 1, borderTopColor: accent ? "primary.main" : "divider", p: 2.75 }}>
+    <Paper
+      variant="outlined"
+      sx={{
+        borderTop: accent ? 3 : 1,
+        borderTopColor: accent ? "primary.main" : "divider",
+        p: 2.75,
+        boxShadow: (theme) => theme.palette.mode === "light" ? "0 10px 35px rgba(32, 54, 44, 0.05)" : "none",
+        "&:hover": { borderColor: "primary.main", transform: "translateY(-2px)" },
+      }}
+    >
       <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>{label}</Typography>
       <Typography component="strong" variant="h5" color={positive ? "success.main" : "text.primary"} sx={{ display: "inline-block", mt: 2 }}>
         {value}

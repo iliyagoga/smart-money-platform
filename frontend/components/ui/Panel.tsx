@@ -5,7 +5,15 @@ interface PanelProps { children: ReactNode; title: string; meta: string; minHeig
 
 export function Panel({ children, title, meta, minHeight = 300 }: PanelProps) {
   return (
-    <Paper variant="outlined" sx={{ minHeight, p: 2.75 }}>
+    <Paper
+      variant="outlined"
+      sx={{
+        minHeight,
+        p: { xs: 2, md: 2.75 },
+        boxShadow: (theme) => theme.palette.mode === "light" ? "0 10px 35px rgba(32, 54, 44, 0.05)" : "none",
+        "&:hover": { borderColor: "primary.main", transform: "translateY(-2px)" },
+      }}
+    >
       <Stack
         direction="row"
         sx={{ justifyContent: "space-between", alignItems: "center", borderBottom: 1, borderColor: "divider", pb: 2 }}
