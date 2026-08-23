@@ -1,0 +1,47 @@
+{
+  "realm": "smart-money",
+  "enabled": true,
+  "displayName": "Smart Money Platform",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "roles": {
+    "realm": [
+      {"name": "viewer", "description": "Read-only access"},
+      {"name": "trader", "description": "Trading access"},
+      {"name": "admin", "description": "Platform administration"}
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "smart-money-api",
+      "name": "Smart Money API",
+      "enabled": true,
+      "publicClient": true,
+      "directAccessGrantsEnabled": true,
+      "standardFlowEnabled": true,
+      "redirectUris": ["http://localhost:3000/*"],
+      "webOrigins": ["http://localhost:3000"],
+      "protocol": "openid-connect"
+    }
+  ],
+  "users": [
+    {
+      "username": "admin", "email": "admin@smart-money.local", "emailVerified": true,
+      "firstName": "Platform", "lastName": "Admin", "enabled": true,
+      "credentials": [{"type": "password", "value": "CHANGE_ME", "temporary": false}],
+      "realmRoles": ["admin"]
+    },
+    {
+      "username": "trader", "email": "trader@smart-money.local", "emailVerified": true,
+      "firstName": "Demo", "lastName": "Trader", "enabled": true,
+      "credentials": [{"type": "password", "value": "CHANGE_ME", "temporary": false}],
+      "realmRoles": ["trader"]
+    },
+    {
+      "username": "viewer", "email": "viewer@smart-money.local", "emailVerified": true,
+      "firstName": "Demo", "lastName": "Viewer", "enabled": true,
+      "credentials": [{"type": "password", "value": "CHANGE_ME", "temporary": false}],
+      "realmRoles": ["viewer"]
+    }
+  ]
+}

@@ -16,3 +16,5 @@ Probability Engine, Conflict Resolver и Risk Manager находятся в [`se
 Paper Order Service, Execution Engine и Position Manager находятся в [`services/execution-service`](services/execution-service/README.md). API доступен на `http://localhost:8030`.
 
 Portfolio Manager, Analytics и Monitoring находятся в [`services/analytics-service`](services/analytics-service/README.md). API доступен на `http://localhost:8040`.
+
+Защищённая внешняя точка входа находится в [`services/api-gateway`](services/api-gateway/README.md). Gateway доступен на `http://localhost:8050`, Keycloak — на `http://localhost:8080`. Внутренние порты сервисов опубликованы только для локальной разработки.

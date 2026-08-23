@@ -37,6 +37,23 @@ services:
     volumes:
       - redis_data:/data
 
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.3
+    container_name: smart-money-keycloak
+    restart: unless-stopped
+    command: start-dev --import-realm
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-CHANGE_ME}
+      KC_HOSTNAME: http://localhost:8080
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8080:8080"
+    volumes:
+      - keycloak_data:/opt/keycloak/data
+      - ./infrastructure/keycloak/realm-smart-money.json:/opt/keycloak/data/import/realm-smart-money.json:ro
+
   data-service:
     build:
       context: ./services/data-service
@@ -175,6 +192,43 @@ services:
       timeout: 5s
       retries: 10
 
+  api-gateway:
+    build:
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
+    container_name: smart-money-api-gateway
+    restart: unless-stopped
+    environment:
+      KEYCLOAK_ISSUER: http://localhost:8080/realms/smart-money
+      KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/smart-money/protocol/openid-connect/certs
+      KEYCLOAK_CLIENT_ID: smart-money-api
+      DATA_SERVICE_URL: http://data-service:8000
+      SMC_SERVICE_URL: http://smc-service:8010
+      DECISION_SERVICE_URL: http://decision-service:8020
+      EXECUTION_SERVICE_URL: http://execution-service:8030
+      ANALYTICS_SERVICE_URL: http://analytics-service:8040
+    ports:
+      - "8050:8050"
+    depends_on:
+      keycloak:
+        condition: service_started
+      data-service:
+        condition: service_healthy
+      smc-service:
+        condition: service_healthy
+      decision-service:
+        condition: service_healthy
+      execution-service:
+        condition: service_healthy
+      analytics-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8050/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
 volumes:
   postgres_data:
   redis_data:
+  keycloak_data:
