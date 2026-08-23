@@ -256,7 +256,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       DATA_SERVICE_URL: http://data-service:8000
-      MAX_CANDLES: ${BACKTEST_MAX_CANDLES:-10000}
+      MAX_CANDLES: ${BACKTEST_MAX_CANDLES:-1000000}
       SCENARIO_TEMPLATE_DIR: /app/scenario-templates
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}

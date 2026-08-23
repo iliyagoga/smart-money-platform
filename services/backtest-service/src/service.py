@@ -217,6 +217,19 @@ class BacktestService:
             rows = await connection.fetch(query)
         return [{**dict(row), "created_at": row["created_at"].isoformat(), "updated_at": row["updated_at"].isoformat()} for row in rows]
 
+    async def dataset(self, symbol: str):
+        async with self.db.acquire() as connection:
+            rows = await connection.fetch(
+                """
+                SELECT timeframe,count(*) AS candles,
+                       (extract(epoch FROM min(ts))*1000)::bigint AS from_timestamp,
+                       (extract(epoch FROM max(ts))*1000)::bigint AS to_timestamp
+                FROM candles WHERE symbol=$1 AND is_closed GROUP BY timeframe ORDER BY timeframe
+                """,
+                symbol.strip().upper(),
+            )
+        return [dict(row) for row in rows]
+
     async def add_asset(self, asset: AssetCreate):
         async with self.db.acquire() as connection:
             row = await connection.fetchrow("""

@@ -32,6 +32,11 @@ async def assets(enabled_only: bool = True):
     return {"assets": await service.assets(enabled_only)}
 
 
+@app.get("/datasets/{symbol}")
+async def dataset(symbol: str):
+    return {"symbol": symbol.strip().upper(), "timeframes": await service.dataset(symbol)}
+
+
 @app.post("/assets", status_code=201)
 async def add_asset(asset: AssetCreate):
     return await service.add_asset(asset)

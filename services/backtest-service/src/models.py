@@ -53,7 +53,7 @@ class BacktestCreate(BaseModel):
     symbol: str
     timeframe: str = "M15"
     timeframes: list[str] = Field(default_factory=lambda: ["M5", "M15", "H1", "H4"])
-    candle_limit: int = Field(default=1000, ge=100, le=10000)
+    candle_limit: int = Field(default=10000, ge=100, le=1000000)
     train_from: int | None = Field(default=None, ge=0)
     train_to: int | None = Field(default=None, ge=0)
     test_from: int | None = Field(default=None, ge=0)

@@ -91,6 +91,7 @@ def authorize(principal: Principal, method: str, service: str, path: str) -> Non
         or service == "backtest" and normalized.startswith("/assets") and method != "GET"
         or service == "smc" and normalized.startswith("/scenario-templates") and method != "GET"
         or service == "exchange" and normalized.startswith("/exchange/account")
+        or service == "exchange" and normalized.startswith("/exchange/history") and method != "GET"
     )
     if admin_only:
         raise HTTPException(status_code=403, detail="Admin role is required")

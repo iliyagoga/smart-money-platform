@@ -6,6 +6,7 @@ import { AssetManager } from "../../components/backtest/AssetManager";
 import { BacktestReport } from "../../components/backtest/BacktestReport";
 import { BacktestHistory } from "../../components/backtest/BacktestHistory";
 import { BacktestSettingsForm } from "../../components/backtest/BacktestSettingsForm";
+import { HistoryLoader } from "../../components/backtest/HistoryLoader";
 import { SectionPage } from "../../components/layout/SectionPage";
 import { api, downloadApi } from "../../lib/api";
 import { useApiResource } from "../../hooks/useApiResource";
@@ -13,6 +14,7 @@ import { useTradingAssets } from "../../hooks/useTradingAssets";
 import { mapBacktestResult } from "../../lib/backtest/apiTypes";
 import type { BacktestCreateResponse, BacktestRun, BacktestRunsResponse } from "../../lib/backtest/apiTypes";
 import type { BacktestResult, BacktestSettings } from "../../lib/backtest/types";
+import { useAuth } from "../../components/auth/AuthProvider";
 
 const defaultSettings: BacktestSettings = {
   initialCapital: 10_000,
@@ -39,10 +41,11 @@ const defaultSettings: BacktestSettings = {
 const timeframes = ["M1", "M5", "M15", "H1", "H4", "D1"];
 
 export default function BacktestPage() {
+  const { roles } = useAuth();
   const [asset, setAsset] = useState("BTC-USDT-SWAP");
   const { assets } = useTradingAssets();
   const [timeframe, setTimeframe] = useState("M15");
-  const [candleLimit, setCandleLimit] = useState(1000);
+  const [candleLimit, setCandleLimit] = useState(10_000);
   const today = new Date().toISOString().slice(0, 10);
   const [trainFrom, setTrainFrom] = useState("2025-01-01");
   const [trainTo, setTrainTo] = useState("2025-06-30");
@@ -153,7 +156,7 @@ export default function BacktestPage() {
           value={candleLimit}
           type="number"
           onChange={(event) => setCandleLimit(Number(event.target.value))}
-          slotProps={{ htmlInput: { min: 100, max: 1000 } }}
+          slotProps={{ htmlInput: { min: 100, max: 1_000_000 } }}
         />
       </Stack>
       <Typography variant="subtitle2" sx={{ mt: 2.5, mb: 1 }}>Периоды без пересечения</Typography>
@@ -182,6 +185,13 @@ export default function BacktestPage() {
           localRetraining: event.target.checked,
         })} />}
         label="Локально переобучить модель только на обучающем периоде"
+      />
+      <HistoryLoader
+        canManage={roles.includes("admin")}
+        symbol={selectedAsset}
+        timeframes={timeframes}
+        from={trainFrom}
+        to={testTo}
       />
     </Paper>
     {error && <Alert severity="error" sx={{ mb: 1.5 }}>{error}</Alert>}
