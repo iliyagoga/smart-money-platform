@@ -3,6 +3,7 @@
 import { Alert, Button, MenuItem, Paper, Stack, TextField, Typography } from "@mui/material";
 import { useState } from "react";
 import type { FormEvent } from "react";
+import { useTradingAssets } from "../../hooks/useTradingAssets";
 import type { OrderDraft } from "../../lib/types";
 
 interface OrderTicketProps {
@@ -11,10 +12,9 @@ interface OrderTicketProps {
   onSubmit: (order: OrderDraft) => void;
 }
 
-const symbols = ["BTC-USDT-SWAP", "ETH-USDT-SWAP"];
-
 export function OrderTicket({ canTrade, isSubmitting, onSubmit }: OrderTicketProps) {
-  const [symbol, setSymbol] = useState(symbols[0]);
+  const { assets } = useTradingAssets();
+  const [symbol, setSymbol] = useState(assets[0]);
   const [side, setSide] = useState<"BUY" | "SELL">("BUY");
   const [type, setType] = useState<"MARKET" | "LIMIT" | "STOP">("MARKET");
   const [price, setPrice] = useState("");

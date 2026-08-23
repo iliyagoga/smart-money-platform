@@ -2,6 +2,7 @@
 
 import { Chip, MenuItem, Paper, Stack, TextField, Typography } from "@mui/material";
 import { useEffect, useState } from "react";
+import { AssetManager } from "../../components/backtest/AssetManager";
 import { CandlestickChart } from "../../components/market/CandlestickChart";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { SectionPage } from "../../components/layout/SectionPage";
@@ -9,13 +10,12 @@ import { useApiResource } from "../../hooks/useApiResource";
 import { EventSocket } from "../../lib/socket";
 import type { CandlesResponse, MarketStructure, PlatformEvent } from "../../lib/types";
 
-const symbols = ["BTC-USDT-SWAP", "ETH-USDT-SWAP"];
 const timeframes = ["M1", "M5", "M15", "H1", "H4"];
 
 export default function MarketPage() {
   const [events, setEvents] = useState<PlatformEvent[]>([]);
   const [isLive, setIsLive] = useState(false);
-  const [symbol, setSymbol] = useState(symbols[0]);
+  const [symbol, setSymbol] = useState("BTC-USDT-SWAP");
   const [timeframe, setTimeframe] = useState("M15");
   const query = `symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}`;
   const candles = useApiResource<CandlesResponse>(`/api/v1/data/market/candles?${query}&limit=200`);
@@ -39,10 +39,8 @@ export default function MarketPage() {
       isLoading={candles.isLoading || structure.isLoading}
       onReload={() => { candles.reload(); structure.reload(); }}
     >
+      <AssetManager selectedAsset={symbol} onSelect={setSymbol} />
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mb: 2 }}>
-        <TextField select label="Инструмент" value={symbol} onChange={(event) => setSymbol(event.target.value)} size="small" sx={{ minWidth: 190 }}>
-          {symbols.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}
-        </TextField>
         <TextField
           select
           label="Таймфрейм"

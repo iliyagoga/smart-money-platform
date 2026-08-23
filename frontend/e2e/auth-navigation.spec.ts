@@ -41,7 +41,7 @@ test("user can add an asset and run an isolated backtest", async ({ page }) => {
   await page.getByRole("button", { name: "Добавить актив" }).click();
   await page.getByLabel("Символ актива").fill("SOL/USDT_SWAP");
   await page.getByRole("button", { name: "Добавить", exact: true }).click();
-  await expect(page.getByText("SOL-USDT-SWAP")).toBeVisible();
+  await expect(page.getByText("SOL-USDT-SWAP", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Запустить бэктест" }).click();
   await expect(page.getByText("Кривая капитала")).toBeVisible();
   await expect(page.getByText("Журнал сделок")).toBeVisible();
