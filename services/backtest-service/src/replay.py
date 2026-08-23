@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bisect import bisect_right
 from dataclasses import dataclass, field
 from math import floor, sqrt
 from statistics import mean, pstdev
@@ -68,9 +69,10 @@ def _candle(item: dict) -> Candle:
     return Candle.model_validate({**item, "timeframe": item["timeframe"]})
 
 
-def _scenario_outcome(scenario, future: list[Candle]) -> int:
+def _scenario_outcome(scenario, future: list[Candle], start: int = 0) -> int:
     entered = False
-    for candle in future:
+    for index in range(start, len(future)):
+        candle = future[index]
         if candle.timestamp <= scenario.created_at:
             continue
         if not entered:
@@ -94,6 +96,7 @@ def train_local_model(
     manager = ScenarioManager(TemplateStore(template_dir))
     model = TemplateModel()
     primary = [_candle(item) for item in candles_by_tf[primary_timeframe]]
+    primary_timestamps = [item.timestamp for item in primary]
     events = sorted((_candle(item) for values in candles_by_tf.values() for item in values), key=lambda item: item.timestamp)
     for candle in events:
         pipeline.process(candle)
@@ -104,8 +107,8 @@ def train_local_model(
             [value for (symbol, _), value in pipeline.trends.items() if symbol == candle.symbol and value],
         )
         for scenario in generated:
-            future = [item for item in primary if item.timestamp > scenario.created_at]
-            model.learn(scenario.setup_type, _scenario_outcome(scenario, future))
+            start = bisect_right(primary_timestamps, scenario.created_at)
+            model.learn(scenario.setup_type, _scenario_outcome(scenario, primary, start))
     all_outcomes=[(template,value) for template,values in model.outcomes.items() for value in values]
     folds=[]
     for fold in range(3):

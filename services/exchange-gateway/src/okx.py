@@ -18,4 +18,4 @@ def candle(item,symbol,timeframe):
 def trade(item):
     return {"symbol":item["instId"],"trade_id":item["tradeId"],"timestamp":int(item["ts"]),"price":float(item["px"]),"volume":float(item["sz"]),"side":item["side"].lower()}
 def book(item,symbol):
-    return {"symbol":symbol,"timestamp":int(item["ts"]),"sequence_id":int(item.get("seqId",0)),"bids":[[float(x[0]),float(x[1])] for x in item["bids"]],"asks":[[float(x[0]),float(x[1])] for x in item["asks"]]}
+    return {"symbol":symbol,"timestamp":int(item["ts"]),"sequenceId":int(item.get("seqId",0)),"bids":[[float(x[0]),float(x[1])] for x in item["bids"]],"asks":[[float(x[0]),float(x[1])] for x in item["asks"]]}

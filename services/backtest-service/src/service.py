@@ -2,6 +2,7 @@ import asyncio
 import csv
 import io
 import json
+import time
 from uuid import UUID, uuid4
 
 import asyncpg
@@ -102,7 +103,7 @@ class BacktestService:
                 request.symbol, request.timeframes, request.test_from, request.test_to, request.candle_limit,
             )
             async with self.db.acquire() as connection:
-                await connection.execute("UPDATE backtest_runs SET progress=55 WHERE id=$1", run_id)
+                await connection.execute("UPDATE backtest_runs SET progress=35 WHERE id=$1", run_id)
             if request.config.strategy == StrategyType.SMC:
                 model = None
                 if request.config.local_retraining:
@@ -112,13 +113,19 @@ class BacktestService:
                         request.symbol, request.timeframes, request.train_from, request.train_to,
                         self.settings.max_candles,
                     )
+                    async with self.db.acquire() as connection:
+                        await connection.execute("UPDATE backtest_runs SET progress=50 WHERE id=$1", run_id)
                     model = await asyncio.to_thread(
                         train_local_model, training_candles, request.timeframe, request.config,
                         self.settings.scenario_template_dir,
                     )
+                    async with self.db.acquire() as connection:
+                        await connection.execute("UPDATE backtest_runs SET progress=70 WHERE id=$1", run_id)
                     artifact_path = await self.save_local_model(run_id, model, request)
                 else:
                     model = await self.load_frozen_model(request.model_version, request.test_from)
+                async with self.db.acquire() as connection:
+                    await connection.execute("UPDATE backtest_runs SET progress=80 WHERE id=$1", run_id)
                 result = await asyncio.to_thread(
                     run_smc_replay, test_candles, request.timeframe, request.config,
                     self.settings.scenario_template_dir, model,
@@ -145,6 +152,7 @@ class BacktestService:
                 )
 
     async def load_candles(self, symbol, timeframes, start, end, limit):
+        intervals = {"M1":60_000,"M5":300_000,"M15":900_000,"H1":3_600_000,"H4":14_400_000,"D1":86_400_000}
         bounded_limit = min(limit, self.settings.max_candles)
         result = {}
         async with self.db.acquire() as connection:
@@ -165,6 +173,24 @@ class BacktestService:
         missing = [timeframe for timeframe, candles in result.items() if not candles]
         if missing:
             raise ValueError(f"no stored closed candles for: {', '.join(missing)}")
+        if start is not None and end is not None:
+            incomplete = []
+            truncated = []
+            for timeframe, candles in result.items():
+                step = intervals[timeframe]
+                latest_closed = (int(time.time() * 1000) // step - 1) * step
+                required_end = min(end, latest_closed)
+                if candles[0]["timestamp"] > start + step or candles[-1]["timestamp"] < required_end - step:
+                    incomplete.append(timeframe)
+                if len(candles) == bounded_limit and candles[0]["timestamp"] > start + step:
+                    truncated.append(timeframe)
+            if truncated:
+                raise ValueError(
+                    f"candle_limit={bounded_limit} truncates requested period for: {', '.join(truncated)}; "
+                    "increase the candle limit"
+                )
+            if incomplete:
+                raise ValueError(f"stored candles do not cover the requested period for: {', '.join(incomplete)}")
         return result
 
     async def save_local_model(self, run_id, model, request):

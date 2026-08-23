@@ -1,6 +1,6 @@
 "use client";
 
-import { Alert, Checkbox, FormControlLabel, FormGroup, Grid, MenuItem, Paper, Stack, TextField, Typography } from "@mui/material";
+import { Alert, Button, Checkbox, FormControlLabel, FormGroup, Grid, MenuItem, Paper, Stack, TextField, Typography } from "@mui/material";
 import { useState } from "react";
 import { AssetManager } from "../../components/backtest/AssetManager";
 import { BacktestReport } from "../../components/backtest/BacktestReport";
@@ -49,6 +49,9 @@ const defaultSettings: BacktestSettings = {
 };
 
 const timeframes = ["M1", "M5", "M15", "H1", "H4", "D1"];
+const timeframeMilliseconds: Record<string, number> = {
+  M1: 60_000, M5: 300_000, M15: 900_000, H1: 3_600_000, H4: 14_400_000, D1: 86_400_000,
+};
 
 export default function BacktestPage() {
   const { roles } = useAuth();
@@ -70,6 +73,13 @@ export default function BacktestPage() {
   const [progress, setProgress] = useState(0);
   const runsResource = useApiResource<BacktestRunsResponse>("/api/v1/backtest/backtests");
   const selectedAsset = asset || assets[0];
+  const testRangeMilliseconds = Math.max(
+    0,
+    Date.parse(`${testTo}T23:59:59Z`) - Date.parse(`${testFrom}T00:00:00Z`),
+  );
+  const requiredTestCandleLimit = Math.min(1_000_000, Math.max(
+    ...selectedTimeframes.map((item) => Math.ceil(testRangeMilliseconds / timeframeMilliseconds[item]) + 2),
+  ));
 
   const run = async () => {
     setIsRunning(true);
@@ -120,7 +130,7 @@ export default function BacktestPage() {
         }),
       });
       let completed: BacktestRun | undefined;
-      for (let attempt = 0; attempt < 120; attempt += 1) {
+      for (let attempt = 0; attempt < 3_600; attempt += 1) {
         const current = await api<BacktestRun>(`/api/v1/backtest/backtests/${created.id}`);
         setProgress(current.progress);
         if (current.status === "FAILED") throw new Error(current.error ?? "Бэктест завершился с ошибкой");
@@ -128,9 +138,9 @@ export default function BacktestPage() {
           completed = current;
           break;
         }
-        await new Promise((resolve) => window.setTimeout(resolve, 500));
+        await new Promise((resolve) => window.setTimeout(resolve, 1_000));
       }
-      if (!completed?.result) throw new Error("Превышено время ожидания результата");
+      if (!completed?.result) throw new Error("Расчёт выполняется дольше часа. Его результат останется в истории запусков.");
       setResult(mapBacktestResult(completed.result));
       runsResource.reload();
     } catch (reason) {
@@ -199,8 +209,12 @@ export default function BacktestPage() {
           value={candleLimit}
           type="number"
           onChange={(event) => setCandleLimit(Number(event.target.value))}
+          helperText={`Для полного тестового периода нужно до ${requiredTestCandleLimit.toLocaleString("ru-RU")}`}
           slotProps={{ htmlInput: { min: 100, max: 1_000_000 } }}
         />
+        <Button variant="outlined" onClick={() => setCandleLimit(requiredTestCandleLimit)}>
+          Рассчитать лимит бэктеста
+        </Button>
       </Stack>
       <FormGroup row sx={{ mt: 1 }}>
         {timeframes.map((item) => <FormControlLabel key={item} label={item} control={<Checkbox

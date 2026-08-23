@@ -123,16 +123,24 @@ class ExchangeGateway:
         async with self.history_semaphore:
             await self.db.execute("UPDATE exchange_history_jobs SET status='RUNNING',updated_at=now() WHERE id=$1::uuid AND status='QUEUED'",job_id)
             try:
-                job=await self.history_job(job_id);total_target=job["max_candles"]*len(job["timeframes"])
+                job=await self.history_job(job_id)
+                intervals={"M1":60_000,"M5":300_000,"M15":900_000,"H1":3_600_000,"H4":14_400_000,"D1":86_400_000}
+                targets={timeframe:job["max_candles"] for timeframe in job["timeframes"]}
+                if job["from"] is not None and job["to"] is not None:
+                    targets={
+                        timeframe:min(job["max_candles"],max(0,(job["to"]-job["from"])//intervals[timeframe]+1))
+                        for timeframe in job["timeframes"]
+                    }
+                total_target=sum(targets.values())
                 for timeframe in job["timeframes"]:
                     count=int(job["timeframe_counts"].get(timeframe,0));cursor=job["cursors"].get(timeframe,job["to"])
-                    while count<job["max_candles"]:
+                    while count<targets[timeframe]:
                         status=await self.db.fetchval("SELECT status FROM exchange_history_jobs WHERE id=$1::uuid",job_id)
                         if status in {"PAUSED","CANCELLED"}:return
                         page=await self.history_page(job["symbol"],timeframe,cursor)
                         if not page:break
                         eligible=[item for item in page if item["is_closed"] and (job["from"] is None or item["timestamp"]>=job["from"])]
-                        eligible=eligible[:job["max_candles"]-count];await self.ingest_batch(list(reversed(eligible)))
+                        eligible=eligible[:targets[timeframe]-count];await self.ingest_batch(list(reversed(eligible)))
                         count+=len(eligible);oldest=min(item["timestamp"] for item in page);job["cursors"][timeframe]=oldest
                         job["timeframe_counts"][timeframe]=count;job["ingested"]+=len(eligible);job["requests"]+=1
                         progress=min(99,int(job["ingested"]/max(1,total_target)*100))

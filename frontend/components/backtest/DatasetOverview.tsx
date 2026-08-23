@@ -52,8 +52,6 @@ export function DatasetOverview({ assets, selectedAsset }: DatasetOverviewProps)
     <Stack spacing={1.5}>
       {datasets.map((dataset) => {
         const total = dataset.timeframes.reduce((sum, item) => sum + item.candles, 0);
-        const first = Math.min(...dataset.timeframes.map((item) => item.from_timestamp));
-        const last = Math.max(...dataset.timeframes.map((item) => item.to_timestamp));
         return <Paper key={dataset.symbol} variant="outlined" sx={{
           p: 2,
           borderColor: dataset.symbol === selectedAsset ? "primary.main" : "divider",
@@ -62,15 +60,14 @@ export function DatasetOverview({ assets, selectedAsset }: DatasetOverviewProps)
             <Stack>
               <Typography sx={{ fontWeight: 700 }}>{dataset.symbol}</Typography>
               <Typography variant="caption" color="text.secondary">
-                Всего {total.toLocaleString("ru-RU")} · {total ? `${date(first)} — ${date(last)}` : "данных пока нет"}
+                Сумма по всем ТФ: {total.toLocaleString("ru-RU")} свечей
               </Typography>
             </Stack>
             <Stack direction="row" useFlexGap sx={{ flexWrap: "wrap", gap: 0.75 }}>
               {dataset.timeframes.length ? dataset.timeframes.map((item) => <Chip
                 key={item.timeframe}
                 size="small"
-                label={`${item.timeframe}: ${item.candles.toLocaleString("ru-RU")}`}
-                title={`${date(item.from_timestamp)} — ${date(item.to_timestamp)}`}
+                label={`${item.timeframe}: ${item.candles.toLocaleString("ru-RU")} · ${date(item.from_timestamp)} — ${date(item.to_timestamp)}`}
               />) : <Chip size="small" label="Нет свечей" color="warning" />}
             </Stack>
           </Stack>
