@@ -7,6 +7,7 @@ import { BacktestReport } from "../../components/backtest/BacktestReport";
 import { BacktestSettingsForm } from "../../components/backtest/BacktestSettingsForm";
 import { SectionPage } from "../../components/layout/SectionPage";
 import { api } from "../../lib/api";
+import { useTradingAssets } from "../../hooks/useTradingAssets";
 import { runBacktest } from "../../lib/backtest/engine";
 import type { BacktestResult, BacktestSettings } from "../../lib/backtest/types";
 import type { CandlesResponse } from "../../lib/types";
@@ -27,18 +28,20 @@ const timeframes = ["M1", "M5", "M15", "H1", "H4", "D1"];
 
 export default function BacktestPage() {
   const [asset, setAsset] = useState("BTC-USDT-SWAP");
+  const { assets } = useTradingAssets();
   const [timeframe, setTimeframe] = useState("M15");
   const [candleLimit, setCandleLimit] = useState(1000);
   const [settings, setSettings] = useState(defaultSettings);
   const [result, setResult] = useState<BacktestResult>();
   const [error, setError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
+  const selectedAsset = assets.includes(asset) ? asset : assets[0];
 
   const run = async () => {
     setIsRunning(true);
     setError("");
     try {
-      const query = `symbol=${encodeURIComponent(asset)}&timeframe=${timeframe}&limit=${candleLimit}`;
+      const query = `symbol=${encodeURIComponent(selectedAsset)}&timeframe=${timeframe}&limit=${candleLimit}`;
       const response = await api<CandlesResponse>(`/api/v1/data/market/candles?${query}`);
       if (response.candles.length <= settings.slowPeriod + 1) {
         throw new Error(`Недостаточно свечей: получено ${response.candles.length}, требуется больше ${settings.slowPeriod + 1}`);
@@ -54,7 +57,7 @@ export default function BacktestPage() {
   return <SectionPage title="Бэктест" description="Проверка торговых стратегий на исторических данных без отправки ордеров.">
     <Paper variant="outlined" sx={{ p: 3, mb: 1.5 }}>
       <Typography variant="h6" sx={{ mb: 2 }}>Активы и исторические данные</Typography>
-      <AssetManager selectedAsset={asset} onSelect={setAsset} />
+      <AssetManager selectedAsset={selectedAsset} onSelect={setAsset} />
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mt: 2.5 }}>
         <TextField select label="Таймфрейм" value={timeframe} onChange={(event) => setTimeframe(event.target.value)} sx={{ minWidth: 150 }}>
           {timeframes.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}

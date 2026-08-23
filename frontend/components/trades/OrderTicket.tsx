@@ -21,6 +21,7 @@ export function OrderTicket({ canTrade, isSubmitting, onSubmit }: OrderTicketPro
   const [quantity, setQuantity] = useState("");
   const [stopLoss, setStopLoss] = useState("");
   const [takeProfit, setTakeProfit] = useState("");
+  const selectedSymbol = assets.includes(symbol) ? symbol : assets[0];
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -28,7 +29,7 @@ export function OrderTicket({ canTrade, isSubmitting, onSubmit }: OrderTicketPro
     const parsedPrice = Number(price);
     if (!parsedQuantity || (type !== "MARKET" && !parsedPrice)) return;
     onSubmit({
-      symbol,
+      symbol: selectedSymbol,
       side,
       type,
       quantity: parsedQuantity,
@@ -47,11 +48,11 @@ export function OrderTicket({ canTrade, isSubmitting, onSubmit }: OrderTicketPro
         <TextField
           select
           label="Инструмент"
-          value={symbol}
+          value={selectedSymbol}
           onChange={(event) => setSymbol(event.target.value)}
           disabled={!canTrade}
         >
-          {symbols.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}
+          {assets.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}
         </TextField>
         <Stack direction="row" spacing={1.5}>
           <TextField
@@ -87,7 +88,7 @@ export function OrderTicket({ canTrade, isSubmitting, onSubmit }: OrderTicketPro
             type="number" disabled={!canTrade} />
         </Stack>
         <Button type="submit" variant="contained" color={side === "BUY" ? "success" : "error"} disabled={!canTrade || isSubmitting || !quantity}>
-          {isSubmitting ? "Отправляем…" : `${side} ${symbol}`}
+          {isSubmitting ? "Отправляем…" : `${side} ${selectedSymbol}`}
         </Button>
       </Stack>
     </Paper>
