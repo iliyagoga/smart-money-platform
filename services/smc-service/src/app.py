@@ -3,6 +3,7 @@ from fastapi import FastAPI,HTTPException,Query
 from .infrastructure import Infrastructure
 from .models import *
 from .service import SMCService
+from .scenarios import ScenarioTemplate
 from .settings import settings
 
 infra=Infrastructure(settings.database_url,settings.redis_url)
@@ -67,6 +68,26 @@ async def context(symbol:str):
 @app.get("/scenarios")
 async def scenarios(symbol:str|None=None,status:str|None=None,limit:int=Query(100,ge=1,le=1000)):
     items=service.scenarios.list(symbol,status);return {"scenarios":items[-limit:],"total":len(items)}
+
+@app.get("/scenario-templates")
+async def scenario_templates(enabled_only:bool=False):
+    items=service.scenarios.store.list(enabled_only);return {"templates":items,"total":len(items)}
+
+@app.get("/scenario-templates/{template_id}")
+async def scenario_template(template_id:str):
+    item=service.scenarios.store.get(template_id)
+    if not item:raise HTTPException(404,"Scenario template not found")
+    return item
+
+@app.put("/scenario-templates/{template_id}")
+async def save_scenario_template(template_id:str,template:ScenarioTemplate):
+    if template.id!=template_id.upper():raise HTTPException(422,"Template id does not match path")
+    return service.scenarios.store.save(template)
+
+@app.delete("/scenario-templates/{template_id}")
+async def delete_scenario_template(template_id:str):
+    if not service.scenarios.store.delete(template_id):raise HTTPException(404,"Scenario template not found")
+    return {"success":True,"id":template_id.upper()}
 
 @app.get("/scenarios/{scenario_id}")
 async def scenario(scenario_id:str):

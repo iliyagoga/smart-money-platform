@@ -1,4 +1,4 @@
-import { Chip, Grid, Paper, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography } from "@mui/material";
+import { Alert, Chip, Grid, Paper, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography } from "@mui/material";
 import type { BacktestResult } from "../../lib/backtest/types";
 import { EquityChart } from "./EquityChart";
 
@@ -28,7 +28,21 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
         <Metric label="Buy & hold" value={`${(result.benchmarkReturnPercent ?? 0).toFixed(2)}%`} />
       </Grid>
     </Grid>
+    <Alert severity="info" sx={{ mt: 1.5 }}>
+      Только закрытые свечи · ТФ: {result.dataset?.timeframes.join(", ") ?? "—"} · свечей теста: {result.dataset?.testCandles ?? 0}
+      {" · "}модель: {result.modelTraining?.mode ?? "BASELINE"}
+      {result.modelTraining?.version ? ` (${result.modelTraining.version})` : ""}
+    </Alert>
     <EquityChart points={result.equity} />
+    <Paper variant="outlined" sx={{ mt: 1.5, p: 2.5 }}>
+      <Typography variant="h6" sx={{ mb: 1.5 }}>Распределение по шаблонам</Typography>
+      <Stack spacing={1}>{Object.entries(result.templateDistribution ?? {}).map(([templateId, item]) => (
+        <Typography key={templateId} variant="body2">
+          {templateId}: {item.trades} сделок · {item.wins} прибыльных · PnL {item.pnl.toFixed(2)}
+        </Typography>
+      ))}</Stack>
+      {!Object.keys(result.templateDistribution ?? {}).length && <Typography color="text.secondary">Сделок по шаблонам нет.</Typography>}
+    </Paper>
     <Paper variant="outlined" sx={{ mt: 1.5, p: { xs: 1, md: 2.5 } }}>
       <Typography variant="h6" sx={{ px: 1, pb: 2 }}>Журнал сделок</Typography>
       <TableContainer><Table size="small">

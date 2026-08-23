@@ -1,7 +1,7 @@
 "use client";
 
 import { Button, MenuItem, Paper, Stack, TextField, Typography } from "@mui/material";
-import type { BacktestSettings, DirectionMode, StrategyType } from "../../lib/backtest/types";
+import type { BacktestSettings, DirectionMode } from "../../lib/backtest/types";
 
 interface BacktestSettingsFormProps {
   isRunning: boolean;
@@ -14,26 +14,18 @@ interface BacktestSettingsFormProps {
 export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, settings }: BacktestSettingsFormProps) {
   const updateNumber = (key: keyof BacktestSettings, value: string) => onChange({ ...settings, [key]: Number(value) });
   const isValid = settings.initialCapital > 0
-    && settings.fastPeriod >= 2
-    && settings.slowPeriod > settings.fastPeriod
     && settings.positionSizePercent > 0
-    && settings.positionSizePercent <= 100;
+    && settings.positionSizePercent <= 100
+    && settings.riskPerTradePercent > 0
+    && settings.templateIds.length > 0;
 
   return <Paper variant="outlined" sx={{ p: 3 }}>
     <Typography variant="h6">Параметры стратегии</Typography>
-    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 2.5 }}>Пересечение двух скользящих средних.</Typography>
+    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 2.5 }}>
+      Полный SMC-конвейер на сохранённых закрытых свечах.
+    </Typography>
     <Stack spacing={2}>
-      <TextField
-        select
-        label="Стратегия"
-        value={settings.strategy}
-        onChange={(event) => onChange({ ...settings, strategy: event.target.value as StrategyType })}
-      >
-        <MenuItem value="SMA_CROSS">Пересечение MA</MenuItem>
-        <MenuItem value="RSI">RSI reversal</MenuItem>
-        <MenuItem value="MACD">MACD crossover</MenuItem>
-        <MenuItem value="BOLLINGER">Bollinger reversal</MenuItem>
-      </TextField>
+      <TextField label="Стратегия" value="Smart Money Concept" disabled />
       <TextField
         select
         label="Направление"
@@ -42,24 +34,27 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
       >
         <MenuItem value="BOTH">Long и Short</MenuItem><MenuItem value="LONG">Только Long</MenuItem><MenuItem value="SHORT">Только Short</MenuItem>
       </TextField>
-      <Stack direction="row" spacing={1.5}>
-        <TextField fullWidth label="Быстрая MA" value={settings.fastPeriod} type="number"
-          onChange={(event) => updateNumber("fastPeriod", event.target.value)} />
-        <TextField fullWidth label="Медленная MA" value={settings.slowPeriod} type="number"
-          onChange={(event) => updateNumber("slowPeriod", event.target.value)} />
-      </Stack>
+      <TextField label="Шаблоны" value={settings.templateIds.join(", ")} helperText="ID JSON-шаблонов через запятую"
+        onChange={(event) => onChange({ ...settings, templateIds: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })} />
       <TextField label="Начальный капитал" value={settings.initialCapital} type="number"
         onChange={(event) => updateNumber("initialCapital", event.target.value)} />
       <TextField label="Размер позиции, %" value={settings.positionSizePercent} type="number"
         onChange={(event) => updateNumber("positionSizePercent", event.target.value)} />
       <TextField label="Плечо" value={settings.leverage} type="number"
         onChange={(event) => updateNumber("leverage", event.target.value)} />
+      <TextField label="Поддерживающая маржа, %" value={settings.maintenanceMarginPercent} type="number"
+        onChange={(event) => updateNumber("maintenanceMarginPercent", event.target.value)} />
       <Stack direction="row" spacing={1.5}>
-        <TextField fullWidth label="Stop Loss, %" value={settings.stopLossPercent} type="number"
-          onChange={(event) => updateNumber("stopLossPercent", event.target.value)} />
-        <TextField fullWidth label="Take Profit, %" value={settings.takeProfitPercent} type="number"
-          onChange={(event) => updateNumber("takeProfitPercent", event.target.value)} />
+        <TextField fullWidth label="Риск на сделку, %" value={settings.riskPerTradePercent} type="number"
+          onChange={(event) => updateNumber("riskPerTradePercent", event.target.value)} />
+        <TextField fullWidth label="Доля Kelly" value={settings.kellyFraction} type="number"
+          onChange={(event) => updateNumber("kellyFraction", event.target.value)} />
       </Stack>
+      <TextField fullWidth label="Порог confidence" value={settings.confidenceThreshold} type="number"
+        onChange={(event) => updateNumber("confidenceThreshold", event.target.value)} />
+      <Typography variant="body2" color="text.secondary">
+        Stop Loss рассчитывается за структурной границей OB, цели — по ликвидности и RR выбранного JSON-шаблона.
+      </Typography>
       <Stack direction="row" spacing={1.5}>
         <TextField fullWidth label="Комиссия, %" value={settings.feePercent} type="number"
           onChange={(event) => updateNumber("feePercent", event.target.value)} />
@@ -79,7 +74,7 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
         {isRunning ? `Выполняем расчёт… ${progress}%` : "Запустить бэктест"}
       </Button>
       {!isValid && <Typography variant="caption" color="error.main">
-        Медленная MA должна быть больше быстрой, остальные значения — положительными.
+        Проверьте капитал, риск, размер позиции и параметры исполнения.
       </Typography>}
     </Stack>
   </Paper>;

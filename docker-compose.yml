@@ -103,16 +103,19 @@ services:
 
   smc-service:
     build:
-      context: ./services/smc-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/smc-service/Dockerfile
     container_name: smart-money-smc-service
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: ${REDIS_URL}
       SWING_LOOKBACK: ${SWING_LOOKBACK:-5}
+      SCENARIO_TEMPLATE_DIR: /app/scenario-templates
     ports:
       - "8010:8010"
+    volumes:
+      - scenario_templates:/app/scenario-templates
     depends_on:
       postgres:
         condition: service_healthy
@@ -246,21 +249,29 @@ services:
 
   backtest-service:
     build:
-      context: ./services/backtest-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/backtest-service/Dockerfile
     container_name: smart-money-backtest-service
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       DATA_SERVICE_URL: http://data-service:8000
       MAX_CANDLES: ${BACKTEST_MAX_CANDLES:-10000}
+      SCENARIO_TEMPLATE_DIR: /app/scenario-templates
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-CHANGE_ME_MINIO}
     ports:
       - "8085:8080"
+    volumes:
+      - scenario_templates:/app/scenario-templates:ro
     depends_on:
       postgres:
         condition: service_healthy
       data-service:
         condition: service_healthy
+      minio:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health')\""]
       interval: 10s
@@ -369,3 +380,4 @@ volumes:
   redis_data:
   keycloak_data:
   minio_data:
+  scenario_templates:

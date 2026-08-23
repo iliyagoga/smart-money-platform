@@ -89,6 +89,7 @@ def authorize(principal: Principal, method: str, service: str, path: str) -> Non
         or service == "decision" and normalized.startswith("/risk/config") and method != "GET"
         or service == "learning" and normalized == "/learning/train" and method == "POST"
         or service == "backtest" and normalized.startswith("/assets") and method != "GET"
+        or service == "smc" and normalized.startswith("/scenario-templates") and method != "GET"
         or service == "exchange" and normalized.startswith("/exchange/account")
     )
     if admin_only:

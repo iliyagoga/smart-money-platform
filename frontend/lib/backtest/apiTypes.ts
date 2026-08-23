@@ -47,6 +47,15 @@ export interface BackendBacktestResult {
   benchmark_return_percent: number;
   trades: BackendTrade[];
   equity: BackendEquityPoint[];
+  dataset?: {
+    closed_candles_only: boolean;
+    test_candles: number;
+    test_from?: number;
+    test_to?: number;
+    timeframes: string[];
+  };
+  model_training?: { mode: string; samples: number; version?: string };
+  template_distribution?: Record<string, { pnl: number; trades: number; wins: number }>;
 }
 
 export function mapBacktestResult(result: BackendBacktestResult): BacktestResult {
@@ -77,5 +86,14 @@ export function mapBacktestResult(result: BackendBacktestResult): BacktestResult
     benchmarkReturnPercent: result.benchmark_return_percent,
     trades,
     equity,
+    dataset: result.dataset ? {
+      closedCandlesOnly: result.dataset.closed_candles_only,
+      testCandles: result.dataset.test_candles,
+      testFrom: result.dataset.test_from,
+      testTo: result.dataset.test_to,
+      timeframes: result.dataset.timeframes,
+    } : undefined,
+    modelTraining: result.model_training,
+    templateDistribution: result.template_distribution,
   };
 }

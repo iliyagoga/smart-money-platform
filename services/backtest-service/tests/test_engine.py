@@ -15,6 +15,7 @@ def config(**changes):
         "initial_capital": 10_000, "position_size_percent": 100, "fast_period": 2, "slow_period": 3,
         "stop_loss_percent": 5, "take_profit_percent": 10, "fee_percent": 0, "slippage_percent": 0,
         "direction_mode": DirectionMode.BOTH,
+        "strategy": StrategyType.SMA_CROSS,
     }
     return BacktestConfig(**{**values, **changes})
 

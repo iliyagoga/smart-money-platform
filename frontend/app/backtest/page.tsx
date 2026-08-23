@@ -1,6 +1,6 @@
 "use client";
 
-import { Alert, Grid, MenuItem, Paper, Stack, TextField, Typography } from "@mui/material";
+import { Alert, Checkbox, FormControlLabel, Grid, MenuItem, Paper, Stack, TextField, Typography } from "@mui/material";
 import { useState } from "react";
 import { AssetManager } from "../../components/backtest/AssetManager";
 import { BacktestReport } from "../../components/backtest/BacktestReport";
@@ -16,7 +16,7 @@ import type { BacktestResult, BacktestSettings } from "../../lib/backtest/types"
 
 const defaultSettings: BacktestSettings = {
   initialCapital: 10_000,
-  strategy: "SMA_CROSS",
+  strategy: "SMC",
   fastPeriod: 9,
   slowPeriod: 21,
   feePercent: 0.05,
@@ -25,9 +25,15 @@ const defaultSettings: BacktestSettings = {
   takeProfitPercent: 4,
   positionSizePercent: 25,
   leverage: 1,
+  maintenanceMarginPercent: 0.5,
   fundingPercentPerDay: 0,
   trailingStopPercent: undefined,
   directionMode: "BOTH",
+  riskPerTradePercent: 1,
+  kellyFraction: 0.25,
+  confidenceThreshold: 0.6,
+  templateIds: ["OB_FVG_REVERSAL"],
+  localRetraining: true,
 };
 
 const timeframes = ["M1", "M5", "M15", "H1", "H4", "D1"];
@@ -37,6 +43,11 @@ export default function BacktestPage() {
   const { assets } = useTradingAssets();
   const [timeframe, setTimeframe] = useState("M15");
   const [candleLimit, setCandleLimit] = useState(1000);
+  const today = new Date().toISOString().slice(0, 10);
+  const [trainFrom, setTrainFrom] = useState("2025-01-01");
+  const [trainTo, setTrainTo] = useState("2025-06-30");
+  const [testFrom, setTestFrom] = useState("2025-07-01");
+  const [testTo, setTestTo] = useState(today);
   const [settings, setSettings] = useState(defaultSettings);
   const [result, setResult] = useState<BacktestResult>();
   const [error, setError] = useState("");
@@ -55,12 +66,18 @@ export default function BacktestPage() {
         body: JSON.stringify({
           symbol: selectedAsset,
           timeframe,
+          timeframes,
           candle_limit: candleLimit,
+          train_from: Date.parse(`${trainFrom}T00:00:00Z`),
+          train_to: Date.parse(`${trainTo}T23:59:59Z`),
+          test_from: Date.parse(`${testFrom}T00:00:00Z`),
+          test_to: Date.parse(`${testTo}T23:59:59Z`),
           config: {
             strategy: settings.strategy,
             initial_capital: settings.initialCapital,
             position_size_percent: settings.positionSizePercent,
             leverage: settings.leverage,
+            maintenance_margin_percent: settings.maintenanceMarginPercent,
             fee_percent: settings.feePercent,
             slippage_percent: settings.slippagePercent,
             funding_percent_per_day: settings.fundingPercentPerDay,
@@ -70,6 +87,11 @@ export default function BacktestPage() {
             fast_period: settings.fastPeriod,
             slow_period: settings.slowPeriod,
             direction_mode: settings.directionMode,
+            risk_per_trade_percent: settings.riskPerTradePercent,
+            kelly_fraction: settings.kellyFraction,
+            confidence_threshold: settings.confidenceThreshold,
+            template_ids: settings.templateIds,
+            local_retraining: settings.localRetraining,
           },
         }),
       });
@@ -134,6 +156,33 @@ export default function BacktestPage() {
           slotProps={{ htmlInput: { min: 100, max: 1000 } }}
         />
       </Stack>
+      <Typography variant="subtitle2" sx={{ mt: 2.5, mb: 1 }}>Периоды без пересечения</Typography>
+      <Grid container spacing={1.5}>
+        <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
+          <TextField fullWidth type="date" label="Обучение: начало" value={trainFrom}
+            onChange={(event) => setTrainFrom(event.target.value)} slotProps={{ inputLabel: { shrink: true } }} />
+        </Grid>
+        <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
+          <TextField fullWidth type="date" label="Обучение: конец" value={trainTo}
+            onChange={(event) => setTrainTo(event.target.value)} slotProps={{ inputLabel: { shrink: true } }} />
+        </Grid>
+        <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
+          <TextField fullWidth type="date" label="Бэктест: начало" value={testFrom}
+            onChange={(event) => setTestFrom(event.target.value)} slotProps={{ inputLabel: { shrink: true } }} />
+        </Grid>
+        <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
+          <TextField fullWidth type="date" label="Бэктест: конец" value={testTo}
+            onChange={(event) => setTestTo(event.target.value)} slotProps={{ inputLabel: { shrink: true } }} />
+        </Grid>
+      </Grid>
+      <FormControlLabel
+        sx={{ mt: 1 }}
+        control={<Checkbox checked={settings.localRetraining} onChange={(event) => setSettings({
+          ...settings,
+          localRetraining: event.target.checked,
+        })} />}
+        label="Локально переобучить модель только на обучающем периоде"
+      />
     </Paper>
     {error && <Alert severity="error" sx={{ mb: 1.5 }}>{error}</Alert>}
     <Grid container spacing={1.5}>

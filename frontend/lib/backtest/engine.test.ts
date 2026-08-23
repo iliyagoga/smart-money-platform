@@ -14,8 +14,14 @@ const settings: BacktestSettings = {
   takeProfitPercent: 20,
   positionSizePercent: 100,
   leverage: 1,
+  maintenanceMarginPercent: 0.5,
   fundingPercentPerDay: 0,
   directionMode: "BOTH",
+  riskPerTradePercent: 1,
+  kellyFraction: 0.25,
+  confidenceThreshold: 0.6,
+  templateIds: ["OB_FVG_REVERSAL"],
+  localRetraining: false,
 };
 
 const candles = (closes: number[]): Candle[] => closes.map((close, index) => ({

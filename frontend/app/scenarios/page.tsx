@@ -8,6 +8,7 @@ import { SectionPage } from "../../components/layout/SectionPage";
 import { useApiResource } from "../../hooks/useApiResource";
 import { api } from "../../lib/api";
 import type { ScenariosResponse } from "../../lib/types";
+import { TemplateManager } from "../../components/scenarios/TemplateManager";
 
 export default function ScenariosPage() {
   const resource = useApiResource<ScenariosResponse>("/api/v1/smc/scenarios");
@@ -63,6 +64,7 @@ export default function ScenariosPage() {
           </Button>
         </Paper></Grid>
       ))}</Grid>}
+      <TemplateManager canManage={roles.includes("admin")} />
     </SectionPage>
   );
 }

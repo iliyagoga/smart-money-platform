@@ -24,7 +24,8 @@ test("user can sign in, switch theme and open every section", async ({ page }) =
   }
 });
 
-test("user can add an asset and run an isolated backtest", async ({ page }) => {
+test("user can add an asset and run an isolated backtest", async ({ page }, testInfo) => {
+  const asset = `E2E${testInfo.workerIndex}${testInfo.retry}${Date.now() % 100000}-USDT-SWAP`;
   await page.route("**/api/v1/backtest/backtests", async (route) => {
     if (route.request().method() === "POST") {
       await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ id: "e2e-backtest" }) });
@@ -64,9 +65,9 @@ test("user can add an asset and run an isolated backtest", async ({ page }) => {
   await signIn(page, "admin");
   await page.goto("/backtest");
   await page.getByRole("button", { name: "Добавить актив" }).click();
-  await page.getByLabel("Символ актива").fill("SOL/USDT_SWAP");
+  await page.getByLabel("Символ актива").fill(asset);
   await page.getByRole("button", { name: "Добавить", exact: true }).click();
-  await expect(page.getByText("SOL-USDT-SWAP", { exact: true })).toBeVisible();
+  await expect(page.getByText(asset, { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Запустить бэктест" }).click();
   await expect(page.getByText("Кривая капитала")).toBeVisible();
   await expect(page.getByText("Журнал сделок")).toBeVisible();

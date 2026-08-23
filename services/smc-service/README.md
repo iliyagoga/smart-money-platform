@@ -6,6 +6,18 @@
 
 REST API соответствует разделу Smart Money документации. Для детерминированной загрузки/тестирования также доступен `POST /internal/analyze`.
 
+## Шаблоны сценариев
+
+Шаблоны не зашиты в Python. Исходные JSON-файлы находятся в `config/scenario-templates`, а рабочая библиотека хранится в общем Docker
+volume `scenario_templates`. Scenario Manager перечитывает включённые шаблоны при каждом анализе структуры.
+
+- `GET /scenario-templates` — список и чтение;
+- `GET /scenario-templates/{id}` — один шаблон;
+- `PUT /scenario-templates/{id}` — создать или атомарно обновить JSON;
+- `DELETE /scenario-templates/{id}` — удалить.
+
+Изменение и удаление через API Gateway разрешено только роли `admin`. JSON валидируется до сохранения.
+
 ```bash
 docker compose up --build -d smc-service
 curl http://localhost:8010/health
