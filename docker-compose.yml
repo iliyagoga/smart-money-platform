@@ -122,6 +122,33 @@ services:
       timeout: 5s
       retries: 10
 
+  execution-service:
+    build:
+      context: ./services/execution-service
+      dockerfile: Dockerfile
+    container_name: smart-money-execution-service
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: ${REDIS_URL}
+      EXECUTION_MODE: ${EXECUTION_MODE:-paper}
+      STREAM_GROUP: execution-service
+      CONSUMER_NAME: execution-1
+    ports:
+      - "8030:8030"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      decision-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8030/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
 volumes:
   postgres_data:
   redis_data:
