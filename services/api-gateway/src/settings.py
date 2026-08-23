@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     learning_service_url: str = "http://learning-service:8060"
     exchange_service_url: str = "http://exchange-gateway:8070"
     request_timeout: float = 30.0
+    redis_url: str = "redis://redis:6379"
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

@@ -291,10 +291,13 @@ services:
       ANALYTICS_SERVICE_URL: http://analytics-service:8040
       LEARNING_SERVICE_URL: http://learning-service:8060
       EXCHANGE_SERVICE_URL: http://exchange-gateway:8070
+      REDIS_URL: ${REDIS_URL}
     ports:
       - "8050:8050"
     depends_on:
       keycloak:
+        condition: service_started
+      redis:
         condition: service_started
       data-service:
         condition: service_healthy

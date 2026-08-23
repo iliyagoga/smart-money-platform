@@ -16,3 +16,5 @@ curl -X POST http://localhost:8080/realms/smart-money/protocol/openid-connect/to
 ```
 
 Роли: `viewer` читает данные, `trader` также выполняет торговые операции, `admin` имеет полный доступ, включая `/internal/*` и изменение risk config.
+
+WebSocket доступен по `/ws`. Для браузера передайте protocols `['access_token', token]`, затем сообщение `{"op":"subscribe","events":["candle.*","position.*"],"symbols":["BTC-USDT-SWAP"]}`. Поддерживаются `unsubscribe` и `ping`.

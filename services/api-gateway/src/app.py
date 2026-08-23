@@ -2,11 +2,13 @@ from contextlib import asynccontextmanager
 from uuid import uuid4
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from redis.asyncio import Redis
+from fastapi import FastAPI, HTTPException, Request,WebSocket
 from fastapi.responses import Response
 
 from .security import TokenVerifier, authorize
 from .settings import settings
+from .websocket import WebSocketBridge
 
 
 SERVICE_URLS = {
@@ -24,8 +26,10 @@ verifier = TokenVerifier(settings.keycloak_issuer, settings.keycloak_jwks_url, s
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.client = httpx.AsyncClient(timeout=settings.request_timeout)
+    app.state.redis = Redis.from_url(settings.redis_url,decode_responses=True);await app.state.redis.ping();app.state.ws_bridge=WebSocketBridge(app.state.redis,verifier)
     yield
     await app.state.client.aclose()
+    await app.state.redis.aclose()
 
 
 app = FastAPI(title="Smart Money API Gateway", version="1.0.0", lifespan=lifespan)
@@ -33,7 +37,10 @@ app = FastAPI(title="Smart Money API Gateway", version="1.0.0", lifespan=lifespa
 
 @app.get("/health")
 async def health():
-    return {"status": "UP"}
+    return {"status": "UP","websocket_connections":app.state.ws_bridge.connections}
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket:WebSocket):await websocket.app.state.ws_bridge.serve(websocket)
 
 
 @app.get("/api/v1/me")
