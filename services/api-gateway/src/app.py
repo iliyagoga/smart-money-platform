@@ -5,6 +5,7 @@ import httpx
 from redis.asyncio import Redis
 from fastapi import FastAPI, HTTPException, Request,WebSocket
 from fastapi.responses import Response
+from fastapi.middleware.cors import CORSMiddleware
 
 from .security import TokenVerifier, authorize
 from .settings import settings
@@ -33,6 +34,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Smart Money API Gateway", version="1.0.0", lifespan=lifespan)
+app.add_middleware(CORSMiddleware,allow_origins=["http://localhost:3000"],allow_credentials=True,allow_methods=["*"],allow_headers=["Authorization","Content-Type","X-Correlation-ID"])
 
 
 @app.get("/health")

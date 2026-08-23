@@ -22,3 +22,5 @@ Portfolio Manager, Analytics и Monitoring находятся в [`services/anal
 Learning Platform находится в [`services/learning-service`](services/learning-service/README.md). API доступен на `http://localhost:8060`, артефакты моделей сохраняются в MinIO.
 
 Интеграция с OKX находится в [`services/exchange-gateway`](services/exchange-gateway/README.md). Сервис доступен на `http://localhost:8070`; автоматическое подключение к бирже по умолчанию выключено.
+
+Frontend Platform находится в [`frontend`](frontend). Интерфейс доступен на `http://localhost:3000` и использует Keycloak Authorization Code + PKCE.
