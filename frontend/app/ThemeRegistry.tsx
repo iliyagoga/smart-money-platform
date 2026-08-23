@@ -3,7 +3,7 @@
 import { AppRouterCacheProvider } from "@mui/material-nextjs/v15-appRouter";
 import { CssBaseline, ThemeProvider, createTheme } from "@mui/material";
 import type { PaletteMode } from "@mui/material";
-import { createContext, useContext, useMemo, useState } from "react";
+import { createContext, useContext, useMemo, useSyncExternalStore } from "react";
 import type { ReactNode } from "react";
 
 interface ColorModeContextValue {
@@ -12,6 +12,20 @@ interface ColorModeContextValue {
 }
 
 const ColorModeContext = createContext<ColorModeContextValue | undefined>(undefined);
+const colorModeKey = "smart-money-color-mode";
+const colorModeEvent = "smart-money-color-mode-change";
+
+const subscribeToColorMode = (listener: () => void) => {
+  window.addEventListener("storage", listener);
+  window.addEventListener(colorModeEvent, listener);
+  return () => {
+    window.removeEventListener("storage", listener);
+    window.removeEventListener(colorModeEvent, listener);
+  };
+};
+
+const getColorMode = (): PaletteMode => localStorage.getItem(colorModeKey) === "dark" ? "dark" : "light";
+const getDefaultColorMode = (): PaletteMode => "light";
 
 const buildTheme = (mode: PaletteMode) => createTheme({
   palette: {
@@ -61,11 +75,14 @@ export function useColorMode(): ColorModeContextValue {
 }
 
 export function ThemeRegistry({ children }: { children: ReactNode }) {
-  const [mode, setMode] = useState<PaletteMode>("light");
+  const mode = useSyncExternalStore(subscribeToColorMode, getColorMode, getDefaultColorMode);
   const theme = useMemo(() => buildTheme(mode), [mode]);
   const colorMode = useMemo(() => ({
     mode,
-    toggleColorMode: () => setMode((currentMode) => currentMode === "light" ? "dark" : "light"),
+    toggleColorMode: () => {
+      localStorage.setItem(colorModeKey, mode === "light" ? "dark" : "light");
+      window.dispatchEvent(new Event(colorModeEvent));
+    },
   }), [mode]);
 
   return (

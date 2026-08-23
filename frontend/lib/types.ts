@@ -33,3 +33,31 @@ export interface ServicesResponse {
 export interface PositionsResponse {
   positions?: Position[];
 }
+
+export interface Scenario {
+  id: string;
+  symbol: string;
+  timeframe: string;
+  direction: string;
+  setup_type: string;
+  confidence: number;
+  status: string;
+}
+
+export interface ScenariosResponse {
+  scenarios: Scenario[];
+  total: number;
+}
+
+export interface LearningModel {
+  id: string;
+  type: string;
+  version: string;
+  samples_count: number;
+  is_active: boolean;
+  training_date: number;
+}
+
+export interface LearningModelsResponse {
+  models: LearningModel[];
+}

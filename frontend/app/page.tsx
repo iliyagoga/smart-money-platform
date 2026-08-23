@@ -1,8 +1,9 @@
 "use client";
 
 import { Box, Button, CircularProgress, IconButton, Stack, Tooltip, Typography } from "@mui/material";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Dashboard from "../components/Dashboard";
+import { useAuth } from "../components/auth/AuthProvider";
 import { keycloak } from "../lib/auth";
 import { useColorMode } from "./ThemeRegistry";
 
@@ -11,24 +12,14 @@ function CenteredMessage({ children }: { children: React.ReactNode }) {
 }
 
 export default function Home() {
-  const [isReady, setIsReady] = useState(false);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
-  const [error, setError] = useState("");
+  const { error, isAuthenticated, isReady } = useAuth();
   const { mode, toggleColorMode } = useColorMode();
 
   const login = async () => {
     setIsLoggingIn(true);
     await keycloak().login({ redirectUri: location.origin });
   };
-
-  useEffect(() => {
-    keycloak()
-      .init({ onLoad: "check-sso", pkceMethod: "S256", checkLoginIframe: false })
-      .then(setIsAuthenticated)
-      .catch((reason: unknown) => setError(String(reason)))
-      .finally(() => setIsReady(true));
-  }, []);
 
   if (!isReady) {
     return (

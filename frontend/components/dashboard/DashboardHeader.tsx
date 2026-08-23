@@ -1,22 +1,26 @@
-import { AppBar, Box, Button, Chip, IconButton, Stack, Toolbar, Tooltip, Typography } from "@mui/material";
+import { AppBar, Box, Button, Chip, Divider, Drawer, IconButton, Stack, Toolbar, Tooltip, Typography } from "@mui/material";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useState } from "react";
 import { useColorMode } from "../../app/ThemeRegistry";
 import { keycloak } from "../../lib/auth";
 import { StatusDot } from "../ui/StatusDot";
 
 const navigation = [
-  { label: "Обзор", href: "#overview" },
-  { label: "Рынок", href: "#events" },
-  { label: "Сценарии", href: "#services" },
-  { label: "Сделки", href: "#positions" },
-  { label: "Обучение", href: "#insights" },
+  { label: "Обзор", href: "/" },
+  { label: "Рынок", href: "/market" },
+  { label: "Сценарии", href: "/scenarios" },
+  { label: "Сделки", href: "/trades" },
+  { label: "Обучение", href: "/learning" },
 ];
 
 interface DashboardHeaderProps { isLive: boolean; username: string }
 
 export function DashboardHeader({ isLive, username }: DashboardHeaderProps) {
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
   const { mode, toggleColorMode } = useColorMode();
+  const pathname = usePathname();
 
   const logout = async () => {
     setIsLoggingOut(true);
@@ -31,7 +35,7 @@ export function DashboardHeader({ isLive, username }: DashboardHeaderProps) {
       sx={{ top: 0, zIndex: 10, borderBottom: 1, borderColor: "divider", backdropFilter: "blur(18px)", bgcolor: "background.paper" }}
     >
       <Toolbar disableGutters sx={{ minHeight: "76px !important", justifyContent: "space-between" }}>
-        <Stack component="a" href="#overview" direction="row" spacing={1.5} sx={{ alignItems: "center", color: "inherit", textDecoration: "none" }}>
+        <Stack component={Link} href="/" direction="row" spacing={1.5} sx={{ alignItems: "center", color: "inherit", textDecoration: "none" }}>
           <Box
             sx={{
               display: "grid",
@@ -49,12 +53,13 @@ export function DashboardHeader({ isLive, username }: DashboardHeaderProps) {
         </Stack>
         <Stack component="nav" direction="row" spacing={0.5} sx={{ display: { xs: "none", lg: "flex" } }}>
           {navigation.map((item) => (
-            <Button component="a" href={item.href} key={item.label} color="secondary" size="small">
+            <Button component={Link} href={item.href} key={item.label} color={pathname === item.href ? "primary" : "secondary"} size="small">
               {item.label}
             </Button>
           ))}
         </Stack>
         <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+          <IconButton onClick={() => setIsMenuOpen(true)} aria-label="Открыть меню" sx={{ display: { lg: "none" } }}>☰</IconButton>
           <Chip icon={<StatusDot active={isLive} />} label={isLive ? "Live" : "Подключение"} size="small" variant="outlined" />
           <Typography variant="caption" sx={{ display: { xs: "none", md: "block" }, maxWidth: 130 }} noWrap>{username}</Typography>
           <Tooltip title={mode === "light" ? "Включить тёмную тему" : "Включить светлую тему"}>
@@ -67,6 +72,24 @@ export function DashboardHeader({ isLive, username }: DashboardHeaderProps) {
           </Button>
         </Stack>
       </Toolbar>
+      <Drawer anchor="right" open={isMenuOpen} onClose={() => setIsMenuOpen(false)}>
+        <Stack component="nav" spacing={1} sx={{ width: 280, p: 3 }}>
+          <Typography variant="h6" sx={{ mb: 1 }}>Навигация</Typography>
+          <Divider />
+          {navigation.map((item) => (
+            <Button
+              component={Link}
+              href={item.href}
+              key={item.label}
+              onClick={() => setIsMenuOpen(false)}
+              variant={pathname === item.href ? "contained" : "text"}
+              sx={{ justifyContent: "flex-start" }}
+            >
+              {item.label}
+            </Button>
+          ))}
+        </Stack>
+      </Drawer>
     </AppBar>
   );
 }

@@ -3,10 +3,10 @@
 import { Alert, Box, Button, Container, Grid, Stack, Typography } from "@mui/material";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../lib/api";
-import { keycloak } from "../lib/auth";
 import { EventSocket } from "../lib/socket";
 import type { PlatformEvent, Portfolio, Position, PositionsResponse, ServiceStatus, ServicesResponse } from "../lib/types";
 import { DashboardHeader } from "./dashboard/DashboardHeader";
+import { useAuth } from "./auth/AuthProvider";
 import { EventsPanel } from "./dashboard/EventsPanel";
 import { MetricsGrid } from "./dashboard/MetricsGrid";
 import { PositionsPanel } from "./dashboard/PositionsPanel";
@@ -21,7 +21,7 @@ export default function Dashboard() {
   const [isLive, setIsLive] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [loadError, setLoadError] = useState("");
-  const username = String(keycloak().tokenParsed?.preferred_username ?? "пользователь");
+  const { username } = useAuth();
 
   const loadDashboard = useCallback(async () => {
     setIsRefreshing(true);
