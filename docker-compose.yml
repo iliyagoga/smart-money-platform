@@ -48,7 +48,10 @@ services:
     environment:
       ENVIRONMENT: ${ENVIRONMENT}
 
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATABASE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
 
       REDIS_URL: ${REDIS_URL}
 
@@ -60,6 +63,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/actuator/health/readiness | grep -q '\"status\":\"UP\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
 volumes:
   postgres_data:

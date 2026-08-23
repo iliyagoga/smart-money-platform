@@ -1,17 +1,13 @@
-FROM python:3.13-slim
+FROM maven:3.9.11-eclipse-temurin-21 AS build
+WORKDIR /build
+COPY pom.xml .
+COPY src src
+RUN mvn -B package
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-
+FROM eclipse-temurin:21-jre-alpine
+RUN addgroup -S app && adduser -S -G app app
 WORKDIR /app
-
-COPY requirements.txt .
-
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
-
-COPY src ./src
-
+COPY --from=build /build/target/data-service-1.0.0.jar app.jar
+USER app
 EXPOSE 8000
-
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["java","-XX:MaxRAMPercentage=75","-jar","app.jar"]
