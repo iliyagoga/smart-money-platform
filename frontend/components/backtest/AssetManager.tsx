@@ -6,13 +6,20 @@ import { isValidAssetSymbol, normalizeAssetSymbol, useTradingAssets } from "../.
 import { useAuth } from "../auth/AuthProvider";
 
 interface AssetManagerProps {
+  addAsset?: (value: string) => Promise<boolean>;
+  assets?: string[];
   onAssetsChanged?: () => void;
   onSelect: (asset: string) => void;
+  removeAsset?: (asset: string) => Promise<void>;
   selectedAsset: string;
 }
 
-export function AssetManager({ onAssetsChanged, onSelect, selectedAsset }: AssetManagerProps) {
-  const { assets, addAsset, removeAsset } = useTradingAssets();
+export function AssetManager(props: AssetManagerProps) {
+  const resource = useTradingAssets();
+  const assets = props.assets ?? resource.assets;
+  const addAsset = props.addAsset ?? resource.addAsset;
+  const removeAsset = props.removeAsset ?? resource.removeAsset;
+  const { onAssetsChanged, onSelect, selectedAsset } = props;
   const { roles } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   const [newAsset, setNewAsset] = useState("");

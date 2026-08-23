@@ -31,9 +31,32 @@ class SMCService:
         try:
             async for message in pubsub.listen():
                 if message["type"]!="message":continue
-                envelope=json.loads(message["data"]);payload=envelope.get("payload",envelope)
-                if payload.get("is_closed",True):await self.process(Candle.model_validate(payload),envelope.get("correlation_id"))
+                try:
+                    envelope=json.loads(message["data"]);payload=envelope.get("payload",envelope)
+                    if payload.get("is_closed",True):
+                        await self.process(Candle.model_validate(payload),envelope.get("correlation_id"))
+                except Exception:
+                    log.exception("Failed to process candle event")
         finally:await pubsub.aclose()
+    async def rebuild(self,symbol:str,timeframes:list[Timeframe],limit:int=500):
+        symbol=symbol.strip().upper();keys=[(symbol,timeframe) for timeframe in timeframes]
+        for collection in (
+            self.pipeline.candles,self.pipeline.swings,self.pipeline.changes,self.pipeline.seen,
+            self.pipeline.obs,self.pipeline.fvgs,self.pipeline.liquidity,
+        ):
+            for key in keys:collection.pop(key,None)
+        for key in keys:self.pipeline.trends.pop(key,None)
+        rows=await self.infra.db.fetch("""
+          SELECT symbol,timeframe,(extract(epoch FROM ts)*1000)::bigint AS timestamp,
+                 open::float8,high::float8,low::float8,close::float8,volume::float8,
+                 quote_volume::float8,trades_count,is_closed
+          FROM (SELECT *,row_number() OVER(PARTITION BY symbol,timeframe ORDER BY ts DESC) AS rn
+                FROM candles WHERE symbol=$1 AND timeframe=ANY($2::text[])) recent
+          WHERE rn<=$3 ORDER BY ts,timeframe
+        """,symbol,[str(item) for item in timeframes],limit)
+        before=len(self.scenarios.items)
+        for row in rows:await self.process(Candle.model_validate(dict(row)),"history-rebuild")
+        return {"symbol":symbol,"candles":len(rows),"scenarios_created":len(self.scenarios.items)-before}
     async def process(self,candle:Candle,correlation_id:str|None=None):
         result=self.pipeline.process(candle);key=(candle.symbol,candle.timeframe)
         mappings=[(result.swings,"swing","structure.update","swing.detected"),(result.changes,"structure_change","smc.update","structure.changed")]

@@ -8,6 +8,8 @@ from .settings import settings
 
 infra=Infrastructure(settings.database_url,settings.redis_url)
 service=SMCService(infra,settings.swing_lookback)
+class RebuildRequest(BaseModel):
+    symbol:str;timeframes:list[Timeframe];limit:int=Field(default=500,ge=100,le=2000)
 
 @asynccontextmanager
 async def lifespan(app:FastAPI):
@@ -26,6 +28,10 @@ async def health():
 
 @app.post("/internal/analyze")
 async def analyze(candle:Candle):return await service.process(candle)
+
+@app.post("/internal/rebuild")
+async def rebuild(request:RebuildRequest):
+    return await service.rebuild(request.symbol,request.timeframes,request.limit)
 
 @app.get("/smart-money/swings")
 async def swings(symbol:str,timeframe:Timeframe,limit:int=Query(100,ge=1,le=1000)):

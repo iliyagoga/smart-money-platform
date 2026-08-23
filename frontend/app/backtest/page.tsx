@@ -7,6 +7,7 @@ import { BacktestReport } from "../../components/backtest/BacktestReport";
 import { BacktestHistory } from "../../components/backtest/BacktestHistory";
 import { BacktestSettingsForm } from "../../components/backtest/BacktestSettingsForm";
 import { HistoryLoader } from "../../components/backtest/HistoryLoader";
+import { DatasetOverview } from "../../components/backtest/DatasetOverview";
 import { SectionPage } from "../../components/layout/SectionPage";
 import { api, downloadApi } from "../../lib/api";
 import { useApiResource } from "../../hooks/useApiResource";
@@ -52,7 +53,7 @@ const timeframes = ["M1", "M5", "M15", "H1", "H4", "D1"];
 export default function BacktestPage() {
   const { roles } = useAuth();
   const [asset, setAsset] = useState("");
-  const { assets, reload: reloadAssets } = useTradingAssets();
+  const { addAsset, assets, reload: reloadAssets, removeAsset } = useTradingAssets();
   const [timeframe, setTimeframe] = useState("M15");
   const [selectedTimeframes, setSelectedTimeframes] = useState(timeframes);
   const [candleLimit, setCandleLimit] = useState(10_000);
@@ -176,7 +177,15 @@ export default function BacktestPage() {
   return <SectionPage title="Бэктест" description="Проверка торговых стратегий на исторических данных без отправки ордеров.">
     <Paper variant="outlined" sx={{ p: 3, mb: 1.5 }}>
       <Typography variant="h6" sx={{ mb: 2 }}>Активы и исторические данные</Typography>
-      <AssetManager selectedAsset={selectedAsset} onSelect={setAsset} onAssetsChanged={reloadAssets} />
+      <AssetManager
+        addAsset={addAsset}
+        assets={assets}
+        removeAsset={removeAsset}
+        selectedAsset={selectedAsset}
+        onSelect={setAsset}
+        onAssetsChanged={reloadAssets}
+      />
+      <DatasetOverview assets={assets} selectedAsset={selectedAsset} />
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mt: 2.5 }}>
         <TextField select label="Основной таймфрейм" value={timeframe} onChange={(event) => {
           const value = event.target.value;

@@ -61,11 +61,13 @@ export function useTradingAssets() {
         method: "POST",
         body: JSON.stringify({ symbol, category: "crypto" }),
       });
+      await api("/api/v1/exchange/exchange/reload-symbols", { method: "POST" }).catch(() => undefined);
       reload();
       return true;
     },
     removeAsset: async (symbol: string) => {
       await api(`/api/v1/backtest/assets/${encodeURIComponent(symbol)}`, { method: "DELETE" });
+      await api("/api/v1/exchange/exchange/reload-symbols", { method: "POST" }).catch(() => undefined);
       reload();
     },
   };

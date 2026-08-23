@@ -16,7 +16,6 @@ def auth_headers(key,secret,passphrase,method,path,body="",demo=True,stamp=None)
 def candle(item,symbol,timeframe):
     return {"symbol":symbol,"timeframe":timeframe,"timestamp":int(item[0]),"open":float(item[1]),"high":float(item[2]),"low":float(item[3]),"close":float(item[4]),"volume":float(item[5]),"is_closed":item[8]=="1"}
 def trade(item):
-    return {"symbol":item["instId"],"tradeId":item["tradeId"],"timestamp":int(item["ts"]),"price":float(item["px"]),"volume":float(item["sz"]),"side":item["side"].upper()}
+    return {"symbol":item["instId"],"trade_id":item["tradeId"],"timestamp":int(item["ts"]),"price":float(item["px"]),"volume":float(item["sz"]),"side":item["side"].lower()}
 def book(item,symbol):
-    return {"symbol":symbol,"timestamp":int(item["ts"]),"sequenceId":int(item.get("seqId",0)),"bids":[[float(x[0]),float(x[1])] for x in item["bids"]],"asks":[[float(x[0]),float(x[1])] for x in item["asks"]]}
-
+    return {"symbol":symbol,"timestamp":int(item["ts"]),"sequence_id":int(item.get("seqId",0)),"bids":[[float(x[0]),float(x[1])] for x in item["bids"]],"asks":[[float(x[0]),float(x[1])] for x in item["asks"]]}

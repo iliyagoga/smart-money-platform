@@ -6,6 +6,7 @@ class ExchangeGateway:
     def __init__(self,s):
         self.s=s;self.client=None;self.db=None;self.tasks=set();self.connected={"public":False,"business":False};self.last_error=None
         self.history_semaphore=asyncio.Semaphore(s.history_concurrency);self.running_history=set()
+        self.active_symbols=[];self.websockets={}
     async def start(self):
         self.client=httpx.AsyncClient(timeout=20)
         self.db=await asyncpg.create_pool(self.s.database_url,min_size=1,max_size=5)
@@ -19,6 +20,7 @@ class ExchangeGateway:
           )
         """)
         await self.db.execute("UPDATE exchange_history_jobs SET status='QUEUED' WHERE status='RUNNING'")
+        await self.refresh_symbols()
         for row in await self.db.fetch("SELECT id FROM exchange_history_jobs WHERE status='QUEUED'"):
             self.schedule_history(row["id"])
         if self.s.market_data_enabled:
@@ -31,7 +33,7 @@ class ExchangeGateway:
     def add_task(self,coroutine):
         task=asyncio.create_task(coroutine);self.tasks.add(task);task.add_done_callback(self.tasks.discard);return task
     @property
-    def symbols(self):return [x.strip().upper() for x in self.s.symbols.split(",") if x.strip()]
+    def symbols(self):return self.active_symbols or [x.strip().upper() for x in self.s.symbols.split(",") if x.strip()]
     @property
     def timeframes(self):return [x.strip().upper() for x in self.s.timeframes.split(",") if x.strip() in TIMEFRAMES]
     async def loop(self,name,url):
@@ -39,6 +41,7 @@ class ExchangeGateway:
         while True:
             try:
                 async with websockets.connect(url,ping_interval=20,ping_timeout=10,max_size=2**22) as ws:
+                    self.websockets[name]=ws
                     self.connected[name]=True;delay=1
                     args=[]
                     if name=="public":args=[{"channel":c,"instId":s} for s in self.symbols for c in ("trades","books5")]
@@ -46,9 +49,19 @@ class ExchangeGateway:
                     await ws.send(json.dumps({"op":"subscribe","args":args}))
                     async for raw in ws:await self.handle(json.loads(raw))
             except asyncio.CancelledError:raise
-            except Exception as exc:self.last_error=type(exc).__name__;self.connected[name]=False;await asyncio.sleep(delay+random.random());delay=min(delay*2,60)
+            except Exception as exc:
+                self.last_error=f"{name}: {type(exc).__name__}: {exc}"[:500]
+                self.connected[name]=False;await asyncio.sleep(delay+random.random());delay=min(delay*2,60)
+            finally:self.websockets.pop(name,None)
+    async def refresh_symbols(self):
+        try:rows=await self.db.fetch("SELECT symbol FROM trading_assets WHERE enabled ORDER BY symbol")
+        except asyncpg.UndefinedTableError:rows=[]
+        self.active_symbols=[row["symbol"] for row in rows]
+        for connection in list(self.websockets.values()):await connection.close()
+        return self.symbols
     async def ingest(self,path,payload):
-        response=await self.client.post(self.s.data_service_url+path,json=payload,headers={"X-Correlation-ID":"okx-"+str(payload.get("timestamp",0))});response.raise_for_status()
+        response=await self.client.post(self.s.data_service_url+path,json=payload,headers={"X-Correlation-ID":"okx-"+str(payload.get("timestamp",0))})
+        if response.is_error:raise ValueError(f"{path}: {response.status_code} {response.text[:300]} payload={payload}")
     async def ingest_batch(self,values):
         if not values:return
         response=await self.client.post(
@@ -130,6 +143,12 @@ class ExchangeGateway:
                         )
                         if len(page)<300 or (job["from"] is not None and oldest<=job["from"]):break
                         cursor=oldest;await asyncio.sleep(.12)
+                response=await self.client.post(
+                    self.s.smc_service_url+"/internal/rebuild",
+                    json={"symbol":job["symbol"],"timeframes":job["timeframes"],"limit":500},
+                    timeout=120,
+                )
+                response.raise_for_status()
                 await self.db.execute("UPDATE exchange_history_jobs SET status='COMPLETED',progress=100,updated_at=now() WHERE id=$1::uuid",job_id)
             except asyncio.CancelledError:raise
             except Exception as exc:

@@ -294,17 +294,20 @@ services:
       OKX_SECRET_KEY: ${OKX_SECRET_KEY:-}
       OKX_PASSPHRASE: ${OKX_PASSPHRASE:-}
       OKX_DEMO: ${OKX_DEMO:-true}
-      MARKET_DATA_ENABLED: ${MARKET_DATA_ENABLED:-false}
+      MARKET_DATA_ENABLED: ${OKX_LIVE_MARKET_ENABLED:-true}
       EXCHANGE_SYMBOLS: ${EXCHANGE_SYMBOLS:-BTC-USDT-SWAP}
       SYMBOLS: ${EXCHANGE_SYMBOLS:-BTC-USDT-SWAP}
       TIMEFRAMES: ${EXCHANGE_TIMEFRAMES:-M1,M5,M15,H1,H4,D1}
       DATA_SERVICE_URL: http://data-service:8000
+      SMC_SERVICE_URL: http://smc-service:8010
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       HISTORY_CONCURRENCY: ${HISTORY_CONCURRENCY:-2}
     ports:
       - "8070:8070"
     depends_on:
       data-service:
+        condition: service_healthy
+      smc-service:
         condition: service_healthy
       postgres:
         condition: service_healthy

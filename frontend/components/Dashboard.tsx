@@ -45,8 +45,8 @@ export default function Dashboard() {
   useEffect(() => {
     void loadDashboard();
     const socket = new EventSocket();
+    socket.subscribeStatus(setIsLive);
     socket.subscribe((event) => {
-      setIsLive(true);
       setEvents((currentEvents) => [event, ...currentEvents].slice(0, 8));
       if (event.event_type.startsWith("position.")) void loadDashboard();
     });

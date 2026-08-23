@@ -22,7 +22,9 @@ class HistoryRequest(BaseModel):
             raise ValueError("from_timestamp must be earlier than to_timestamp")
         return self
 @app.get("/health")
-async def health():return {"status":"UP","market_data_enabled":settings.market_data_enabled,"connections":service.connected,"demo":settings.okx_demo,"last_error":service.last_error}
+async def health():return {"status":"UP","market_data_enabled":settings.market_data_enabled,"connections":service.connected,"symbols":service.symbols,"demo":settings.okx_demo,"last_error":service.last_error}
+@app.post("/exchange/reload-symbols")
+async def reload_symbols():return {"symbols":await service.refresh_symbols()}
 @app.post("/exchange/sync")
 async def sync(req:SyncRequest):
     req.symbol=req.symbol.upper();req.timeframe=req.timeframe.upper()

@@ -3,14 +3,25 @@ import { keycloak } from "./auth";
 import type { PlatformEvent } from "./types";
 
 type EventHandler = (event: PlatformEvent) => void;
+type StatusHandler = (connected: boolean) => void;
 
-const subscriptionEvents = ["candle.*", "smc.*", "scenario.*", "position.*", "model.*", "bandit.*"];
+const subscriptionEvents = [
+  "candle.*",
+  "trade.executed",
+  "orderbook.updated",
+  "smc.*",
+  "scenario.*",
+  "position.*",
+  "model.*",
+  "bandit.*",
+];
 
 export class EventSocket {
   private socket?: WebSocket;
   private attempt = 0;
   private closed = false;
   private readonly handlers = new Set<EventHandler>();
+  private readonly statusHandlers = new Set<StatusHandler>();
 
   async connect(): Promise<void> {
     await keycloak().updateToken(30);
@@ -20,6 +31,7 @@ export class EventSocket {
     this.socket = new WebSocket(getWebSocketUrl(), ["access_token", accessToken]);
     this.socket.onopen = () => {
       this.attempt = 0;
+      this.statusHandlers.forEach((handler) => handler(true));
       this.socket?.send(JSON.stringify({ op: "subscribe", events: subscriptionEvents }));
     };
     this.socket.onmessage = (message) => {
@@ -27,6 +39,7 @@ export class EventSocket {
       if (event.event_type) this.handlers.forEach((handler) => handler(event));
     };
     this.socket.onclose = () => {
+      this.statusHandlers.forEach((handler) => handler(false));
       if (!this.closed) window.setTimeout(() => void this.connect(), Math.min(30_000, 1_000 * 2 ** this.attempt++));
     };
   }
@@ -34,6 +47,11 @@ export class EventSocket {
   subscribe(handler: EventHandler): () => boolean {
     this.handlers.add(handler);
     return () => this.handlers.delete(handler);
+  }
+
+  subscribeStatus(handler: StatusHandler): () => boolean {
+    this.statusHandlers.add(handler);
+    return () => this.statusHandlers.delete(handler);
   }
 
   close(): void {

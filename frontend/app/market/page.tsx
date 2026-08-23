@@ -3,10 +3,12 @@
 import { Chip, MenuItem, Paper, Stack, TextField, Typography } from "@mui/material";
 import { useEffect, useState } from "react";
 import { AssetManager } from "../../components/backtest/AssetManager";
+import { DatasetOverview } from "../../components/backtest/DatasetOverview";
 import { CandlestickChart } from "../../components/market/CandlestickChart";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { SectionPage } from "../../components/layout/SectionPage";
 import { useApiResource } from "../../hooks/useApiResource";
+import { useTradingAssets } from "../../hooks/useTradingAssets";
 import { EventSocket } from "../../lib/socket";
 import type { CandlesResponse, MarketStructure, PlatformEvent } from "../../lib/types";
 
@@ -15,16 +17,18 @@ const timeframes = ["M1", "M5", "M15", "H1", "H4"];
 export default function MarketPage() {
   const [events, setEvents] = useState<PlatformEvent[]>([]);
   const [isLive, setIsLive] = useState(false);
-  const [symbol, setSymbol] = useState("BTC-USDT-SWAP");
+  const [symbol, setSymbol] = useState("");
+  const assetsResource = useTradingAssets();
+  const selectedSymbol = symbol || assetsResource.assets[0];
   const [timeframe, setTimeframe] = useState("M15");
-  const query = `symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}`;
+  const query = `symbol=${encodeURIComponent(selectedSymbol)}&timeframe=${timeframe}`;
   const candles = useApiResource<CandlesResponse>(`/api/v1/data/market/candles?${query}&limit=200`);
   const structure = useApiResource<MarketStructure>(`/api/v1/smc/smart-money/structure?${query}`);
 
   useEffect(() => {
     const socket = new EventSocket();
+    socket.subscribeStatus(setIsLive);
     socket.subscribe((event) => {
-      setIsLive(true);
       setEvents((current) => [event, ...current].slice(0, 50));
     });
     void socket.connect();
@@ -39,7 +43,15 @@ export default function MarketPage() {
       isLoading={candles.isLoading || structure.isLoading}
       onReload={() => { candles.reload(); structure.reload(); }}
     >
-      <AssetManager selectedAsset={symbol} onSelect={setSymbol} />
+      <AssetManager
+        addAsset={assetsResource.addAsset}
+        assets={assetsResource.assets}
+        removeAsset={assetsResource.removeAsset}
+        selectedAsset={selectedSymbol}
+        onSelect={setSymbol}
+        onAssetsChanged={assetsResource.reload}
+      />
+      <DatasetOverview assets={assetsResource.assets} selectedAsset={selectedSymbol} />
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mb: 2 }}>
         <TextField
           select
@@ -51,7 +63,8 @@ export default function MarketPage() {
         >
           {timeframes.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}
         </TextField>
-        <Chip label={isLive ? "Поток подключён" : "Подключение…"} color={isLive ? "success" : "default"} variant="outlined" />
+        <Chip label={isLive ? "WebSocket подключён" : "WebSocket переподключается…"}
+          color={isLive ? "success" : "warning"} variant="outlined" />
       </Stack>
       <CandlestickChart candles={candles.data?.candles ?? []} structure={structure.data} />
       <Typography variant="h5" sx={{ mt: 4, mb: 2 }}>Лента событий</Typography>
