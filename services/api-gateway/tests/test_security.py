@@ -29,3 +29,8 @@ def test_only_admin_changes_risk_config():
         authorize(principal("trader"), "PATCH", "decision", "/risk/config")
     authorize(principal("admin"), "PATCH", "decision", "/risk/config")
 
+
+def test_only_admin_starts_training():
+    with pytest.raises(HTTPException):
+        authorize(principal("trader"), "POST", "learning", "/learning/train")
+    authorize(principal("admin"), "POST", "learning", "/learning/train")

@@ -84,7 +84,12 @@ def authorize(principal: Principal, method: str, service: str, path: str) -> Non
     if "admin" in principal.roles:
         return
     normalized = "/" + path.strip("/")
-    if normalized.startswith("/internal") or service == "decision" and normalized.startswith("/risk/config") and method != "GET":
+    admin_only = (
+        normalized.startswith("/internal")
+        or service == "decision" and normalized.startswith("/risk/config") and method != "GET"
+        or service == "learning" and normalized == "/learning/train" and method == "POST"
+    )
+    if admin_only:
         raise HTTPException(status_code=403, detail="Admin role is required")
     if method in {"GET", "HEAD", "OPTIONS"}:
         return

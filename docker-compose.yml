@@ -54,6 +54,20 @@ services:
       - keycloak_data:/opt/keycloak/data
       - ./infrastructure/keycloak/realm-smart-money.json:/opt/keycloak/data/import/realm-smart-money.json:ro
 
+  minio:
+    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+    container_name: smart-money-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-CHANGE_ME_MINIO}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
   data-service:
     build:
       context: ./services/data-service
@@ -192,6 +206,37 @@ services:
       timeout: 5s
       retries: 10
 
+  learning-service:
+    build:
+      context: ./services/learning-service
+      dockerfile: Dockerfile
+    container_name: smart-money-learning-service
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: ${REDIS_URL}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-CHANGE_ME_MINIO}
+      MODEL_BUCKET: models
+      MINIMUM_TRAINING_SAMPLES: ${MINIMUM_TRAINING_SAMPLES:-20}
+    ports:
+      - "8060:8060"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+      execution-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8060/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   api-gateway:
     build:
       context: ./services/api-gateway
@@ -207,6 +252,7 @@ services:
       DECISION_SERVICE_URL: http://decision-service:8020
       EXECUTION_SERVICE_URL: http://execution-service:8030
       ANALYTICS_SERVICE_URL: http://analytics-service:8040
+      LEARNING_SERVICE_URL: http://learning-service:8060
     ports:
       - "8050:8050"
     depends_on:
@@ -222,6 +268,8 @@ services:
         condition: service_healthy
       analytics-service:
         condition: service_healthy
+      learning-service:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8050/health')\""]
       interval: 10s
@@ -232,3 +280,4 @@ volumes:
   postgres_data:
   redis_data:
   keycloak_data:
+  minio_data:

@@ -15,6 +15,7 @@ SERVICE_URLS = {
     "decision": settings.decision_service_url,
     "execution": settings.execution_service_url,
     "analytics": settings.analytics_service_url,
+    "learning": settings.learning_service_url,
 }
 verifier = TokenVerifier(settings.keycloak_issuer, settings.keycloak_jwks_url, settings.keycloak_client_id)
 
@@ -72,4 +73,3 @@ async def proxy(service: str, path: str, request: Request) -> Response:
 @app.api_route("/api/v1/{service}/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 async def service_proxy(service: str, path: str, request: Request):
     return await proxy(service, path, request)
-
