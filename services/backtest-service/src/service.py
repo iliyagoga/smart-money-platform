@@ -143,6 +143,8 @@ class BacktestService:
             result["strategy_config"] = {
                 "leverage": request.config.leverage,
                 "position_size_percent": request.config.position_size_percent,
+                "stop_loss_percent": request.config.stop_loss_percent,
+                "take_profit_percent": request.config.take_profit_percent,
             }
             async with self.db.acquire() as connection:
                 await connection.execute(

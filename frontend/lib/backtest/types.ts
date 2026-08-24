@@ -45,6 +45,8 @@ export interface BacktestTrade {
   quantity: number;
   pnl: number;
   pnlPercent: number;
+  scenarioId?: string;
+  templateId?: string;
   reason: "SIGNAL" | "STOP_LOSS" | "TAKE_PROFIT" | "LIQUIDATION" | "END_OF_DATA";
 }
 
@@ -83,7 +85,12 @@ export interface BacktestResult {
   chartCandlesByTimeframe: Record<string, BacktestChartCandle[]>;
   scenarios: BacktestScenario[];
   patternDiagnostics: Record<string, Record<string, number>>;
-  strategyConfig?: { leverage: number; positionSizePercent: number };
+  strategyConfig?: {
+    leverage: number;
+    positionSizePercent: number;
+    stopLossPercent?: number;
+    takeProfitPercent?: number;
+  };
 }
 
 export interface OpenBacktestPosition {

@@ -31,6 +31,8 @@ class ScenarioTemplate(BaseModel):
     name: str
     version: int = Field(default=1, ge=1)
     enabled: bool = True
+    sources: list[str] = []
+    draft_notes: list[str] = []
     required_objects: list[ObjectRule]
     relations: list[str] = []
     allowed_timeframes: list[Timeframe] = list(Timeframe)

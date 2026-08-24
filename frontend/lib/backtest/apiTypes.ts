@@ -28,6 +28,8 @@ interface BackendTrade {
   quantity: number;
   pnl: number;
   pnl_percent: number;
+  scenario_id?: string;
+  template_id?: string;
   reason: BacktestTrade["reason"];
 }
 
@@ -73,7 +75,12 @@ export interface BackendBacktestResult {
     stop_loss_price: number; take_profit_prices: number[]; reasons: string[]; decision: string;
   }>;
   pattern_diagnostics?: Record<string, Record<string, number>>;
-  strategy_config?: { leverage: number; position_size_percent: number };
+  strategy_config?: {
+    leverage: number;
+    position_size_percent: number;
+    stop_loss_percent?: number;
+    take_profit_percent?: number;
+  };
 }
 
 export function mapBacktestResult(result: BackendBacktestResult): BacktestResult {
@@ -87,6 +94,8 @@ export function mapBacktestResult(result: BackendBacktestResult): BacktestResult
     quantity: trade.quantity,
     pnl: trade.pnl,
     pnlPercent: trade.pnl_percent,
+    scenarioId: trade.scenario_id,
+    templateId: trade.template_id,
     reason: trade.reason,
   }));
   const equity: EquityPoint[] = result.equity;
@@ -126,6 +135,8 @@ export function mapBacktestResult(result: BackendBacktestResult): BacktestResult
     strategyConfig: result.strategy_config ? {
       leverage: result.strategy_config.leverage,
       positionSizePercent: result.strategy_config.position_size_percent,
+      stopLossPercent: result.strategy_config.stop_loss_percent,
+      takeProfitPercent: result.strategy_config.take_profit_percent,
     } : undefined,
   };
 }

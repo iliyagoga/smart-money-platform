@@ -1,0 +1,38 @@
+{
+  "id": "DRAFT_RANGE_DEVIATION_REVERSAL",
+  "name": "Черновик: возврат в диапазон после девиации",
+  "version": 1,
+  "enabled": false,
+  "sources": [
+    "https://ru.tradingview.com/chart/BTCUSD/1xrc88U4-osnovy-kontseptsii-smart-money-chastb-1/"
+  ],
+  "draft_notes": [
+    "Статья описывает сбор ликвидности за границей консолидации и возврат цены в диапазон.",
+    "Текущий движок приближает границу диапазона через liquidity sweep и premium/discount; отдельный детектор range deviation повысит точность."
+  ],
+  "priority": 88,
+  "context_structure_types": ["BOS", "CHOCH", "MSS"],
+  "required_objects": [{ "kind": "ORDER_BLOCK", "min_strength": 0.35 }],
+  "relations": ["LIQUIDITY_SWEPT", "PREMIUM_DISCOUNT", "STRUCTURE_CHOCH_OR_MSS"],
+  "allowed_timeframes": ["M5", "M15", "M30", "H1", "H4"],
+  "timeframe_roles": {
+    "context": ["D1", "H4"],
+    "zones": ["H1", "M30", "M15"],
+    "triggers": ["M15", "M5"]
+  },
+  "require_liquidity_sweep": true,
+  "confirmation_types": ["CHOCH", "MSS"],
+  "confirmation_window_bars": 8,
+  "entry_rule": "FIFTY_PERCENT",
+  "stop_rule": "TRIGGER_WICK",
+  "stop_atr_buffer": 0.15,
+  "target_rule": "LIQUIDITY_THEN_RR",
+  "risk_reward": [2, 3],
+  "ttl_minutes": 360,
+  "base_confidence": 0.48,
+  "context_bonus": 0.05,
+  "confirmation_bonus": 0.08,
+  "sweep_bonus": 0.12,
+  "overlap_bonus": 0,
+  "strength_weight": 0.08
+}

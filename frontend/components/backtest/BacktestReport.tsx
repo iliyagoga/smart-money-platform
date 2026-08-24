@@ -69,6 +69,7 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
       : quarterKey(trade.exitTime) === tradePeriod.slice(2))), [result.trades, tradePeriod]);
   const visibleTrades = filteredTrades.slice(tradePage*tradesPerPage,tradePage*tradesPerPage+tradesPerPage);
   const leverage = result.strategyConfig?.leverage;
+  const scenariosById = useMemo(() => new Map(result.scenarios.map((scenario) => [scenario.id,scenario])), [result.scenarios]);
   const periodicMetrics = useMemo(() => ({
     months: months.map((key) => ({ key, label: monthLabel(key), ...summarize(
       result.trades.filter((trade) => monthKey(trade.exitTime) === key), result.initialCapital, leverage,
@@ -153,21 +154,33 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
       <TableContainer><Table size="small">
         <TableHead><TableRow><TableCell>#</TableCell><TableCell>Вход</TableCell><TableCell>Выход</TableCell><TableCell>Сторона</TableCell>
           <TableCell>Цена входа</TableCell><TableCell>Цена выхода</TableCell><TableCell>Количество</TableCell><TableCell>Общая цена лота</TableCell>
-          <TableCell>Маржа</TableCell><TableCell>PnL</TableCell><TableCell>Прибыль, %</TableCell><TableCell>Причина</TableCell>
+          <TableCell>Маржа</TableCell><TableCell>Тейк, %</TableCell><TableCell>Стоп, %</TableCell>
+          <TableCell>PnL</TableCell><TableCell>Прибыль, %</TableCell><TableCell>Причина</TableCell>
         </TableRow></TableHead>
-        <TableBody>{visibleTrades.map((trade) => <TableRow key={trade.id}>
+        <TableBody>{visibleTrades.map((trade) => {
+          const scenario = trade.scenarioId ? scenariosById.get(trade.scenarioId) : undefined;
+          const takePercents = scenario?.takeProfitPrices.map((price) => Math.abs(price-trade.entryPrice)/trade.entryPrice*100);
+          const stopPercent = scenario
+            ? Math.abs(scenario.stopLossPrice-trade.entryPrice)/trade.entryPrice*100
+            : result.strategyConfig?.stopLossPercent;
+          const fallbackTake = result.strategyConfig?.takeProfitPercent;
+          return <TableRow key={trade.id}>
           <TableCell>{trade.id}</TableCell><TableCell>{new Date(trade.entryTime).toLocaleString("ru-RU")}</TableCell>
           <TableCell>{new Date(trade.exitTime).toLocaleString("ru-RU")}</TableCell><TableCell>{trade.direction}</TableCell>
           <TableCell>{trade.entryPrice.toFixed(2)}</TableCell><TableCell>{trade.exitPrice.toFixed(2)}</TableCell>
           <TableCell>{trade.quantity.toFixed(6)}</TableCell>
           <TableCell>{(trade.entryPrice*trade.quantity).toFixed(2)}</TableCell>
           <TableCell>{marginValue(trade,leverage).toFixed(2)}</TableCell>
+          <TableCell>{takePercents?.length
+            ? takePercents.map((value) => `${value.toFixed(2)}%`).join(" / ")
+            : fallbackTake === undefined ? "—" : `${fallbackTake.toFixed(2)}%`}</TableCell>
+          <TableCell>{stopPercent === undefined ? "—" : `${stopPercent.toFixed(2)}%`}</TableCell>
           <TableCell sx={{ color: trade.pnl >= 0 ? "success.main" : "error.main", fontWeight: 700 }}>{trade.pnl.toFixed(2)}</TableCell>
           <TableCell sx={{ color: trade.pnlPercent >= 0 ? "success.main" : "error.main", fontWeight: 700 }}>
             {trade.pnlPercent.toFixed(2)}%
           </TableCell>
           <TableCell><Chip size="small" label={trade.reason} variant="outlined" /></TableCell>
-        </TableRow>)}</TableBody>
+        </TableRow>})}</TableBody>
       </Table></TableContainer>
       <TablePagination component="div" count={filteredTrades.length} page={tradePage} rowsPerPage={tradesPerPage}
         onPageChange={(_,value) => setTradePage(value)}
