@@ -64,6 +64,9 @@ export interface BackendBacktestResult {
   model_training?: { mode: string; samples: number; version?: string };
   template_distribution?: Record<string, { pnl: number; trades: number; wins: number }>;
   chart_candles?: Array<{ timestamp: number; open: number; high: number; low: number; close: number; volume: number }>;
+  chart_candles_by_timeframe?: Record<string, Array<{
+    timestamp: number; open: number; high: number; low: number; close: number; volume: number;
+  }>>;
   scenarios?: Array<{
     id: string; timestamp: number; expires_at: number; timeframe: string; direction: "LONG" | "SHORT";
     template_id: string; priority: number; confidence: number; entry_zone_low: number; entry_zone_high: number;
@@ -110,6 +113,7 @@ export function mapBacktestResult(result: BackendBacktestResult): BacktestResult
     modelTraining: result.model_training,
     templateDistribution: result.template_distribution,
     chartCandles: result.chart_candles ?? [],
+    chartCandlesByTimeframe: result.chart_candles_by_timeframe ?? {},
     scenarios: (result.scenarios ?? []).map((item) => ({
       id: item.id, timestamp: item.timestamp, expiresAt: item.expires_at, timeframe: item.timeframe,
       direction: item.direction, templateId: item.template_id, priority: item.priority, confidence: item.confidence,

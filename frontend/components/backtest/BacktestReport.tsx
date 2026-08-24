@@ -35,7 +35,12 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
       {result.modelTraining?.version ? ` (${result.modelTraining.version})` : ""}
     </Alert>
     <EquityChart points={result.equity} />
-    <BacktestPriceChart candles={result.chartCandles} scenarios={result.scenarios} trades={result.trades} />
+    <BacktestPriceChart
+      candles={result.chartCandles}
+      candlesByTimeframe={result.chartCandlesByTimeframe}
+      scenarios={result.scenarios}
+      trades={result.trades}
+    />
     <Paper variant="outlined" sx={{ mt: 1.5, p: 2.5 }}>
       <Typography variant="h6" sx={{ mb: 1.5 }}>Распределение по шаблонам</Typography>
       <Stack spacing={1}>{Object.entries(result.templateDistribution ?? {}).map(([templateId, item]) => (

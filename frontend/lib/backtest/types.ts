@@ -80,6 +80,7 @@ export interface BacktestResult {
   modelTraining?: { mode: string; samples: number; version?: string };
   templateDistribution?: Record<string, { pnl: number; trades: number; wins: number }>;
   chartCandles: BacktestChartCandle[];
+  chartCandlesByTimeframe: Record<string, BacktestChartCandle[]>;
   scenarios: BacktestScenario[];
   patternDiagnostics: Record<string, Record<string, number>>;
 }

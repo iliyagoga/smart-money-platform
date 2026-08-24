@@ -296,6 +296,9 @@ def run_smc_replay(
     report["scenarios"] = scenarios
     report["pattern_diagnostics"] = manager.diagnostics
     report["chart_candles"] = _chart_candles(candles_by_tf[primary_timeframe])
+    report["chart_candles_by_timeframe"] = {
+        timeframe: _chart_candles(candles) for timeframe, candles in candles_by_tf.items()
+    }
     return report
 
 
