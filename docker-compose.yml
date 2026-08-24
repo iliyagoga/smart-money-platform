@@ -101,13 +101,6 @@ services:
       timeout: 5s
       retries: 10
 
-  scenario-templates-init:
-    image: alpine:3.22
-    restart: "no"
-    command: ["chown", "-R", "10001:10001", "/scenario-templates"]
-    volumes:
-      - scenario_templates:/scenario-templates
-
   smc-service:
     build:
       context: .
@@ -125,8 +118,6 @@ services:
     volumes:
       - scenario_templates:/app/scenario-templates
     depends_on:
-      scenario-templates-init:
-        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
