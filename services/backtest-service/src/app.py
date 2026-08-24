@@ -37,10 +37,17 @@ async def dataset(symbol: str):
     return {"symbol": symbol.strip().upper(), "timeframes": await service.dataset(symbol)}
 
 
+@app.delete("/datasets/{symbol}")
+async def delete_dataset(symbol: str, timeframe: str | None = None):
+    if timeframe is not None and timeframe not in {"M1", "M5", "M15", "M30", "H1", "H4", "D1"}:
+        raise HTTPException(422, "Unsupported timeframe")
+    return {"symbol":symbol.strip().upper(),"timeframe":timeframe,"deleted_candles":await service.delete_dataset(symbol,timeframe)}
+
+
 @app.get("/datasets/{symbol}/audit")
 async def audit_dataset(symbol: str, timeframes: list[str] = Query(), from_timestamp: int | None = None,
                         to_timestamp: int | None = None):
-    supported = {"M1", "M5", "M15", "H1", "H4", "D1"}
+    supported = {"M1", "M5", "M15", "M30", "H1", "H4", "D1"}
     if not timeframes or any(item not in supported for item in timeframes):
         raise HTTPException(422, "Unsupported timeframe")
     reports = await service.audit_dataset(symbol, timeframes, from_timestamp, to_timestamp)

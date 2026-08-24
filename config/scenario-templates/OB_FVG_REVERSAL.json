@@ -1,7 +1,9 @@
 {
   "id": "OB_FVG_REVERSAL",
   "name": "Разворот от Order Block с подтверждением FVG",
-  "version": 1,
+  "version": 3,
+  "priority": 85,
+  "context_structure_types": ["CHOCH", "MSS", "BOS"],
   "enabled": true,
   "required_objects": [
     { "kind": "ORDER_BLOCK", "active": true, "same_direction": true, "min_strength": 0.4 },
@@ -9,6 +11,8 @@
   ],
   "relations": ["OB_OVERLAPS_FVG", "LIQUIDITY_IN_DIRECTION"],
   "allowed_timeframes": ["M1", "M5", "M15", "H1", "H4", "D1"],
+  "timeframe_roles": { "context": ["D1", "H4"], "zones": ["H1", "M30", "M15"], "triggers": ["M15", "M5", "M1"] },
+  "confirmation_types": ["CHOCH", "MSS"],
   "direction_source": "ORDER_BLOCK",
   "entry_rule": "OB_FVG_INTERSECTION",
   "stop_rule": "ORDER_BLOCK_EDGE",

@@ -11,10 +11,12 @@ import { useApiResource } from "../../hooks/useApiResource";
 import { useTradingAssets } from "../../hooks/useTradingAssets";
 import { EventSocket } from "../../lib/socket";
 import type { CandlesResponse, MarketStructure, PlatformEvent } from "../../lib/types";
+import { useAuth } from "../../components/auth/AuthProvider";
 
-const timeframes = ["M1", "M5", "M15", "H1", "H4"];
+const timeframes = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
 
 export default function MarketPage() {
+  const { roles } = useAuth();
   const [events, setEvents] = useState<PlatformEvent[]>([]);
   const [isLive, setIsLive] = useState(false);
   const [symbol, setSymbol] = useState("");
@@ -51,7 +53,7 @@ export default function MarketPage() {
         onSelect={setSymbol}
         onAssetsChanged={assetsResource.reload}
       />
-      <DatasetOverview assets={assetsResource.assets} selectedAsset={selectedSymbol} />
+      <DatasetOverview assets={assetsResource.assets} canManage={roles.includes("admin")} selectedAsset={selectedSymbol} />
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mb: 2 }}>
         <TextField
           select

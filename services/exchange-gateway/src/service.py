@@ -19,7 +19,12 @@ class ExchangeGateway:
             created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now()
           )
         """)
+        await self.db.execute("ALTER TABLE exchange_history_jobs ADD COLUMN IF NOT EXISTS timeframe_status jsonb NOT NULL DEFAULT '{}'")
         await self.db.execute("UPDATE exchange_history_jobs SET status='QUEUED' WHERE status='RUNNING'")
+        await self.db.execute("""UPDATE exchange_history_jobs SET timeframe_status=(
+          SELECT coalesce(jsonb_object_agg(key,CASE WHEN value->>'status'='RUNNING'
+            THEN jsonb_set(value,'{status}','\"QUEUED\"') ELSE value END),'{}'::jsonb)
+          FROM jsonb_each(timeframe_status)) WHERE timeframe_status<>'{}'::jsonb""")
         await self.refresh_symbols()
         for row in await self.db.fetch("SELECT id FROM exchange_history_jobs WHERE status='QUEUED'"):
             self.schedule_history(row["id"])
@@ -88,11 +93,12 @@ class ExchangeGateway:
         response.raise_for_status();body=response.json()
         if body.get("code")!="0":raise ValueError(body.get("msg","OKX error"))
         return [candle(item,symbol,timeframe) for item in body["data"]]
-    async def create_history(self,job_id,symbol,timeframes,start,end,max_candles):
+    async def create_history(self,job_id,symbol,timeframes,start,end):
+        statuses={timeframe:{"status":"QUEUED","ingested":0,"requests":0,"error":None} for timeframe in timeframes}
         await self.db.execute(
-            """INSERT INTO exchange_history_jobs(id,status,symbol,timeframes,from_timestamp,to_timestamp,max_candles)
-               VALUES($1::uuid,'QUEUED',$2,$3::jsonb,$4,$5,$6)""",
-            job_id,symbol,json.dumps(timeframes),start,end,max_candles,
+            """INSERT INTO exchange_history_jobs(id,status,symbol,timeframes,from_timestamp,to_timestamp,max_candles,timeframe_status)
+               VALUES($1::uuid,'QUEUED',$2,$3::jsonb,$4,$5,$6,$7::jsonb)""",
+            job_id,symbol,json.dumps(timeframes),start,end,0,json.dumps(statuses),
         )
         self.schedule_history(job_id);return await self.history_job(job_id)
     def schedule_history(self,job_id):
@@ -104,7 +110,7 @@ class ExchangeGateway:
         row=await self.db.fetchrow("SELECT * FROM exchange_history_jobs WHERE id=$1::uuid",job_id)
         if not row:return None
         item=dict(row)
-        for field in ("timeframes","cursors","timeframe_counts"):
+        for field in ("timeframes","cursors","timeframe_counts","timeframe_status"):
             if isinstance(item[field],str):item[field]=json.loads(item[field])
         item["id"]=str(item["id"]);item["from"]=item.pop("from_timestamp");item["to"]=item.pop("to_timestamp")
         item["created_at"]=item["created_at"].isoformat();item["updated_at"]=item["updated_at"].isoformat()
@@ -116,7 +122,11 @@ class ExchangeGateway:
         transitions={"pause":("PAUSED",{"QUEUED","RUNNING"}),"cancel":("CANCELLED",{"QUEUED","RUNNING","PAUSED"}),"resume":("QUEUED",{"PAUSED","FAILED"})}
         target,allowed=transitions[action];current=await self.db.fetchval("SELECT status FROM exchange_history_jobs WHERE id=$1::uuid",job_id)
         if current not in allowed:return None
-        await self.db.execute("UPDATE exchange_history_jobs SET status=$2,error=NULL,updated_at=now() WHERE id=$1::uuid",job_id,target)
+        job=await self.history_job(job_id);statuses=job["timeframe_status"]
+        for item in statuses.values():
+            if item["status"]!="COMPLETED":item["status"]="QUEUED" if action=="resume" else target
+            if action=="resume":item["error"]=None
+        await self.db.execute("UPDATE exchange_history_jobs SET status=$2,error=NULL,timeframe_status=$3::jsonb,updated_at=now() WHERE id=$1::uuid",job_id,target,json.dumps(statuses))
         if action=="resume":self.schedule_history(job_id)
         return await self.history_job(job_id)
     async def download_history(self,job_id):
@@ -124,43 +134,71 @@ class ExchangeGateway:
             await self.db.execute("UPDATE exchange_history_jobs SET status='RUNNING',updated_at=now() WHERE id=$1::uuid AND status='QUEUED'",job_id)
             try:
                 job=await self.history_job(job_id)
-                intervals={"M1":60_000,"M5":300_000,"M15":900_000,"H1":3_600_000,"H4":14_400_000,"D1":86_400_000}
-                targets={timeframe:job["max_candles"] for timeframe in job["timeframes"]}
-                if job["from"] is not None and job["to"] is not None:
-                    targets={
-                        timeframe:min(job["max_candles"],max(0,(job["to"]-job["from"])//intervals[timeframe]+1))
-                        for timeframe in job["timeframes"]
-                    }
-                total_target=sum(targets.values())
-                for timeframe in job["timeframes"]:
-                    count=int(job["timeframe_counts"].get(timeframe,0));cursor=job["cursors"].get(timeframe,job["to"])
-                    while count<targets[timeframe]:
-                        status=await self.db.fetchval("SELECT status FROM exchange_history_jobs WHERE id=$1::uuid",job_id)
-                        if status in {"PAUSED","CANCELLED"}:return
-                        page=await self.history_page(job["symbol"],timeframe,cursor)
-                        if not page:break
-                        eligible=[item for item in page if item["is_closed"] and (job["from"] is None or item["timestamp"]>=job["from"])]
-                        eligible=eligible[:targets[timeframe]-count];await self.ingest_batch(list(reversed(eligible)))
-                        count+=len(eligible);oldest=min(item["timestamp"] for item in page);job["cursors"][timeframe]=oldest
-                        job["timeframe_counts"][timeframe]=count;job["ingested"]+=len(eligible);job["requests"]+=1
-                        progress=min(99,int(job["ingested"]/max(1,total_target)*100))
-                        await self.db.execute(
-                            """UPDATE exchange_history_jobs SET cursors=$2::jsonb,timeframe_counts=$3::jsonb,
-                               ingested=$4,requests=$5,progress=$6,updated_at=now() WHERE id=$1::uuid""",
-                            job_id,json.dumps(job["cursors"]),json.dumps(job["timeframe_counts"]),job["ingested"],job["requests"],progress,
-                        )
-                        if len(page)<300 or (job["from"] is not None and oldest<=job["from"]):break
-                        cursor=oldest;await asyncio.sleep(.12)
-                response=await self.client.post(
-                    self.s.smc_service_url+"/internal/rebuild",
-                    json={"symbol":job["symbol"],"timeframes":job["timeframes"],"limit":500},
-                    timeout=120,
-                )
-                response.raise_for_status()
+                await asyncio.gather(*(self.download_timeframe(job_id,job,timeframe) for timeframe in job["timeframes"]))
+                status=await self.db.fetchval("SELECT status FROM exchange_history_jobs WHERE id=$1::uuid",job_id)
+                if status in {"PAUSED","CANCELLED"}:return
+                current=await self.history_job(job_id)
+                failed={key:value for key,value in current["timeframe_status"].items() if value["status"]=="FAILED"}
+                if failed:
+                    error="; ".join(f"{key}: {value['error']}" for key,value in failed.items())
+                    await self.db.execute("UPDATE exchange_history_jobs SET status='FAILED',error=$2,updated_at=now() WHERE id=$1::uuid",job_id,error[:2000]);return
                 await self.db.execute("UPDATE exchange_history_jobs SET status='COMPLETED',progress=100,updated_at=now() WHERE id=$1::uuid",job_id)
+                self.add_task(self.rebuild_smc(job["symbol"],job["timeframes"]))
             except asyncio.CancelledError:raise
             except Exception as exc:
                 await self.db.execute("UPDATE exchange_history_jobs SET status='FAILED',error=$2,updated_at=now() WHERE id=$1::uuid",job_id,str(exc)[:2000])
+    async def download_timeframe(self,job_id,job,timeframe):
+        details=job["timeframe_status"].get(timeframe,{"status":"QUEUED","ingested":0,"requests":0,"error":None})
+        if details["status"]=="COMPLETED":return
+        details["status"]="RUNNING";details["error"]=None
+        await self.update_timeframe(job_id,timeframe,details)
+        count=int(job["timeframe_counts"].get(timeframe,details["ingested"]));cursor=job["cursors"].get(timeframe,job["to"])
+        try:
+            while True:
+                status=await self.db.fetchval("SELECT status FROM exchange_history_jobs WHERE id=$1::uuid",job_id)
+                if status in {"PAUSED","CANCELLED"}:
+                    details["status"]=status;await self.update_timeframe(job_id,timeframe,details);return
+                page=await self.history_page(job["symbol"],timeframe,cursor)
+                if not page:break
+                eligible=[item for item in page if item["is_closed"]
+                          and (job["from"] is None or item["timestamp"]>=job["from"])
+                          and (job["to"] is None or item["timestamp"]<=job["to"])]
+                await self.ingest_batch(list(reversed(eligible)))
+                added=len(eligible);count+=added;details["ingested"]+=added;details["requests"]+=1
+                oldest=min(item["timestamp"] for item in page);cursor=oldest
+                await self.db.execute(
+                    """UPDATE exchange_history_jobs SET
+                       cursors=jsonb_set(cursors,ARRAY[$2],to_jsonb($3::bigint),true),
+                       timeframe_counts=jsonb_set(timeframe_counts,ARRAY[$2],to_jsonb($4::int),true),
+                       ingested=ingested+$5,requests=requests+1,updated_at=now() WHERE id=$1::uuid""",
+                    job_id,timeframe,oldest,count,added,
+                )
+                await self.update_timeframe(job_id,timeframe,details)
+                if len(page)<300 or (job["from"] is not None and oldest<=job["from"]):break
+                await asyncio.sleep(.12)
+            details["status"]="COMPLETED";await self.update_timeframe(job_id,timeframe,details)
+            completed=await self.db.fetchval(
+                "SELECT count(*) FROM exchange_history_jobs j CROSS JOIN LATERAL jsonb_each(j.timeframe_status) e WHERE j.id=$1::uuid AND e.value->>'status'='COMPLETED'",
+                job_id,
+            )
+            await self.db.execute("UPDATE exchange_history_jobs SET progress=$2 WHERE id=$1::uuid",job_id,min(99,int(completed/max(1,len(job["timeframes"]))*100)))
+        except asyncio.CancelledError:raise
+        except Exception as exc:
+            details["status"]="FAILED";details["error"]=str(exc)[:500];await self.update_timeframe(job_id,timeframe,details)
+    async def update_timeframe(self,job_id,timeframe,details):
+        await self.db.execute(
+            "UPDATE exchange_history_jobs SET timeframe_status=jsonb_set(timeframe_status,ARRAY[$2],$3::jsonb,true),updated_at=now() WHERE id=$1::uuid",
+            job_id,timeframe,json.dumps(details),
+        )
+    async def rebuild_smc(self,symbol,timeframes):
+        try:
+            response=await self.client.post(
+                self.s.smc_service_url+"/internal/rebuild",
+                json={"symbol":symbol,"timeframes":timeframes,"limit":500},timeout=120,
+            )
+            response.raise_for_status()
+        except Exception as exc:
+            self.last_error=f"smc rebuild: {type(exc).__name__}: {exc}"[:500]
     async def private(self,method,path,payload=None):
         if not all((self.s.okx_api_key,self.s.okx_secret_key,self.s.okx_passphrase)):raise ValueError("OKX API credentials are not configured")
         body=json.dumps(payload,separators=(",",":")) if payload else "";headers=auth_headers(self.s.okx_api_key,self.s.okx_secret_key,self.s.okx_passphrase,method,path,body,self.s.okx_demo)

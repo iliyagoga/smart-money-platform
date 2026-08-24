@@ -11,9 +11,8 @@ async def lifespan(app):await service.start();yield;await service.stop()
 app=FastAPI(title="OKX Exchange Gateway",version="1.0.0",lifespan=lifespan)
 class SyncRequest(BaseModel):symbol:str="BTC-USDT-SWAP";timeframe:str="M15";limit:int=100
 class HistoryRequest(BaseModel):
-    symbol:str="BTC-USDT-SWAP";timeframes:list[str]=["M1","M5","M15","H1","H4","D1"]
+    symbol:str="BTC-USDT-SWAP";timeframes:list[str]=["M1","M5","M15","M30","H1","H4","D1"]
     from_timestamp:int|None=Field(default=None,ge=0);to_timestamp:int|None=Field(default=None,ge=0)
-    max_candles_per_timeframe:int=Field(default=10000,ge=1,le=1000000)
     @model_validator(mode="after")
     def normalize(self):
         self.symbol=self.symbol.strip().upper();self.timeframes=list(dict.fromkeys(x.strip().upper() for x in self.timeframes))
@@ -34,7 +33,7 @@ async def sync(req:SyncRequest):
 @app.post("/exchange/history",status_code=202)
 async def history(req:HistoryRequest):
     job_id=str(uuid4());return await service.create_history(
-        job_id,req.symbol,req.timeframes,req.from_timestamp,req.to_timestamp,req.max_candles_per_timeframe,
+        job_id,req.symbol,req.timeframes,req.from_timestamp,req.to_timestamp,
     )
 @app.get("/exchange/history")
 async def histories():return {"jobs":await service.history_jobs()}

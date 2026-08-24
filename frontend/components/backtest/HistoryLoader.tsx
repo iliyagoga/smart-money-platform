@@ -1,6 +1,6 @@
 "use client";
 
-import { Alert, Button, LinearProgress, Paper, Stack, TextField, Typography } from "@mui/material";
+import { Alert, Button, Chip, LinearProgress, Paper, Stack, Typography } from "@mui/material";
 import { useEffect, useState } from "react";
 import { api } from "../../lib/api";
 import { useApiResource } from "../../hooks/useApiResource";
@@ -13,6 +13,12 @@ interface HistoryJob {
   requests: number;
   symbol: string;
   status: "QUEUED" | "RUNNING" | "PAUSED" | "CANCELLED" | "COMPLETED" | "FAILED";
+  timeframe_status: Record<string, {
+    error?: string;
+    ingested: number;
+    requests: number;
+    status: "QUEUED" | "RUNNING" | "PAUSED" | "CANCELLED" | "COMPLETED" | "FAILED";
+  }>;
 }
 
 interface HistoryLoaderProps {
@@ -30,24 +36,11 @@ interface DatasetResponse {
 interface HistoryJobsResponse { jobs: HistoryJob[] }
 
 export function HistoryLoader({ canManage, from, symbol, timeframes, to }: HistoryLoaderProps) {
-  const [maximum, setMaximum] = useState(10_000);
   const [job, setJob] = useState<HistoryJob>();
   const [error, setError] = useState("");
   const { data: dataset, reload: reloadDataset } = useApiResource<DatasetResponse>(
     `/api/v1/backtest/datasets/${encodeURIComponent(symbol)}`,
   );
-  const intervals: Record<string, number> = {
-    D1: 86_400_000,
-    H1: 3_600_000,
-    H4: 14_400_000,
-    M1: 60_000,
-    M15: 900_000,
-    M5: 300_000,
-  };
-  const rangeMilliseconds = Math.max(0, Date.parse(`${to}T23:59:59Z`) - Date.parse(`${from}T00:00:00Z`));
-  const requiredMaximum = Math.min(1_000_000, Math.max(
-    ...timeframes.map((timeframe) => Math.ceil(rangeMilliseconds / intervals[timeframe]) + 2),
-  ));
   const formatDate = (timestamp: number) => new Date(timestamp).toLocaleDateString("ru-RU");
   const jobId = job?.id;
   const jobStatus = job?.status;
@@ -80,7 +73,6 @@ export function HistoryLoader({ canManage, from, symbol, timeframes, to }: Histo
           timeframes,
           from_timestamp: Date.parse(`${from}T00:00:00Z`),
           to_timestamp: Date.parse(`${to}T23:59:59Z`),
-          max_candles_per_timeframe: maximum,
         }),
       });
       setJob(created);
@@ -102,27 +94,45 @@ export function HistoryLoader({ canManage, from, symbol, timeframes, to }: Histo
   return <Paper variant="outlined" sx={{ p: 2.5, mt: 2 }}>
     <Typography variant="h6">История OKX</Typography>
     <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 2 }}>
-      Сервис загружает по 300 закрытых свечей за запрос и автоматически двигается назад по истории.
+      Для каждого выбранного ТФ создаётся отдельная параллельная задача. OKX отдаёт до 300 свечей за запрос.
     </Typography>
+    <Stack direction="row" useFlexGap sx={{ flexWrap: "wrap", gap: 0.75, mb: 2 }}>
+      {timeframes.map((timeframe) => <Chip key={timeframe} size="small" color="primary" variant="outlined" label={timeframe} />)}
+    </Stack>
     <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
-      <TextField label="Максимум на каждый ТФ" type="number" value={maximum}
-        onChange={(event) => setMaximum(Number(event.target.value))}
-        helperText={`Для выбранных дат нужно до ${requiredMaximum.toLocaleString("ru-RU")}`}
-        slotProps={{ htmlInput: { min: 1, max: 1_000_000 } }} />
-      <Button variant="outlined" onClick={() => setMaximum(requiredMaximum)}>Шаг 1: рассчитать лимит</Button>
-      <Button variant="contained" disabled={!canManage || active || maximum < 1} onClick={() => void start()}>
-        {active ? "Загружаем…" : "Шаг 2: начать загрузку OKX"}
+      <Button variant="contained" disabled={!canManage || active} onClick={() => void start()}>
+        {active ? "Загружаем…" : "Загрузить все свечи за период"}
       </Button>
       {job?.status === "RUNNING" && <Button onClick={() => void control("pause")}>Пауза</Button>}
       {job?.status === "PAUSED" && <Button onClick={() => void control("resume")}>Продолжить</Button>}
       {active && <Button color="error" onClick={() => void control("cancel")}>Отменить</Button>}
     </Stack>
     <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
-      Расчёт меняет только лимит. Загрузка начинается после нажатия синей кнопки «Шаг 2».
+      Будут запрошены все доступные закрытые свечи между выбранными датами, без расчёта и ограничения количества.
     </Typography>
     {job && <Stack spacing={0.75} sx={{ mt: 2 }}>
       <LinearProgress variant="determinate" value={job.progress} />
       <Typography variant="caption">{job.status} · сохранено {job.ingested} · запросов к OKX: {job.requests}</Typography>
+      <Stack spacing={1} sx={{ pt: 1 }}>
+        {Object.entries(job.timeframe_status ?? {}).map(([timeframe, item]) => <Paper
+          key={timeframe} variant="outlined" sx={{ p: 1.25 }}
+        >
+          <Stack direction="row" sx={{ alignItems: "center", justifyContent: "space-between", gap: 1 }}>
+            <Typography variant="body2" sx={{ fontWeight: 700 }}>{timeframe}</Typography>
+            <Chip size="small" label={item.status} color={item.status === "COMPLETED" ? "success" : item.status === "FAILED" ? "error" : "default"} />
+          </Stack>
+          <LinearProgress
+            sx={{ my: 0.75 }}
+            variant={item.status === "RUNNING" ? "indeterminate" : "determinate"}
+            value={item.status === "COMPLETED" ? 100 : 0}
+            color={item.status === "FAILED" ? "error" : "primary"}
+          />
+          <Typography variant="caption" color="text.secondary">
+            Свечей: {item.ingested.toLocaleString("ru-RU")} · запросов: {item.requests}
+          </Typography>
+          {item.error && <Typography variant="caption" color="error.main" sx={{ display: "block" }}>{item.error}</Typography>}
+        </Paper>)}
+      </Stack>
     </Stack>}
     <Stack direction="row" useFlexGap sx={{ flexWrap: "wrap", gap: 1, mt: 2 }}>
       {(dataset?.timeframes ?? []).map((item) => (

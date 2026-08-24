@@ -44,7 +44,9 @@ export default function Dashboard() {
 
   useEffect(() => {
     void loadDashboard();
-    const socket = new EventSocket();
+    // На обзорной странице нужны только события, требующие внимания. Рыночный
+    // поток candle/trade/orderbook остаётся на странице «Рынок».
+    const socket = new EventSocket(["scenario.*", "position.*", "model.*", "bandit.*"]);
     socket.subscribeStatus(setIsLive);
     socket.subscribe((event) => {
       setEvents((currentEvents) => [event, ...currentEvents].slice(0, 8));

@@ -152,7 +152,7 @@ class BacktestService:
                 )
 
     async def load_candles(self, symbol, timeframes, start, end, limit):
-        intervals = {"M1":60_000,"M5":300_000,"M15":900_000,"H1":3_600_000,"H4":14_400_000,"D1":86_400_000}
+        intervals = {"M1":60_000,"M5":300_000,"M15":900_000,"M30":1_800_000,"H1":3_600_000,"H4":14_400_000,"D1":86_400_000}
         bounded_limit = min(limit, self.settings.max_candles)
         result = {}
         async with self.db.acquire() as connection:
@@ -286,8 +286,16 @@ class BacktestService:
             )
         return [dict(row) for row in rows]
 
+    async def delete_dataset(self, symbol: str, timeframe: str | None = None):
+        symbol = symbol.strip().upper()
+        async with self.db.acquire() as connection:
+            result = await connection.execute(
+                "DELETE FROM candles WHERE symbol=$1 AND ($2::text IS NULL OR timeframe=$2)",symbol,timeframe,
+            )
+        return int(result.rsplit(" ",1)[-1])
+
     async def audit_dataset(self, symbol, timeframes, start=None, end=None):
-        intervals = {"M1":60_000,"M5":300_000,"M15":900_000,"H1":3_600_000,"H4":14_400_000,"D1":86_400_000}
+        intervals = {"M1":60_000,"M5":300_000,"M15":900_000,"M30":1_800_000,"H1":3_600_000,"H4":14_400_000,"D1":86_400_000}
         reports=[]
         async with self.db.acquire() as connection:
             for timeframe in timeframes:

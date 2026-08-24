@@ -69,10 +69,28 @@ def _candle(item: dict) -> Candle:
     return Candle.model_validate({**item, "timeframe": item["timeframe"]})
 
 
+def _chart_candles(candles: list[dict], maximum: int = 3000) -> list[dict]:
+    """Bound chart payload/DOM size while preserving OHLC extremes and volume."""
+    if len(candles) <= maximum:
+        return [{key: item[key] for key in ("timestamp", "open", "high", "low", "close", "volume")} for item in candles]
+    bucket_size = max(1, (len(candles) + maximum - 1) // maximum)
+    result = []
+    for offset in range(0, len(candles), bucket_size):
+        bucket = candles[offset:offset + bucket_size]
+        result.append({
+            "timestamp": bucket[0]["timestamp"], "open": bucket[0]["open"],
+            "high": max(item["high"] for item in bucket), "low": min(item["low"] for item in bucket),
+            "close": bucket[-1]["close"], "volume": sum(item["volume"] for item in bucket),
+        })
+    return result
+
+
 def _scenario_outcome(scenario, future: list[Candle], start: int = 0) -> int:
     entered = False
     for index in range(start, len(future)):
         candle = future[index]
+        if candle.timestamp > scenario.expires_at:
+            break
         if candle.timestamp <= scenario.created_at:
             continue
         if not entered:
@@ -97,15 +115,13 @@ def train_local_model(
     model = TemplateModel()
     primary = [_candle(item) for item in candles_by_tf[primary_timeframe]]
     primary_timestamps = [item.timestamp for item in primary]
-    events = sorted((_candle(item) for values in candles_by_tf.values() for item in values), key=lambda item: item.timestamp)
+    rank = {Timeframe.D1: 0, Timeframe.H4: 1, Timeframe.H1: 2, Timeframe.M30: 3,
+            Timeframe.M15: 4, Timeframe.M5: 5, Timeframe.M1: 6}
+    events = sorted((_candle(item) for values in candles_by_tf.values() for item in values),
+                    key=lambda item: (item.timestamp, rank[item.timeframe]))
     for candle in events:
         pipeline.process(candle)
-        key = (candle.symbol, candle.timeframe)
-        generated = manager.generate(
-            candle.symbol, candle.timeframe, pipeline.obs[key], pipeline.fvgs[key], pipeline.liquidity[key],
-            set(config.template_ids) or None, candle.timestamp, pipeline.changes[key], pipeline.swings[key],
-            [value for (symbol, _), value in pipeline.trends.items() if symbol == candle.symbol and value],
-        )
+        generated = manager.generate_top_down(candle.symbol, candle, pipeline, set(config.template_ids) or None)
         for scenario in generated:
             start = bisect_right(primary_timestamps, scenario.created_at)
             model.learn(scenario.setup_type, _scenario_outcome(scenario, primary, start))
@@ -138,13 +154,17 @@ def run_smc_replay(
 ) -> dict:
     pipeline = AnalysisPipeline()
     manager = ScenarioManager(TemplateStore(template_dir))
-    events = sorted((_candle(item) for values in candles_by_tf.values() for item in values), key=lambda item: (item.timestamp, item.timeframe))
+    rank = {Timeframe.D1: 0, Timeframe.H4: 1, Timeframe.H1: 2, Timeframe.M30: 3,
+            Timeframe.M15: 4, Timeframe.M5: 5, Timeframe.M1: 6}
+    events = sorted((_candle(item) for values in candles_by_tf.values() for item in values),
+                    key=lambda item: (item.timestamp, rank[item.timeframe]))
     primary = {item.timestamp: item for item in (_candle(value) for value in candles_by_tf[primary_timeframe])}
     capital = config.initial_capital
     position: VirtualPosition | None = None
     pending = []
     trades = []
     decisions = []
+    scenarios = []
     equity = []
     maker_rate = (config.maker_fee_percent if config.maker_fee_percent is not None else config.fee_percent) / 100
     taker_rate = (config.taker_fee_percent if config.taker_fee_percent is not None else config.fee_percent) / 100
@@ -182,13 +202,8 @@ def run_smc_replay(
         position = None
 
     for candle in events:
-        result = pipeline.process(candle)
-        key = (candle.symbol, candle.timeframe)
-        generated = manager.generate(
-            candle.symbol, candle.timeframe, pipeline.obs[key], pipeline.fvgs[key], pipeline.liquidity[key],
-            set(config.template_ids) or None, candle.timestamp, pipeline.changes[key], pipeline.swings[key],
-            [value for (symbol, _), value in pipeline.trends.items() if symbol == candle.symbol and value],
-        )
+        pipeline.process(candle)
+        generated = manager.generate_top_down(candle.symbol, candle, pipeline, set(config.template_ids) or None)
         for scenario in generated:
             confidence = model.probability(scenario.setup_type, scenario.confidence) if model else scenario.confidence
             allowed = confidence >= config.confidence_threshold and (
@@ -197,6 +212,15 @@ def run_smc_replay(
             decisions.append({
                 "timestamp": candle.timestamp, "scenario_id": scenario.id, "template_id": scenario.setup_type,
                 "confidence": confidence, "decision": "PENDING" if allowed else "REJECTED",
+            })
+            scenarios.append({
+                "id": scenario.id, "timestamp": scenario.created_at, "expires_at": scenario.expires_at,
+                "timeframe": scenario.timeframe, "direction": scenario.direction,
+                "template_id": scenario.setup_type, "priority": scenario.priority, "confidence": confidence,
+                "entry_zone_low": scenario.entry_zone_low, "entry_zone_high": scenario.entry_zone_high,
+                "stop_loss_price": scenario.stop_loss_price,
+                "take_profit_prices": scenario.take_profit_prices, "reasons": scenario.reasons,
+                "decision": "PENDING" if allowed else "REJECTED",
             })
             if allowed:
                 pending.append((scenario, confidence))
@@ -239,7 +263,7 @@ def run_smc_replay(
             candidates = [item for item in pending if candle.timestamp >= item[0].created_at + config.execution_latency_ms
                           and candle.low <= item[0].entry_zone_high and candle.high >= item[0].entry_zone_low]
             if candidates:
-                scenario, confidence = max(candidates, key=lambda item: item[1])
+                scenario, confidence = max(candidates, key=lambda item: (item[0].priority, item[1]))
                 raw_entry = min(max(candle.open, scenario.entry_zone_low), scenario.entry_zone_high)
                 entry = price_tick(raw_entry * (1 + slip if scenario.direction == "LONG" else 1 - slip))
                 risk_distance = abs(entry - scenario.stop_loss_price)
@@ -268,7 +292,11 @@ def run_smc_replay(
         last = primary[max(primary)]
         close(last, last.close, "END_OF_DATA")
         equity.append({"timestamp": last.timestamp, "equity": capital})
-    return _report(config, candles_by_tf[primary_timeframe], capital, trades, equity, decisions, model)
+    report = _report(config, candles_by_tf[primary_timeframe], capital, trades, equity, decisions, model)
+    report["scenarios"] = scenarios
+    report["pattern_diagnostics"] = manager.diagnostics
+    report["chart_candles"] = _chart_candles(candles_by_tf[primary_timeframe])
+    return report
 
 
 def _report(config, candles, capital, trades, equity, decisions, model):

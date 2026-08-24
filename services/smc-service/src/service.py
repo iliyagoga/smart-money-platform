@@ -74,11 +74,7 @@ class SMCService:
         await self.infra.cache("ob",candle.symbol,candle.timeframe,[x for x in self.pipeline.obs[key] if not x.is_broken])
         await self.infra.cache("fvg",candle.symbol,candle.timeframe,[x for x in self.pipeline.fvgs[key] if not x.is_filled])
         await self.infra.cache("liquidity",candle.symbol,candle.timeframe,[x for x in self.pipeline.liquidity[key] if not x.swept])
-        trends=[value for (symbol,_),value in self.pipeline.trends.items() if symbol==candle.symbol and value]
-        generated=self.scenarios.generate(
-            candle.symbol,candle.timeframe,self.pipeline.obs[key],self.pipeline.fvgs[key],self.pipeline.liquidity[key],
-            changes=self.pipeline.changes[key],swings=self.pipeline.swings[key],trends=trends,
-        )
+        generated=self.scenarios.generate_top_down(candle.symbol,candle,self.pipeline)
         for scenario in generated:
             await self.infra.db.execute("INSERT INTO scenarios(id,symbol,status,data,created_at) VALUES($1::uuid,$2,$3,$4::jsonb,to_timestamp($5/1000.0)) ON CONFLICT(id) DO NOTHING",scenario.id,scenario.symbol,scenario.status,json.dumps(scenario.model_dump(mode="json")),scenario.created_at)
             await self.infra.publish("scenario.update","scenario.created",scenario,correlation_id)

@@ -1,7 +1,6 @@
 "use client";
 
 import { Button, MenuItem, Paper, Stack, TextField, Typography } from "@mui/material";
-import { useState } from "react";
 import type { BacktestSettings, DirectionMode } from "../../lib/backtest/types";
 
 interface BacktestSettingsFormProps {
@@ -13,13 +12,11 @@ interface BacktestSettingsFormProps {
 }
 
 export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, settings }: BacktestSettingsFormProps) {
-  const [templateInput, setTemplateInput] = useState(() => settings.templateIds.join(", "));
   const updateNumber = (key: keyof BacktestSettings, value: string) => onChange({ ...settings, [key]: Number(value) });
   const isValid = settings.initialCapital > 0
     && settings.positionSizePercent > 0
     && settings.positionSizePercent <= 100
-    && settings.riskPerTradePercent > 0
-    && settings.templateIds.length > 0;
+    && settings.riskPerTradePercent > 0;
 
   return <Paper variant="outlined" sx={{ p: 3 }}>
     <Typography variant="h6">Параметры стратегии</Typography>
@@ -36,12 +33,9 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
       >
         <MenuItem value="BOTH">Long и Short</MenuItem><MenuItem value="LONG">Только Long</MenuItem><MenuItem value="SHORT">Только Short</MenuItem>
       </TextField>
-      <TextField label="Шаблоны" value={templateInput} helperText="ID JSON-шаблонов через запятую"
-        onChange={(event) => {
-          const value = event.target.value;
-          setTemplateInput(value);
-          onChange({ ...settings, templateIds: value.split(",").map((item) => item.trim()).filter(Boolean) });
-        }} />
+      <Typography variant="body2" color="text.secondary">
+        Автоматически проверяются все включённые шаблоны и их собственные роли таймфреймов.
+      </Typography>
       <TextField label="Начальный капитал" value={settings.initialCapital} type="number"
         onChange={(event) => updateNumber("initialCapital", event.target.value)} />
       <TextField label="Размер позиции, %" value={settings.positionSizePercent} type="number"

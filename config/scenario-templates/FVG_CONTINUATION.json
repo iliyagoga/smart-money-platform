@@ -1,13 +1,17 @@
 {
   "id": "FVG_CONTINUATION",
   "name": "Продолжение через дисбаланс FVG",
-  "version": 1,
+  "version": 3,
+  "priority": 65,
+  "context_structure_types": ["BOS"],
   "required_objects": [
     { "kind": "ORDER_BLOCK", "min_strength": 0.35 },
     { "kind": "FVG", "min_strength": 0 }
   ],
   "relations": ["OB_OVERLAPS_FVG", "STRUCTURE_BOS"],
   "allowed_timeframes": ["M1", "M5", "M15", "H1"],
+  "timeframe_roles": { "context": ["H4", "H1"], "zones": ["H1", "M30", "M15"], "triggers": ["M15", "M5", "M1"] },
+  "confirmation_types": ["BOS"],
   "entry_rule": "OB_FVG_INTERSECTION",
   "stop_rule": "ORDER_BLOCK_EDGE",
   "target_rule": "FIXED_RR",

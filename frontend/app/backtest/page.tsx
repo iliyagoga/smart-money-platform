@@ -44,13 +44,13 @@ const defaultSettings: BacktestSettings = {
   riskPerTradePercent: 1,
   kellyFraction: 0.25,
   confidenceThreshold: 0.6,
-  templateIds: ["OB_FVG_REVERSAL"],
+  templateIds: [],
   localRetraining: true,
 };
 
-const timeframes = ["M1", "M5", "M15", "H1", "H4", "D1"];
+const timeframes = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
 const timeframeMilliseconds: Record<string, number> = {
-  M1: 60_000, M5: 300_000, M15: 900_000, H1: 3_600_000, H4: 14_400_000, D1: 86_400_000,
+  M1: 60_000, M5: 300_000, M15: 900_000, M30: 1_800_000, H1: 3_600_000, H4: 14_400_000, D1: 86_400_000,
 };
 
 export default function BacktestPage() {
@@ -82,6 +82,8 @@ export default function BacktestPage() {
   ));
 
   const run = async () => {
+    const effectiveCandleLimit = Math.max(candleLimit, requiredTestCandleLimit);
+    if (effectiveCandleLimit !== candleLimit) setCandleLimit(effectiveCandleLimit);
     setIsRunning(true);
     setError("");
     try {
@@ -92,7 +94,7 @@ export default function BacktestPage() {
           symbol: selectedAsset,
           timeframe,
           timeframes: selectedTimeframes,
-          candle_limit: candleLimit,
+          candle_limit: effectiveCandleLimit,
           train_from: Date.parse(`${trainFrom}T00:00:00Z`),
           train_to: Date.parse(`${trainTo}T23:59:59Z`),
           test_from: Date.parse(`${testFrom}T00:00:00Z`),
@@ -195,7 +197,7 @@ export default function BacktestPage() {
         onSelect={setAsset}
         onAssetsChanged={reloadAssets}
       />
-      <DatasetOverview assets={assets} selectedAsset={selectedAsset} />
+      <DatasetOverview assets={assets} canManage={roles.includes("admin")} selectedAsset={selectedAsset} />
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mt: 2.5 }}>
         <TextField select label="Основной таймфрейм" value={timeframe} onChange={(event) => {
           const value = event.target.value;
@@ -209,7 +211,7 @@ export default function BacktestPage() {
           value={candleLimit}
           type="number"
           onChange={(event) => setCandleLimit(Number(event.target.value))}
-          helperText={`Для полного тестового периода нужно до ${requiredTestCandleLimit.toLocaleString("ru-RU")}`}
+          helperText={`Нужно до ${requiredTestCandleLimit.toLocaleString("ru-RU")}; при запуске лимит увеличится автоматически`}
           slotProps={{ htmlInput: { min: 100, max: 1_000_000 } }}
         />
         <Button variant="outlined" onClick={() => setCandleLimit(requiredTestCandleLimit)}>

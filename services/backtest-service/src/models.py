@@ -75,7 +75,7 @@ class BacktestCreate(BaseModel):
         self.symbol = self.symbol.strip().upper()
         self.timeframe = self.timeframe.strip().upper()
         self.timeframes = list(dict.fromkeys(item.strip().upper() for item in self.timeframes))
-        supported = {"M1", "M5", "M15", "H1", "H4", "D1"}
+        supported = {"M1", "M5", "M15", "M30", "H1", "H4", "D1"}
         if self.timeframe not in supported or any(item not in supported for item in self.timeframes):
             raise ValueError("unsupported timeframe")
         if self.timeframe not in self.timeframes:

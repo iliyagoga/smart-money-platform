@@ -6,7 +6,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, model_validator
 
 
-class Timeframe(StrEnum): M1="M1"; M5="M5"; M15="M15"; H1="H1"; H4="H4"; D1="D1"
+class Timeframe(StrEnum): M1="M1"; M5="M5"; M15="M15"; M30="M30"; H1="H1"; H4="H4"; D1="D1"
 class Direction(StrEnum): BULLISH="BULLISH"; BEARISH="BEARISH"
 class TrendDirection(StrEnum): UP="UP"; DOWN="DOWN"; SIDEWAYS="SIDEWAYS"
 class SwingType(StrEnum): HIGH="HIGH"; LOW="LOW"
@@ -62,7 +62,8 @@ class AnalysisResult(BaseModel):
 
 class Scenario(BaseModel):
     id: str = Field(default_factory=lambda:str(uuid4())); symbol: str; timeframe: Timeframe; direction: str
-    setup_type: str; confidence: float = Field(ge=0,le=1); entry_zone_low: float; entry_zone_high: float
+    setup_type: str; priority: int = Field(default=50, ge=0, le=100)
+    confidence: float = Field(ge=0,le=1); entry_zone_low: float; entry_zone_high: float
     stop_loss_price: float; take_profit_prices: list[float]; status: str = "ACTIVE"
     reasons: list[str] = []; objections: list[str] = []; objects_used: list[dict] = []
     created_at: int = Field(default_factory=lambda:int(time()*1000)); expires_at: int

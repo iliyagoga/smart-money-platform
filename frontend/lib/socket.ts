@@ -5,7 +5,7 @@ import type { PlatformEvent } from "./types";
 type EventHandler = (event: PlatformEvent) => void;
 type StatusHandler = (connected: boolean) => void;
 
-const subscriptionEvents = [
+export const allSubscriptionEvents = [
   "candle.*",
   "trade.executed",
   "orderbook.updated",
@@ -23,6 +23,8 @@ export class EventSocket {
   private readonly handlers = new Set<EventHandler>();
   private readonly statusHandlers = new Set<StatusHandler>();
 
+  constructor(private readonly subscriptionEvents: string[] = allSubscriptionEvents) {}
+
   async connect(): Promise<void> {
     await keycloak().updateToken(30);
     const accessToken = keycloak().token;
@@ -32,7 +34,7 @@ export class EventSocket {
     this.socket.onopen = () => {
       this.attempt = 0;
       this.statusHandlers.forEach((handler) => handler(true));
-      this.socket?.send(JSON.stringify({ op: "subscribe", events: subscriptionEvents }));
+      this.socket?.send(JSON.stringify({ op: "subscribe", events: this.subscriptionEvents }));
     };
     this.socket.onmessage = (message) => {
       const event = JSON.parse(String(message.data)) as PlatformEvent;

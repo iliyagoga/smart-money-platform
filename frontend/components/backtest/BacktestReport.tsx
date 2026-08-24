@@ -1,6 +1,7 @@
 import { Alert, Chip, Grid, Paper, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography } from "@mui/material";
 import type { BacktestResult } from "../../lib/backtest/types";
 import { EquityChart } from "./EquityChart";
+import { BacktestPriceChart } from "./BacktestPriceChart";
 
 interface MetricProps { label: string; value: string; tone?: "success" | "error" }
 
@@ -34,6 +35,7 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
       {result.modelTraining?.version ? ` (${result.modelTraining.version})` : ""}
     </Alert>
     <EquityChart points={result.equity} />
+    <BacktestPriceChart candles={result.chartCandles} scenarios={result.scenarios} trades={result.trades} />
     <Paper variant="outlined" sx={{ mt: 1.5, p: 2.5 }}>
       <Typography variant="h6" sx={{ mb: 1.5 }}>Распределение по шаблонам</Typography>
       <Stack spacing={1}>{Object.entries(result.templateDistribution ?? {}).map(([templateId, item]) => (
@@ -42,6 +44,14 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
         </Typography>
       ))}</Stack>
       {!Object.keys(result.templateDistribution ?? {}).length && <Typography color="text.secondary">Сделок по шаблонам нет.</Typography>}
+    </Paper>
+    <Paper variant="outlined" sx={{ mt: 1.5, p: 2.5 }}>
+      <Typography variant="h6" sx={{ mb: 1.5 }}>Диагностика поиска паттернов</Typography>
+      {Object.entries(result.patternDiagnostics).map(([template, reasons]) => <div key={template}>
+        <Typography variant="subtitle2" sx={{ mt: 1 }}>{template}</Typography>
+        <Typography variant="body2" color="text.secondary">{Object.entries(reasons).map(([reason, count]) => `${reason}: ${count}`).join(" · ") || "Нет отказов"}</Typography>
+      </div>)}
+      {!Object.keys(result.patternDiagnostics).length && <Typography color="text.secondary">Диагностика отсутствует.</Typography>}
     </Paper>
     <Paper variant="outlined" sx={{ mt: 1.5, p: { xs: 1, md: 2.5 } }}>
       <Typography variant="h6" sx={{ px: 1, pb: 2 }}>Журнал сделок</Typography>

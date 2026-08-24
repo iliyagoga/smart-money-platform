@@ -54,6 +54,8 @@ class DecisionService:
             except asyncio.CancelledError:await pubsub.aclose();raise
             except Exception:log.exception("Scenario listener failed");await pubsub.aclose();await asyncio.sleep(2)
     async def evaluate(self,scenario:Scenario):
+        if scenario.expires_at <= int(time()*1000):
+            return None
         preference=await self.bandit_preference(scenario);score=self.probability.calculate(self.probability.scenario_features(scenario),scenario,preference);scenario.confidence=score.confidence
         self.scenarios[scenario.id]=scenario
         payload={"scenario_id":scenario.id,"confidence":score.confidence,"confidence_details":score.confidence_details.model_dump()}

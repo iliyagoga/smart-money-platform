@@ -101,5 +101,8 @@ export function runBacktest({ candles, settings }: BacktestInput): BacktestResul
     averageTrade: trades.length ? netProfit / trades.length : 0,
     trades,
     equity,
+    chartCandles: sortedCandles.map(({ timestamp, open, high, low, close, volume }) => ({ timestamp, open, high, low, close, volume })),
+    scenarios: [],
+    patternDiagnostics: {},
   };
 }

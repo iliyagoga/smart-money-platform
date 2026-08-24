@@ -2,7 +2,7 @@ import base64,hashlib,hmac,json
 from datetime import datetime,timezone
 from urllib.parse import urlencode
 
-TIMEFRAMES={"M1":"1m","M5":"5m","M15":"15m","H1":"1H","H4":"4H","D1":"1D"}
+TIMEFRAMES={"M1":"1m","M5":"5m","M15":"15m","M30":"30m","H1":"1H","H4":"4H","D1":"1D"}
 REVERSE_TIMEFRAMES={v:k for k,v in TIMEFRAMES.items()}
 
 def timestamp(): return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00","Z")

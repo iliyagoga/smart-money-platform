@@ -126,4 +126,14 @@ class AnalysisPipeline:
         new_obs,changed_obs=self.ob_engine.update(bars,self.obs[key]);self.obs[key].extend(new_obs)
         new_fvgs,changed_fvgs=self.fvg_engine.update(bars,self.fvgs[key]);self.fvgs[key].extend(new_fvgs)
         new_liq=[self.liquidity_engine.create(x,self.swings[key],atr(bars)) for x in new_swings];self.liquidity[key].extend(new_liq);changed_liq=self.liquidity_engine.sweep(candle,self.liquidity[key])
+        # Scenario generation only needs active POIs plus a bounded recent history of
+        # structure/sweeps. Without pruning every new candle scanned the full market
+        # history, which made long replays progressively slower.
+        self.swings[key][:]=self.swings[key][-500:]
+        self.changes[key][:]=self.changes[key][-500:]
+        self.obs[key][:]=[item for item in self.obs[key] if not item.is_broken][-500:]
+        self.fvgs[key][:]=[item for item in self.fvgs[key] if not item.is_filled][-500:]
+        active_liquidity=[item for item in self.liquidity[key] if not item.swept]
+        swept_liquidity=[item for item in self.liquidity[key] if item.swept][-100:]
+        self.liquidity[key][:]=(active_liquidity[-500:]+swept_liquidity)
         return AnalysisResult(swings=new_swings,trend=trend,changes=changes,order_blocks=new_obs+changed_obs,fvgs=new_fvgs+changed_fvgs,liquidity_zones=new_liq+changed_liq)

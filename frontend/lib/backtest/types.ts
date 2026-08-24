@@ -49,6 +49,12 @@ export interface BacktestTrade {
 }
 
 export interface EquityPoint { timestamp: number; equity: number }
+export interface BacktestChartCandle { timestamp: number; open: number; high: number; low: number; close: number; volume: number }
+export interface BacktestScenario {
+  id: string; timestamp: number; expiresAt: number; timeframe: string; direction: TradeDirection;
+  templateId: string; priority: number; confidence: number; entryZoneLow: number; entryZoneHigh: number;
+  stopLossPrice: number; takeProfitPrices: number[]; reasons: string[]; decision: string;
+}
 
 export interface BacktestResult {
   initialCapital: number;
@@ -73,6 +79,9 @@ export interface BacktestResult {
   };
   modelTraining?: { mode: string; samples: number; version?: string };
   templateDistribution?: Record<string, { pnl: number; trades: number; wins: number }>;
+  chartCandles: BacktestChartCandle[];
+  scenarios: BacktestScenario[];
+  patternDiagnostics: Record<string, Record<string, number>>;
 }
 
 export interface OpenBacktestPosition {

@@ -15,12 +15,13 @@ interface AssetDataset { symbol: string; timeframes: TimeframeDataset[] }
 
 interface DatasetOverviewProps {
   assets: string[];
+  canManage: boolean;
   selectedAsset?: string;
 }
 
 const date = (timestamp?: number) => timestamp ? new Date(timestamp).toLocaleDateString("ru-RU") : "—";
 
-export function DatasetOverview({ assets, selectedAsset }: DatasetOverviewProps) {
+export function DatasetOverview({ assets, canManage, selectedAsset }: DatasetOverviewProps) {
   const [datasets, setDatasets] = useState<AssetDataset[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
@@ -42,6 +43,17 @@ export function DatasetOverview({ assets, selectedAsset }: DatasetOverviewProps)
 
   useEffect(() => { void load(); }, [load]);
 
+  const remove = async (symbol: string) => {
+    if (!window.confirm(`Удалить все сохранённые свечи ${symbol}? История бэктестов останется.`)) return;
+    setError("");
+    try {
+      await api(`/api/v1/backtest/datasets/${encodeURIComponent(symbol)}`, { method: "DELETE" });
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
   return <Paper variant="outlined" sx={{ p: 2.5, my: 2 }}>
     <Stack direction="row" sx={{ alignItems: "center", justifyContent: "space-between", mb: 2 }}>
       <Typography variant="h6">Загруженные датасеты</Typography>
@@ -62,6 +74,8 @@ export function DatasetOverview({ assets, selectedAsset }: DatasetOverviewProps)
               <Typography variant="caption" color="text.secondary">
                 Сумма по всем ТФ: {total.toLocaleString("ru-RU")} свечей
               </Typography>
+              {canManage && total > 0 && <Button color="error" size="small" sx={{ alignSelf: "flex-start", mt: 0.5 }}
+                onClick={() => void remove(dataset.symbol)}>Удалить датасет</Button>}
             </Stack>
             <Stack direction="row" useFlexGap sx={{ flexWrap: "wrap", gap: 0.75 }}>
               {dataset.timeframes.length ? dataset.timeframes.map((item) => <Chip

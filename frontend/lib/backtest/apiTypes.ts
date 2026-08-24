@@ -63,6 +63,13 @@ export interface BackendBacktestResult {
   };
   model_training?: { mode: string; samples: number; version?: string };
   template_distribution?: Record<string, { pnl: number; trades: number; wins: number }>;
+  chart_candles?: Array<{ timestamp: number; open: number; high: number; low: number; close: number; volume: number }>;
+  scenarios?: Array<{
+    id: string; timestamp: number; expires_at: number; timeframe: string; direction: "LONG" | "SHORT";
+    template_id: string; priority: number; confidence: number; entry_zone_low: number; entry_zone_high: number;
+    stop_loss_price: number; take_profit_prices: number[]; reasons: string[]; decision: string;
+  }>;
+  pattern_diagnostics?: Record<string, Record<string, number>>;
 }
 
 export function mapBacktestResult(result: BackendBacktestResult): BacktestResult {
@@ -102,5 +109,14 @@ export function mapBacktestResult(result: BackendBacktestResult): BacktestResult
     } : undefined,
     modelTraining: result.model_training,
     templateDistribution: result.template_distribution,
+    chartCandles: result.chart_candles ?? [],
+    scenarios: (result.scenarios ?? []).map((item) => ({
+      id: item.id, timestamp: item.timestamp, expiresAt: item.expires_at, timeframe: item.timeframe,
+      direction: item.direction, templateId: item.template_id, priority: item.priority, confidence: item.confidence,
+      entryZoneLow: item.entry_zone_low, entryZoneHigh: item.entry_zone_high,
+      stopLossPrice: item.stop_loss_price, takeProfitPrices: item.take_profit_prices,
+      reasons: item.reasons, decision: item.decision,
+    })),
+    patternDiagnostics: result.pattern_diagnostics ?? {},
   };
 }

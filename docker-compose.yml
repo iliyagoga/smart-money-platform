@@ -272,6 +272,8 @@ services:
         condition: service_healthy
       data-service:
         condition: service_healthy
+      smc-service:
+        condition: service_healthy
       minio:
         condition: service_started
     healthcheck:
@@ -297,7 +299,7 @@ services:
       MARKET_DATA_ENABLED: ${OKX_LIVE_MARKET_ENABLED:-true}
       EXCHANGE_SYMBOLS: ${EXCHANGE_SYMBOLS:-BTC-USDT-SWAP}
       SYMBOLS: ${EXCHANGE_SYMBOLS:-BTC-USDT-SWAP}
-      TIMEFRAMES: ${EXCHANGE_TIMEFRAMES:-M1,M5,M15,H1,H4,D1}
+      TIMEFRAMES: ${EXCHANGE_TIMEFRAMES:-M1,M5,M15,M30,H1,H4,D1}
       DATA_SERVICE_URL: http://data-service:8000
       SMC_SERVICE_URL: http://smc-service:8010
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
