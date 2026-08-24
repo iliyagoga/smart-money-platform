@@ -43,11 +43,13 @@ export function DatasetOverview({ assets, canManage, selectedAsset }: DatasetOve
 
   useEffect(() => { void load(); }, [load]);
 
-  const remove = async (symbol: string) => {
-    if (!window.confirm(`Удалить все сохранённые свечи ${symbol}? История бэктестов останется.`)) return;
+  const remove = async (symbol: string, timeframe?: string) => {
+    const target = timeframe ? `${symbol} · ${timeframe}` : symbol;
+    if (!window.confirm(`Удалить все сохранённые свечи ${target}? История бэктестов останется.`)) return;
     setError("");
     try {
-      await api(`/api/v1/backtest/datasets/${encodeURIComponent(symbol)}`, { method: "DELETE" });
+      const query = timeframe ? `?timeframe=${encodeURIComponent(timeframe)}` : "";
+      await api(`/api/v1/backtest/datasets/${encodeURIComponent(symbol)}${query}`, { method: "DELETE" });
       await load();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -82,6 +84,7 @@ export function DatasetOverview({ assets, canManage, selectedAsset }: DatasetOve
                 key={item.timeframe}
                 size="small"
                 label={`${item.timeframe}: ${item.candles.toLocaleString("ru-RU")} · ${date(item.from_timestamp)} — ${date(item.to_timestamp)}`}
+                onDelete={canManage ? () => void remove(dataset.symbol,item.timeframe) : undefined}
               />) : <Chip size="small" label="Нет свечей" color="warning" />}
             </Stack>
           </Stack>

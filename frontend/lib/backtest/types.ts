@@ -83,6 +83,7 @@ export interface BacktestResult {
   chartCandlesByTimeframe: Record<string, BacktestChartCandle[]>;
   scenarios: BacktestScenario[];
   patternDiagnostics: Record<string, Record<string, number>>;
+  strategyConfig?: { leverage: number; positionSizePercent: number };
 }
 
 export interface OpenBacktestPosition {

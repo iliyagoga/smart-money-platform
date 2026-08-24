@@ -13,13 +13,16 @@ interface SectionPageProps {
   isLoading?: boolean;
   onReload?: () => void;
   title: string;
+  wide?: boolean;
 }
 
-export function SectionPage({ children, description, error = "", isLoading = false, onReload, title }: SectionPageProps) {
+export function SectionPage({ children, description, error = "", isLoading = false, onReload, title, wide = false }: SectionPageProps) {
   const { username } = useAuth();
   return (
     <AuthenticatedPage>
-      <Container component="main" maxWidth={false} sx={{ maxWidth: 1500, pb: 7.5, px: { xs: 2, md: 4.75 } }}>
+      <Container component="main" maxWidth={false} sx={{
+        maxWidth: wide ? "95vw" : 1500, width: wide ? "95%" : "100%", pb: 7.5, px: { xs: 2, md: 4.75 },
+      }}>
         <DashboardHeader isLive username={username} />
         <Stack direction={{ xs: "column", sm: "row" }} sx={{ py: { xs: 4, md: 6 }, justifyContent: "space-between", gap: 2 }}>
           <Box>

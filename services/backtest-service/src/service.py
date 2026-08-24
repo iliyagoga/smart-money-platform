@@ -131,6 +131,7 @@ class BacktestService:
                     self.settings.scenario_template_dir, model,
                 )
                 result["dataset"]["timeframes"] = request.timeframes
+                result["dataset"]["execution_timeframe"] = request.timeframe
                 result["dataset"]["requested_train_from"] = request.train_from
                 result["dataset"]["requested_train_to"] = request.train_to
                 result["dataset"]["requested_test_from"] = request.test_from
@@ -139,6 +140,10 @@ class BacktestService:
                     result["model_training"]["artifact_path"] = artifact_path
             else:
                 result = await asyncio.to_thread(run_backtest, test_candles[request.timeframe], request.config)
+            result["strategy_config"] = {
+                "leverage": request.config.leverage,
+                "position_size_percent": request.config.position_size_percent,
+            }
             async with self.db.acquire() as connection:
                 await connection.execute(
                     "UPDATE backtest_runs SET status='COMPLETED',progress=100,result=$2::jsonb,completed_at=now() WHERE id=$1",

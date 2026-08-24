@@ -16,6 +16,11 @@ def test_train_and_test_periods_cannot_overlap():
         )
 
 
+def test_smc_execution_timeframe_is_selected_automatically():
+    request = BacktestCreate(symbol="BTC-USDT-SWAP", timeframe="H4", timeframes=["H4", "M15", "H1"])
+    assert request.timeframe == "M15"
+
+
 def test_local_model_is_deterministic_and_smoothed():
     model = TemplateModel()
     model.learn("REVERSAL", 1)

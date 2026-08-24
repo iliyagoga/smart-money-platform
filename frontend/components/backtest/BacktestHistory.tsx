@@ -1,4 +1,4 @@
-import { Button, Checkbox, Chip, Paper, Stack, Typography } from "@mui/material";
+import { Button, Checkbox, Chip, Paper, Stack, TablePagination, Typography } from "@mui/material";
 import { useState } from "react";
 import type { BacktestRunSummary } from "../../lib/backtest/apiTypes";
 
@@ -17,12 +17,15 @@ const statusColor = (status: BacktestRunSummary["status"]) => {
 
 export function BacktestHistory({ onCompare, onExport, onOpen, runs }: BacktestHistoryProps) {
   const [selected, setSelected] = useState<string[]>([]);
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(10);
+  const pageRuns = runs.slice(page*rowsPerPage, page*rowsPerPage+rowsPerPage);
   return <Paper variant="outlined" sx={{ mt: 1.5, p: 2.5 }}>
     <Stack direction="row" sx={{ alignItems: "center", justifyContent: "space-between", mb: 2 }}>
       <Typography variant="h6">Сохранённые запуски</Typography>
       <Button disabled={selected.length < 2} onClick={() => onCompare(selected)}>Сравнить ({selected.length})</Button>
     </Stack>
-    <Stack spacing={1}>{runs.map((run) => <Stack
+    <Stack spacing={1}>{pageRuns.map((run) => <Stack
       key={run.id}
       direction={{ xs: "column", md: "row" }}
       sx={{ alignItems: { md: "center" }, borderBottom: 1, borderColor: "divider", py: 1.25, gap: 1 }}
@@ -42,5 +45,9 @@ export function BacktestHistory({ onCompare, onExport, onOpen, runs }: BacktestH
       <Button disabled={run.status !== "COMPLETED"} onClick={() => onExport(run, "csv")}>CSV</Button>
       <Button disabled={run.status !== "COMPLETED"} onClick={() => onExport(run, "json")}>JSON</Button>
     </Stack>)}</Stack>
+    <TablePagination component="div" count={runs.length} page={Math.min(page,Math.max(0,Math.ceil(runs.length/rowsPerPage)-1))}
+      onPageChange={(_,value) => setPage(value)} rowsPerPage={rowsPerPage}
+      onRowsPerPageChange={(event) => { setRowsPerPage(Number(event.target.value)); setPage(0); }}
+      rowsPerPageOptions={[5,10,25,50]} labelRowsPerPage="Запусков на странице" />
   </Paper>;
 }

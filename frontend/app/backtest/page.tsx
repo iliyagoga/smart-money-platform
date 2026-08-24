@@ -1,6 +1,6 @@
 "use client";
 
-import { Alert, Button, Checkbox, FormControlLabel, FormGroup, Grid, MenuItem, Paper, Stack, TextField, Typography } from "@mui/material";
+import { Alert, Box, Button, Checkbox, FormControlLabel, FormGroup, Grid, Paper, Stack, Tab, Tabs, TextField, Typography } from "@mui/material";
 import { useState } from "react";
 import { AssetManager } from "../../components/backtest/AssetManager";
 import { BacktestReport } from "../../components/backtest/BacktestReport";
@@ -57,7 +57,6 @@ export default function BacktestPage() {
   const { roles } = useAuth();
   const [asset, setAsset] = useState("");
   const { addAsset, assets, reload: reloadAssets, removeAsset } = useTradingAssets();
-  const [timeframe, setTimeframe] = useState("M15");
   const [selectedTimeframes, setSelectedTimeframes] = useState(timeframes);
   const [candleLimit, setCandleLimit] = useState(10_000);
   const today = new Date().toISOString().slice(0, 10);
@@ -71,6 +70,7 @@ export default function BacktestPage() {
   const [error, setError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [workspaceTab, setWorkspaceTab] = useState(0);
   const runsResource = useApiResource<BacktestRunsResponse>("/api/v1/backtest/backtests");
   const selectedAsset = asset || assets[0];
   const testRangeMilliseconds = Math.max(
@@ -92,7 +92,6 @@ export default function BacktestPage() {
         method: "POST",
         body: JSON.stringify({
           symbol: selectedAsset,
-          timeframe,
           timeframes: selectedTimeframes,
           candle_limit: effectiveCandleLimit,
           train_from: Date.parse(`${trainFrom}T00:00:00Z`),
@@ -144,6 +143,7 @@ export default function BacktestPage() {
       }
       if (!completed?.result) throw new Error("Расчёт выполняется дольше часа. Его результат останется в истории запусков.");
       setResult(mapBacktestResult(completed.result));
+      setWorkspaceTab(2);
       runsResource.reload();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -156,7 +156,7 @@ export default function BacktestPage() {
     setError("");
     try {
       const runDetails = await api<BacktestRun>(`/api/v1/backtest/backtests/${runId}`);
-      if (runDetails.result) setResult(mapBacktestResult(runDetails.result));
+      if (runDetails.result) { setResult(mapBacktestResult(runDetails.result)); setWorkspaceTab(2); }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     }
@@ -186,7 +186,16 @@ export default function BacktestPage() {
     }
   };
 
-  return <SectionPage title="Бэктест" description="Проверка торговых стратегий на исторических данных без отправки ордеров.">
+  return <SectionPage wide title="Бэктест" description="Проверка торговых стратегий на исторических данных без отправки ордеров.">
+    <Paper variant="outlined" sx={{ mb: 2, px: { xs: 1, md: 2 }, bgcolor: "background.paper" }}>
+      <Tabs value={workspaceTab} onChange={(_,value) => setWorkspaceTab(value)} variant="scrollable" scrollButtons="auto">
+        <Tab label="1. Данные" /><Tab label="2. Настройка и запуск" />
+        <Tab label={result ? "3. Результаты" : "3. Результаты · нет данных"} />
+        <Tab label="4. История запусков" />
+      </Tabs>
+    </Paper>
+    {error && <Alert severity="error" sx={{ mb: 1.5 }}>{error}</Alert>}
+    {workspaceTab === 0 && <Box sx={{ p: { xs: 1, md: 2 }, borderRadius: 2, bgcolor: "action.hover" }}>
     <Paper variant="outlined" sx={{ p: 3, mb: 1.5 }}>
       <Typography variant="h6" sx={{ mb: 2 }}>Активы и исторические данные</Typography>
       <AssetManager
@@ -199,13 +208,9 @@ export default function BacktestPage() {
       />
       <DatasetOverview assets={assets} canManage={roles.includes("admin")} selectedAsset={selectedAsset} />
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mt: 2.5 }}>
-        <TextField select label="Основной таймфрейм" value={timeframe} onChange={(event) => {
-          const value = event.target.value;
-          setTimeframe(value);
-          setSelectedTimeframes((current) => current.includes(value) ? current : [...current, value]);
-        }} sx={{ minWidth: 180 }}>
-          {timeframes.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}
-        </TextField>
+        <Alert severity="info" sx={{ flex: 1 }}>
+          Роли таймфреймов задаются шаблонами. Для точного исполнения сделок автоматически используется самый младший выбранный ТФ.
+        </Alert>
         <TextField
           label="Количество свечей"
           value={candleLimit}
@@ -221,7 +226,7 @@ export default function BacktestPage() {
       <FormGroup row sx={{ mt: 1 }}>
         {timeframes.map((item) => <FormControlLabel key={item} label={item} control={<Checkbox
           checked={selectedTimeframes.includes(item)}
-          disabled={item === timeframe}
+          disabled={selectedTimeframes.length === 1 && selectedTimeframes.includes(item)}
           onChange={(event) => setSelectedTimeframes((current) => event.target.checked
             ? [...current, item]
             : current.filter((value) => value !== item))}
@@ -262,9 +267,10 @@ export default function BacktestPage() {
         to={testTo}
       />
     </Paper>
-    {error && <Alert severity="error" sx={{ mb: 1.5 }}>{error}</Alert>}
-    <Grid container spacing={1.5}>
-      <Grid size={{ xs: 12, lg: 4 }}>
+    </Box>}
+    {workspaceTab === 1 && <Box sx={{ p: { xs: 1, md: 2 }, borderRadius: 2, bgcolor: "action.hover" }}>
+      <Grid container spacing={2}>
+      <Grid size={{ xs: 12, xl: 5 }}>
         <BacktestSettingsForm
           settings={settings}
           onChange={setSettings}
@@ -273,15 +279,28 @@ export default function BacktestPage() {
           progress={progress}
         />
       </Grid>
-      <Grid size={{ xs: 12, lg: 8 }}>
-        {result ? <BacktestReport result={result} /> : (
-          <Paper variant="outlined" sx={{ minHeight: 420, display: "grid", placeContent: "center", textAlign: "center", p: 3 }}>
-          <Typography variant="h5">Настройте стратегию и запустите расчёт</Typography>
-          <Typography color="text.secondary" sx={{ mt: 1 }}>Здесь появятся метрики, кривая капитала и журнал сделок.</Typography>
-          </Paper>
-        )}
+      <Grid size={{ xs: 12, xl: 7 }}>
+        <Paper variant="outlined" sx={{ p: 3, position: { xl: "sticky" }, top: { xl: 16 } }}>
+          <Typography variant="h5">Параметры запуска</Typography>
+          <Typography color="text.secondary" sx={{ mt: 1 }}>
+            {selectedAsset} · {selectedTimeframes.join(", ")} · тест {testFrom} — {testTo}
+          </Typography>
+          <Alert severity={isRunning ? "warning" : "info"} sx={{ mt: 2 }}>
+            {isRunning ? `Расчёт выполняется: ${progress}%` : "После завершения система автоматически откроет вкладку результатов."}
+          </Alert>
+          <Button variant="outlined" sx={{ mt: 2 }} onClick={() => setWorkspaceTab(0)}>Изменить данные и периоды</Button>
+        </Paper>
       </Grid>
     </Grid>
+    </Box>}
+    {workspaceTab === 2 && <Box sx={{ p: { xs: 1, md: 2 }, borderRadius: 2, bgcolor: "action.hover" }}>
+      {result ? <BacktestReport result={result} /> : <Paper variant="outlined" sx={{ minHeight: 420, display: "grid", placeContent: "center", textAlign: "center", p: 3 }}>
+        <Typography variant="h5">Результатов пока нет</Typography>
+        <Typography color="text.secondary" sx={{ mt: 1 }}>Настройте данные и выполните бэктест.</Typography>
+        <Button variant="contained" sx={{ mt: 2 }} onClick={() => setWorkspaceTab(1)}>Перейти к запуску</Button>
+      </Paper>}
+    </Box>}
+    {workspaceTab === 3 && <Box sx={{ p: { xs: 1, md: 2 }, borderRadius: 2, bgcolor: "action.hover" }}>
     <BacktestHistory
       runs={runsResource.data?.runs ?? []}
       onOpen={(runItem) => void openRun(runItem.id)}
@@ -299,5 +318,6 @@ export default function BacktestPage() {
         </Paper>)}
       </Stack>
     </Paper>}
+    </Box>}
   </SectionPage>;
 }

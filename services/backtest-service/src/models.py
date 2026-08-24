@@ -76,9 +76,12 @@ class BacktestCreate(BaseModel):
         self.timeframe = self.timeframe.strip().upper()
         self.timeframes = list(dict.fromkeys(item.strip().upper() for item in self.timeframes))
         supported = {"M1", "M5", "M15", "M30", "H1", "H4", "D1"}
-        if self.timeframe not in supported or any(item not in supported for item in self.timeframes):
+        if not self.timeframes or self.timeframe not in supported or any(item not in supported for item in self.timeframes):
             raise ValueError("unsupported timeframe")
-        if self.timeframe not in self.timeframes:
+        if self.config.strategy == StrategyType.SMC:
+            order = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
+            self.timeframe = min(self.timeframes, key=order.__getitem__)
+        elif self.timeframe not in self.timeframes:
             self.timeframes.append(self.timeframe)
         values = (self.train_from, self.train_to, self.test_from, self.test_to)
         if any(value is not None for value in values):

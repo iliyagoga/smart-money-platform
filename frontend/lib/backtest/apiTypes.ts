@@ -73,6 +73,7 @@ export interface BackendBacktestResult {
     stop_loss_price: number; take_profit_prices: number[]; reasons: string[]; decision: string;
   }>;
   pattern_diagnostics?: Record<string, Record<string, number>>;
+  strategy_config?: { leverage: number; position_size_percent: number };
 }
 
 export function mapBacktestResult(result: BackendBacktestResult): BacktestResult {
@@ -122,5 +123,9 @@ export function mapBacktestResult(result: BackendBacktestResult): BacktestResult
       reasons: item.reasons, decision: item.decision,
     })),
     patternDiagnostics: result.pattern_diagnostics ?? {},
+    strategyConfig: result.strategy_config ? {
+      leverage: result.strategy_config.leverage,
+      positionSizePercent: result.strategy_config.position_size_percent,
+    } : undefined,
   };
 }
