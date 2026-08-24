@@ -1,7 +1,7 @@
 FROM node:22-alpine AS build
 WORKDIR /app
 COPY package*.json ./
-RUN npm install
+RUN --mount=type=cache,target=/root/.npm npm ci
 COPY . .
 ARG NEXT_PUBLIC_API_URL=http://localhost:8050
 ARG NEXT_PUBLIC_KEYCLOAK_URL=http://localhost:8080

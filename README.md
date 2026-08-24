@@ -7,6 +7,10 @@ cp .env.example .env
 docker compose up --build
 ```
 
+`COMPOSE_PARALLEL_LIMIT=2` в `.env` ограничивает число одновременных операций
+сборки. Это предотвращает аварийное завершение Docker Desktop при первом запуске
+всех сервисов на машинах с ограниченной памятью.
+
 После старта API доступен на `http://localhost:8000`, Swagger UI — на `http://localhost:8000/swagger-ui.html`.
 
 Модули SMC-анализа находятся в [`services/smc-service`](services/smc-service/README.md). API сервиса доступен на `http://localhost:8010`, OpenAPI — на `http://localhost:8010/docs`.
