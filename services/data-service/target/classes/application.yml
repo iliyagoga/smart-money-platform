@@ -1,0 +1,20 @@
+server:
+  port: ${SERVER_PORT:8000}
+  shutdown: graceful
+spring:
+  application.name: data-service
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/smart_money}
+    username: ${POSTGRES_USER:smart_money}
+    password: ${POSTGRES_PASSWORD:smart_money}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:10}
+  data.redis.url: ${REDIS_URL:redis://localhost:6379}
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    default-property-inclusion: non_null
+  lifecycle.timeout-per-shutdown-phase: 20s
+management:
+  endpoints.web.exposure.include: health,info,prometheus
+  endpoint.health.probes.enabled: true
+springdoc.swagger-ui.path: /swagger-ui.html
