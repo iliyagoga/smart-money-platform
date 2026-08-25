@@ -144,6 +144,7 @@ class BacktestService:
                 "leverage": request.config.leverage,
                 "position_size_percent": request.config.position_size_percent,
                 "stop_loss_percent": request.config.stop_loss_percent,
+                "smc_min_stop_percent": request.config.smc_min_stop_percent,
                 "take_profit_percent": request.config.take_profit_percent,
             }
             async with self.db.acquire() as connection:

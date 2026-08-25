@@ -44,6 +44,7 @@ class BacktestConfig(BaseModel):
     rsi_overbought: float = Field(default=70, ge=0, le=100)
     direction_mode: DirectionMode = DirectionMode.BOTH
     risk_per_trade_percent: float = Field(default=1, gt=0, le=10)
+    smc_min_stop_percent: float = Field(default=.3, gt=0, le=10)
     kelly_fraction: float = Field(default=.25, ge=0, le=1)
     confidence_threshold: float = Field(default=.6, ge=0, le=1)
     template_ids: list[str] = Field(default_factory=list)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from dataclasses import dataclass, field
-from math import floor, sqrt
+from math import ceil, floor, sqrt
 from statistics import mean, pstdev
 from math import exp
 
@@ -83,6 +83,37 @@ def _chart_candles(candles: list[dict], maximum: int = 3000) -> list[dict]:
             "close": bucket[-1]["close"], "volume": sum(item["volume"] for item in bucket),
         })
     return result
+
+
+def _execution_plan(entry: float, scenario, minimum_stop_percent: float, tick_size: float) -> tuple[float, list[float]]:
+    """Rebase the structural plan on the actual fill and enforce a usable stop distance."""
+    side = 1 if scenario.direction == "LONG" else -1
+    planned_entry = (scenario.entry_zone_low + scenario.entry_zone_high) / 2
+    planned_risk = (planned_entry - scenario.stop_loss_price) * side
+    structural_risk = (entry - scenario.stop_loss_price) * side
+    minimum_risk = entry * minimum_stop_percent / 100
+    risk = max(structural_risk, minimum_risk, tick_size)
+
+    # Preserve each scenario target's intended R multiple, but measure it from
+    # the actual fill and the corrected stop instead of the zone midpoint.
+    ratios = []
+    if planned_risk > 0:
+        ratios = [
+            (target - planned_entry) * side / planned_risk
+            for target in scenario.take_profit_prices
+            if (target - planned_entry) * side > 0
+        ]
+    ratios = [ratio for ratio in ratios if ratio > 0]
+    if not ratios:
+        ratios = [2.0]
+
+    if side > 0:
+        stop = floor((entry - risk) / tick_size) * tick_size
+        targets = [ceil((entry + risk * ratio) / tick_size) * tick_size for ratio in ratios]
+    else:
+        stop = ceil((entry + risk) / tick_size) * tick_size
+        targets = [floor((entry - risk * ratio) / tick_size) * tick_size for ratio in ratios]
+    return stop, list(dict.fromkeys(targets))
 
 
 def _scenario_outcome(scenario, future: list[Candle], start: int = 0) -> int:
@@ -266,7 +297,10 @@ def run_smc_replay(
                 scenario, confidence = max(candidates, key=lambda item: (item[0].priority, item[1]))
                 raw_entry = min(max(candle.open, scenario.entry_zone_low), scenario.entry_zone_high)
                 entry = price_tick(raw_entry * (1 + slip if scenario.direction == "LONG" else 1 - slip))
-                risk_distance = abs(entry - scenario.stop_loss_price)
+                stop, targets = _execution_plan(
+                    entry, scenario, config.smc_min_stop_percent, config.tick_size,
+                )
+                risk_distance = abs(entry - stop)
                 kelly = max(0, 2 * confidence - 1) * config.kelly_fraction * 100
                 risk_percent = min(config.risk_per_trade_percent, kelly)
                 quantity = min(
@@ -279,10 +313,15 @@ def run_smc_replay(
                     entry_fee = entry * quantity * maker_rate
                     capital -= entry_fee
                     position = VirtualPosition(
-                        scenario.direction, entry, candle.timestamp, quantity, scenario.stop_loss_price,
-                        list(scenario.take_profit_prices), scenario.id, scenario.setup_type, confidence, quantity,
+                        scenario.direction, entry, candle.timestamp, quantity, stop,
+                        targets, scenario.id, scenario.setup_type, confidence, quantity,
                         fees=entry_fee, last_funding_time=candle.timestamp,
                     )
+                    report_scenario = next(item for item in reversed(scenarios) if item["id"] == scenario.id)
+                    report_scenario["decision"] = "EXECUTED"
+                    report_scenario["entry_price"] = entry
+                    report_scenario["stop_loss_price"] = stop
+                    report_scenario["take_profit_prices"] = targets
                 pending.clear()
         unrealized = 0
         if position:
