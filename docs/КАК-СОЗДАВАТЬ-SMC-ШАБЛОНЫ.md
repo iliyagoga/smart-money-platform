@@ -26,6 +26,9 @@
 - `direction_source` — источник стороны сделки: `CONTEXT`, `ORDER_BLOCK` или `FVG`.
 - `required_objects` — требуемые `ORDER_BLOCK` и/или `FVG`; `min_strength` задаёт минимальную силу.
 - `relations` — дополнительные связи: `OB_OVERLAPS_FVG`, `LIQUIDITY_SWEPT`, `LIQUIDITY_IN_DIRECTION`, `STRUCTURE_BOS`, `STRUCTURE_CHOCH_OR_MSS`, `OB_RETESTED`, `PREMIUM_DISCOUNT`, `HIGHER_TIMEFRAME_ALIGNMENT`.
+- `allowed_directions` — разрешённые стороны сделки (`LONG`, `SHORT`). Например, `["SHORT"]` полностью отключает LONG для этого шаблона.
+- `minimum_context_alignments` — сколько трендов из `timeframe_roles.context` должны совпасть с направлением сделки при `HIGHER_TIMEFRAME_ALIGNMENT`. Для строгого подтверждения D1+H4 укажите context `["D1", "H4"]` и значение `2`.
+- `minimum_stop_percent`, `maximum_stop_percent` — допустимый диапазон структурного стопа в процентах от входа. Сценарий вне диапазона отбрасывается, а не получает искусственно расширенный/суженный стоп. Проверка повторяется по фактической цене исполнения.
 - `require_zone_touch` — создавать сценарий только после касания зоны trigger-свечой.
 - `require_confirmation`, `confirmation_types`, `confirmation_window_bars` — обязательность, типы и временное окно локального подтверждения.
 - `require_liquidity_sweep` — требовать SFP/sweep ликвидности в направлении разворота.

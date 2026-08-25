@@ -1,0 +1,21 @@
+{
+  "id": "BTC_BOS_SHORT_HTF",
+  "name": "BTC SHORT: BOS с подтверждением D1 и H4",
+  "version": 1,
+  "enabled": true,
+  "priority": 87,
+  "context_structure_types": ["BOS"],
+  "required_objects": [{ "kind": "ORDER_BLOCK", "min_strength": 0.4 }],
+  "relations": ["STRUCTURE_BOS", "LIQUIDITY_IN_DIRECTION", "HIGHER_TIMEFRAME_ALIGNMENT"],
+  "allowed_timeframes": ["M1", "M5", "M15"],
+  "timeframe_roles": { "context": ["D1", "H4"], "zones": ["H1", "M30", "M15"], "triggers": ["M15", "M5", "M1"] },
+  "direction_source": "CONTEXT",
+  "allowed_directions": ["SHORT"],
+  "minimum_context_alignments": 2,
+  "confirmation_types": ["BOS"],
+  "entry_rule": "ORDER_BLOCK",
+  "stop_rule": "ORDER_BLOCK_EDGE",
+  "target_rule": "LIQUIDITY_THEN_RR",
+  "risk_reward": [2, 4],
+  "base_confidence": 0.56
+}

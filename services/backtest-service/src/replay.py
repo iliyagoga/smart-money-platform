@@ -133,6 +133,15 @@ def _execution_plan(entry: float, scenario, minimum_stop_percent: float, tick_si
     return stop, list(dict.fromkeys(targets))
 
 
+def _template_stop_distance_allowed(entry: float, stop: float, template) -> bool:
+    """Check the template's structural-stop band against the actual executable fill."""
+    stop_percent = abs(entry - stop) / entry * 100
+    minimum = getattr(template, "minimum_stop_percent", None)
+    maximum = getattr(template, "maximum_stop_percent", None)
+    return ((minimum is None or stop_percent >= minimum)
+            and (maximum is None or stop_percent <= maximum))
+
+
 def _scenario_outcome(scenario, future: list[Candle], start: int = 0, ready_at: int | None = None,
                       config: BacktestConfig | None = None, fixed_ratios: list[float] | None = None) -> int | None:
     entered = False
@@ -347,42 +356,56 @@ def run_smc_replay(
             candidates = [item for item in pending if available_at > item[2] + config.execution_latency_ms
                           and candle.low <= item[0].entry_zone_high and candle.high >= item[0].entry_zone_low]
             if candidates:
-                scenario, confidence, _, _ = max(candidates, key=lambda item: (item[0].priority, item[1]))
-                raw_entry = min(max(candle.open, scenario.entry_zone_low), scenario.entry_zone_high)
-                entry = price_tick(raw_entry * (1 + slip if scenario.direction == "LONG" else 1 - slip))
-                template = manager.store.get(scenario.setup_type)
-                stop, targets = _execution_plan(
-                    entry, scenario, config.smc_min_stop_percent, config.tick_size,
-                    template.risk_reward if template else None, config.smc_min_target_rr, config.smc_max_target_rr,
-                )
-                risk_distance = abs(entry - stop)
-                kelly = max(0, 2 * confidence - 1) * config.kelly_fraction * 100
-                risk_percent = min(config.risk_per_trade_percent, kelly)
-                quantity = min(
-                    capital * risk_percent / 100 / max(risk_distance, 1e-12),
-                    capital * config.leverage / entry,
-                    candle.volume * config.volume_participation_percent / 100,
-                )
-                quantity = floor(quantity / config.lot_size) * config.lot_size
-                if quantity >= config.minimum_order_size:
-                    entry_fee = entry * quantity * maker_rate
-                    capital -= entry_fee
-                    position = VirtualPosition(
-                        scenario.direction, entry, available_at, quantity, stop,
-                        targets, scenario.id, scenario.setup_type, confidence, quantity,
-                        realized=-entry_fee, fees=entry_fee, last_funding_time=available_at,
+                executable = []
+                rejected_ids = set()
+                for candidate in candidates:
+                    scenario, confidence, _, _ = candidate
+                    raw_entry = min(max(candle.open, scenario.entry_zone_low), scenario.entry_zone_high)
+                    entry = price_tick(raw_entry * (1 + slip if scenario.direction == "LONG" else 1 - slip))
+                    template = manager.store.get(scenario.setup_type)
+                    stop, targets = _execution_plan(
+                        entry, scenario, config.smc_min_stop_percent, config.tick_size,
+                        template.risk_reward if template else None, config.smc_min_target_rr, config.smc_max_target_rr,
                     )
-                    report_scenario = scenario_reports[scenario.id]
-                    set_scenario_status(scenario.id, "EXECUTED")
-                    report_scenario["entry_price"] = entry
-                    report_scenario["entry_time"] = available_at
-                    report_scenario["stop_loss_price"] = stop
-                    report_scenario["take_profit_prices"] = targets
-                else:
-                    set_scenario_status(scenario.id, "REJECTED_SIZE")
-                for item in pending:
-                    if item[0].id != scenario.id: set_scenario_status(item[0].id, "SUPERSEDED")
-                pending.clear()
+                    if template and not _template_stop_distance_allowed(entry, stop, template):
+                        set_scenario_status(scenario.id, "REJECTED_STOP_DISTANCE")
+                        rejected_ids.add(scenario.id)
+                    else:
+                        executable.append((candidate, entry, stop, targets))
+                if rejected_ids:
+                    pending[:] = [item for item in pending if item[0].id not in rejected_ids]
+                if executable:
+                    (scenario, confidence, _, _), entry, stop, targets = max(
+                        executable, key=lambda item: (item[0][0].priority, item[0][1])
+                    )
+                    risk_distance = abs(entry - stop)
+                    kelly = max(0, 2 * confidence - 1) * config.kelly_fraction * 100
+                    risk_percent = min(config.risk_per_trade_percent, kelly)
+                    quantity = min(
+                        capital * risk_percent / 100 / max(risk_distance, 1e-12),
+                        capital * config.leverage / entry,
+                        candle.volume * config.volume_participation_percent / 100,
+                    )
+                    quantity = floor(quantity / config.lot_size) * config.lot_size
+                    if quantity >= config.minimum_order_size:
+                        entry_fee = entry * quantity * maker_rate
+                        capital -= entry_fee
+                        position = VirtualPosition(
+                            scenario.direction, entry, available_at, quantity, stop,
+                            targets, scenario.id, scenario.setup_type, confidence, quantity,
+                            realized=-entry_fee, fees=entry_fee, last_funding_time=available_at,
+                        )
+                        report_scenario = scenario_reports[scenario.id]
+                        set_scenario_status(scenario.id, "EXECUTED")
+                        report_scenario["entry_price"] = entry
+                        report_scenario["entry_time"] = available_at
+                        report_scenario["stop_loss_price"] = stop
+                        report_scenario["take_profit_prices"] = targets
+                    else:
+                        set_scenario_status(scenario.id, "REJECTED_SIZE")
+                    for item in pending:
+                        if item[0].id != scenario.id: set_scenario_status(item[0].id, "SUPERSEDED")
+                    pending.clear()
         unrealized = 0
         if position:
             unrealized = (candle.close - position.entry_price) * position.quantity * (1 if position.direction == "LONG" else -1)

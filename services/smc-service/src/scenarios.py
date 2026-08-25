@@ -46,9 +46,13 @@ class ScenarioTemplate(BaseModel):
     require_liquidity_sweep: bool = False
     confirmation_window_bars: int = Field(default=6, ge=1, le=100)
     direction_source: str = "CONTEXT"
+    allowed_directions: list[str] = ["LONG", "SHORT"]
+    minimum_context_alignments: int = Field(default=2, ge=1, le=7)
     entry_rule: str = "OB_FVG_INTERSECTION"
     stop_rule: str = "ORDER_BLOCK_EDGE"
     stop_atr_buffer: float = Field(default=.1, ge=0, le=10)
+    minimum_stop_percent: float | None = Field(default=None, gt=0, le=20)
+    maximum_stop_percent: float | None = Field(default=None, gt=0, le=20)
     target_rule: str = "LIQUIDITY_THEN_RR"
     risk_reward: list[float] = [2, 3]
     ttl_minutes: int = Field(default=1440, ge=1)
@@ -85,6 +89,11 @@ class ScenarioTemplate(BaseModel):
                 raise ValueError(f"unsupported {field}")
         if self.direction_source not in {"CONTEXT", "ORDER_BLOCK", "FVG"}:
             raise ValueError("unsupported direction source")
+        if not self.allowed_directions or any(item not in {"LONG", "SHORT"} for item in self.allowed_directions):
+            raise ValueError("allowed directions must contain LONG and/or SHORT")
+        if (self.minimum_stop_percent is not None and self.maximum_stop_percent is not None
+                and self.minimum_stop_percent > self.maximum_stop_percent):
+            raise ValueError("minimum stop percent cannot exceed maximum stop percent")
         return self
 
 
@@ -224,6 +233,9 @@ class ScenarioManager:
             self._reject(template.id, "NO_DIRECTION_SOURCE")
             return []
         direction = "LONG" if source == Direction.BULLISH else "SHORT"
+        if direction not in template.allowed_directions:
+            self._reject(template.id, "DIRECTION_NOT_ALLOWED")
+            return []
         confirmations = [item for item in pipeline.changes[trigger_key]
                          if item.direction == source and item.type in template.confirmation_types
                          and cutoff <= item.timestamp <= candle.timestamp]
@@ -273,7 +285,7 @@ class ScenarioManager:
             aligned = [item for item in trends if item and (
                 direction == "LONG" and item.direction == "UP" or direction == "SHORT" and item.direction == "DOWN"
             )]
-            if len(aligned) < 2:
+            if len(aligned) < template.minimum_context_alignments:
                 self._reject(template.id, "NO_HTF_ALIGNMENT")
                 return []
         stop_anchor = zone_low if direction == "LONG" else zone_high
@@ -288,6 +300,13 @@ class ScenarioManager:
             stop_anchor = min(stop_anchor, sweep.price_level) if direction == "LONG" else max(stop_anchor, sweep.price_level)
         width = max(zone_high - zone_low, entry * .0001)
         stop = stop_anchor - width * template.stop_atr_buffer if direction == "LONG" else stop_anchor + width * template.stop_atr_buffer
+        stop_percent = abs(entry - stop) / entry * 100
+        if template.minimum_stop_percent is not None and stop_percent < template.minimum_stop_percent:
+            self._reject(template.id, "STOP_TOO_TIGHT")
+            return []
+        if template.maximum_stop_percent is not None and stop_percent > template.maximum_stop_percent:
+            self._reject(template.id, "STOP_TOO_WIDE")
+            return []
         risk = max(abs(entry - stop), entry * .0001)
         target_liquidity = [item.price_level for key in context_keys + zone_keys for item in pipeline.liquidity[key]
                             if not item.swept and ((direction == "LONG" and item.type == "BUY_STOP" and item.price_level > entry)
@@ -345,6 +364,8 @@ class ScenarioManager:
                 continue
             fvg = overlaps[0] if overlaps else None
             direction = "LONG" if ob.type == Direction.BULLISH else "SHORT"
+            if direction not in template.allowed_directions:
+                continue
             matching_changes = [item for item in changes if item.direction == ob.type]
             if "STRUCTURE_BOS" in template.relations and not any(item.type == "BOS" for item in matching_changes):
                 continue
@@ -360,7 +381,8 @@ class ScenarioManager:
                 item for item in trends
                 if (direction == "LONG" and item.direction == "UP") or (direction == "SHORT" and item.direction == "DOWN")
             ]
-            if "HIGHER_TIMEFRAME_ALIGNMENT" in template.relations and len(aligned) < 2:
+            if ("HIGHER_TIMEFRAME_ALIGNMENT" in template.relations
+                    and len(aligned) < template.minimum_context_alignments):
                 continue
             entry_low = max(ob.zone_low, fvg.zone_low) if fvg else ob.zone_low
             entry_high = min(ob.zone_high, fvg.zone_high) if fvg else ob.zone_high
@@ -376,6 +398,11 @@ class ScenarioManager:
             if template.stop_rule == "LAST_SWING" and directional_swings:
                 stop = directional_swings[-1].price
             entry = (entry_low + entry_high) / 2
+            stop_percent = abs(entry - stop) / entry * 100
+            if template.minimum_stop_percent is not None and stop_percent < template.minimum_stop_percent:
+                continue
+            if template.maximum_stop_percent is not None and stop_percent > template.maximum_stop_percent:
+                continue
             risk = abs(entry - stop)
             matching = [
                 item for item in liquidity

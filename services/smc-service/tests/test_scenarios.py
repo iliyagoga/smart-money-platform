@@ -37,6 +37,22 @@ def test_unknown_rule_is_rejected():
         })
 
 
+def test_template_validates_direction_and_stop_band():
+    configured = ScenarioTemplate.model_validate({
+        "id": "SHORT_ONLY", "name": "Short only", "required_objects": [],
+        "allowed_directions": ["SHORT"], "minimum_context_alignments": 2,
+        "minimum_stop_percent": .75, "maximum_stop_percent": 1.5,
+    })
+    assert configured.allowed_directions == ["SHORT"]
+    assert configured.minimum_stop_percent == .75
+
+    with pytest.raises(ValueError):
+        ScenarioTemplate.model_validate({
+            "id": "BAD_STOP_BAND", "name": "Bad", "required_objects": [],
+            "minimum_stop_percent": 1.5, "maximum_stop_percent": .75,
+        })
+
+
 def test_top_down_requires_htf_zone_sweep_and_ltf_confirmation(tmp_path):
     symbol = "BTC-USDT-SWAP"
     pipeline = SimpleNamespace(changes=defaultdict(list), obs=defaultdict(list),

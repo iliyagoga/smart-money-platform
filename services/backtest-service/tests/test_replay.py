@@ -5,7 +5,10 @@ from src.models import BacktestConfig, BacktestCreate
 from types import SimpleNamespace
 
 from smc_core.models import Timeframe
-from src.replay import FrozenModel, TemplateModel, _execution_plan, _scenario_outcome, run_smc_replay
+from src.replay import (
+    FrozenModel, TemplateModel, _execution_plan, _scenario_outcome,
+    _template_stop_distance_allowed, run_smc_replay,
+)
 
 
 def test_train_and_test_periods_cannot_overlap():
@@ -69,6 +72,14 @@ def test_execution_plan_corrects_short_stop_on_wrong_side_of_fill():
     assert stop == pytest.approx(100.41)
     assert targets == pytest.approx([99.49, 99.19])
     assert targets[0] < 100.1 < stop
+
+
+def test_template_stop_distance_band_is_checked_on_actual_fill():
+    template = SimpleNamespace(minimum_stop_percent=.75, maximum_stop_percent=1.5)
+
+    assert _template_stop_distance_allowed(100, 101, template) is True
+    assert _template_stop_distance_allowed(100, 100.5, template) is False
+    assert _template_stop_distance_allowed(100, 102, template) is False
 
 
 def test_scenario_outcome_cannot_use_the_signal_candle():
