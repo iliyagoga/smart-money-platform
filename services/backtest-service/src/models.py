@@ -45,8 +45,10 @@ class BacktestConfig(BaseModel):
     direction_mode: DirectionMode = DirectionMode.BOTH
     risk_per_trade_percent: float = Field(default=1, gt=0, le=10)
     smc_min_stop_percent: float = Field(default=.3, gt=0, le=10)
+    smc_min_target_rr: float = Field(default=1.5, gt=0, le=100)
+    smc_max_target_rr: float = Field(default=8, gt=0, le=1000)
     kelly_fraction: float = Field(default=.25, ge=0, le=1)
-    confidence_threshold: float = Field(default=.6, ge=0, le=1)
+    confidence_threshold: float = Field(default=.5, ge=0, le=1)
     template_ids: list[str] = Field(default_factory=list)
     local_retraining: bool = False
 
@@ -56,6 +58,8 @@ class BacktestConfig(BaseModel):
             raise ValueError("slow_period must be greater than fast_period")
         if self.rsi_oversold >= self.rsi_overbought:
             raise ValueError("rsi_oversold must be below rsi_overbought")
+        if self.smc_min_target_rr >= self.smc_max_target_rr:
+            raise ValueError("smc_min_target_rr must be below smc_max_target_rr")
         return self
 
 
@@ -100,6 +104,8 @@ class AssetCreate(BaseModel):
     price_precision: int = Field(default=2, ge=0, le=18)
     quantity_precision: int = Field(default=6, ge=0, le=18)
     minimum_order_size: float = Field(default=.000001, gt=0)
+    tick_size: float | None = Field(default=None, gt=0)
+    lot_size: float | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def normalize(self):

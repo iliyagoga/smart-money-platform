@@ -12,6 +12,11 @@ from smc_core.scenarios import ScenarioManager, TemplateStore
 
 from .models import BacktestConfig, DirectionMode
 
+TIMEFRAME_MILLISECONDS = {
+    Timeframe.M1: 60_000, Timeframe.M5: 300_000, Timeframe.M15: 900_000, Timeframe.M30: 1_800_000,
+    Timeframe.H1: 3_600_000, Timeframe.H4: 14_400_000, Timeframe.D1: 86_400_000,
+}
+
 
 @dataclass
 class VirtualPosition:
@@ -39,7 +44,8 @@ class TemplateModel:
 
     def probability(self, template_id: str, fallback: float) -> float:
         values = self.outcomes.get(template_id, [])
-        return (sum(values) + 2 * fallback) / (len(values) + 2)
+        posterior = (sum(values) + 2 * fallback) / (len(values) + 2)
+        return fallback * .65 + posterior * .35
 
     def learn(self, template_id: str, outcome: int):
         self.outcomes.setdefault(template_id, []).append(outcome)
@@ -85,7 +91,9 @@ def _chart_candles(candles: list[dict], maximum: int = 3000) -> list[dict]:
     return result
 
 
-def _execution_plan(entry: float, scenario, minimum_stop_percent: float, tick_size: float) -> tuple[float, list[float]]:
+def _execution_plan(entry: float, scenario, minimum_stop_percent: float, tick_size: float,
+                    fixed_ratios: list[float] | None = None, minimum_target_rr: float = 1.5,
+                    maximum_target_rr: float = 8) -> tuple[float, list[float]]:
     """Rebase the structural plan on the actual fill and enforce a usable stop distance."""
     side = 1 if scenario.direction == "LONG" else -1
     planned_entry = (scenario.entry_zone_low + scenario.entry_zone_high) / 2
@@ -103,9 +111,18 @@ def _execution_plan(entry: float, scenario, minimum_stop_percent: float, tick_si
             for target in scenario.take_profit_prices
             if (target - planned_entry) * side > 0
         ]
-    ratios = [ratio for ratio in ratios if ratio > 0]
+    ratios = [ratio for ratio in ratios if minimum_target_rr <= ratio <= maximum_target_rr]
+    fixed = [ratio for ratio in (fixed_ratios or [2, 3]) if minimum_target_rr <= ratio <= maximum_target_rr]
+    # Keep at most one structural/liquidity objective and always retain a
+    # deterministic RR objective so a nearby pool cannot consume every target.
+    ratios = ratios[:1]
+    for ratio in fixed:
+        if all(abs(ratio - item) > 1e-9 for item in ratios):
+            ratios.append(ratio)
+        if len(ratios) >= max(1, len(scenario.take_profit_prices)):
+            break
     if not ratios:
-        ratios = [2.0]
+        ratios = [minimum_target_rr]
 
     if side > 0:
         stop = floor((entry - risk) / tick_size) * tick_size
@@ -116,26 +133,39 @@ def _execution_plan(entry: float, scenario, minimum_stop_percent: float, tick_si
     return stop, list(dict.fromkeys(targets))
 
 
-def _scenario_outcome(scenario, future: list[Candle], start: int = 0) -> int:
+def _scenario_outcome(scenario, future: list[Candle], start: int = 0, ready_at: int | None = None,
+                      config: BacktestConfig | None = None, fixed_ratios: list[float] | None = None) -> int | None:
     entered = False
+    stop = scenario.stop_loss_price
+    target = scenario.take_profit_prices[0]
+    ready_at = ready_at if ready_at is not None else scenario.created_at
+    expires_at = ready_at + max(0, scenario.expires_at - scenario.created_at)
     for index in range(start, len(future)):
         candle = future[index]
-        if candle.timestamp > scenario.expires_at:
+        available_at = candle.timestamp + TIMEFRAME_MILLISECONDS[candle.timeframe]
+        if available_at > expires_at:
             break
-        if candle.timestamp <= scenario.created_at:
+        if available_at <= ready_at:
             continue
         if not entered:
             entered = candle.low <= scenario.entry_zone_high and candle.high >= scenario.entry_zone_low
             if not entered:
                 continue
-        stop_hit = candle.low <= scenario.stop_loss_price if scenario.direction == "LONG" else candle.high >= scenario.stop_loss_price
-        target = scenario.take_profit_prices[0]
+            if config:
+                raw_entry = min(max(candle.open, scenario.entry_zone_low), scenario.entry_zone_high)
+                entry = round(raw_entry / config.tick_size) * config.tick_size
+                stop, targets = _execution_plan(
+                    entry, scenario, config.smc_min_stop_percent, config.tick_size, fixed_ratios,
+                    config.smc_min_target_rr, config.smc_max_target_rr,
+                )
+                target = targets[0]
+        stop_hit = candle.low <= stop if scenario.direction == "LONG" else candle.high >= stop
         target_hit = candle.high >= target if scenario.direction == "LONG" else candle.low <= target
         if stop_hit:
             return 0
         if target_hit:
             return 1
-    return 0
+    return None
 
 
 def train_local_model(
@@ -145,17 +175,23 @@ def train_local_model(
     manager = ScenarioManager(TemplateStore(template_dir))
     model = TemplateModel()
     primary = [_candle(item) for item in candles_by_tf[primary_timeframe]]
-    primary_timestamps = [item.timestamp for item in primary]
+    primary_timestamps = [item.timestamp + TIMEFRAME_MILLISECONDS[item.timeframe] for item in primary]
     rank = {Timeframe.D1: 0, Timeframe.H4: 1, Timeframe.H1: 2, Timeframe.M30: 3,
             Timeframe.M15: 4, Timeframe.M5: 5, Timeframe.M1: 6}
     events = sorted((_candle(item) for values in candles_by_tf.values() for item in values),
-                    key=lambda item: (item.timestamp, rank[item.timeframe]))
+                    key=lambda item: (item.timestamp + TIMEFRAME_MILLISECONDS[item.timeframe], rank[item.timeframe]))
     for candle in events:
+        ready_at = candle.timestamp + TIMEFRAME_MILLISECONDS[candle.timeframe]
         pipeline.process(candle)
         generated = manager.generate_top_down(candle.symbol, candle, pipeline, set(config.template_ids) or None)
         for scenario in generated:
-            start = bisect_right(primary_timestamps, scenario.created_at)
-            model.learn(scenario.setup_type, _scenario_outcome(scenario, primary, start))
+            start = bisect_right(primary_timestamps, ready_at)
+            template = manager.store.get(scenario.setup_type)
+            outcome = _scenario_outcome(
+                scenario, primary, start, ready_at, config, template.risk_reward if template else None,
+            )
+            if outcome is not None:
+                model.learn(scenario.setup_type, outcome)
     all_outcomes=[(template,value) for template,values in model.outcomes.items() for value in values]
     folds=[]
     for fold in range(3):
@@ -188,14 +224,17 @@ def run_smc_replay(
     rank = {Timeframe.D1: 0, Timeframe.H4: 1, Timeframe.H1: 2, Timeframe.M30: 3,
             Timeframe.M15: 4, Timeframe.M5: 5, Timeframe.M1: 6}
     events = sorted((_candle(item) for values in candles_by_tf.values() for item in values),
-                    key=lambda item: (item.timestamp, rank[item.timeframe]))
-    primary = {item.timestamp: item for item in (_candle(value) for value in candles_by_tf[primary_timeframe])}
+                    key=lambda item: (item.timestamp + TIMEFRAME_MILLISECONDS[item.timeframe], rank[item.timeframe]))
+    primary = {item.timestamp + TIMEFRAME_MILLISECONDS[item.timeframe]: item
+               for item in (_candle(value) for value in candles_by_tf[primary_timeframe])}
     capital = config.initial_capital
     position: VirtualPosition | None = None
     pending = []
     trades = []
     decisions = []
     scenarios = []
+    scenario_reports = {}
+    decision_reports = {}
     equity = []
     maker_rate = (config.maker_fee_percent if config.maker_fee_percent is not None else config.fee_percent) / 100
     taker_rate = (config.taker_fee_percent if config.taker_fee_percent is not None else config.fee_percent) / 100
@@ -203,6 +242,12 @@ def run_smc_replay(
 
     def price_tick(value: float) -> float:
         return round(value / config.tick_size) * config.tick_size
+
+    def set_scenario_status(scenario_id: str, status: str):
+        if scenario_id in scenario_reports:
+            scenario_reports[scenario_id]["decision"] = status
+        if scenario_id in decision_reports:
+            decision_reports[scenario_id]["decision"] = status
 
     def close(candle, raw_price, reason, quantity=None):
         nonlocal capital, position
@@ -223,7 +268,8 @@ def run_smc_replay(
             return
         trades.append({
             "id": len(trades) + 1, "direction": position.direction, "entry_time": position.entry_time,
-            "exit_time": candle.timestamp, "entry_price": position.entry_price, "exit_price": price,
+            "exit_time": candle.timestamp + TIMEFRAME_MILLISECONDS[candle.timeframe],
+            "entry_price": position.entry_price, "exit_price": price,
             "quantity": position.initial_quantity, "pnl": position.realized,
             "pnl_percent": position.realized / max(position.entry_price * position.initial_quantity / config.leverage, 1e-12) * 100,
             "fees": position.fees + liquidation_fee, "funding": position.funding, "reason": reason,
@@ -233,6 +279,7 @@ def run_smc_replay(
         position = None
 
     for candle in events:
+        available_at = candle.timestamp + TIMEFRAME_MILLISECONDS[candle.timeframe]
         pipeline.process(candle)
         generated = manager.generate_top_down(candle.symbol, candle, pipeline, set(config.template_ids) or None)
         for scenario in generated:
@@ -240,27 +287,33 @@ def run_smc_replay(
             allowed = confidence >= config.confidence_threshold and (
                 config.direction_mode == DirectionMode.BOTH or config.direction_mode.value == scenario.direction
             )
-            decisions.append({
-                "timestamp": candle.timestamp, "scenario_id": scenario.id, "template_id": scenario.setup_type,
+            decision = {
+                "timestamp": available_at, "scenario_id": scenario.id, "template_id": scenario.setup_type,
                 "confidence": confidence, "decision": "PENDING" if allowed else "REJECTED",
-            })
-            scenarios.append({
-                "id": scenario.id, "timestamp": scenario.created_at, "expires_at": scenario.expires_at,
+            }
+            decisions.append(decision); decision_reports[scenario.id] = decision
+            report_scenario = {
+                "id": scenario.id, "timestamp": available_at,
+                "expires_at": available_at + max(0, scenario.expires_at - scenario.created_at),
                 "timeframe": scenario.timeframe, "direction": scenario.direction,
                 "template_id": scenario.setup_type, "priority": scenario.priority, "confidence": confidence,
                 "entry_zone_low": scenario.entry_zone_low, "entry_zone_high": scenario.entry_zone_high,
                 "stop_loss_price": scenario.stop_loss_price,
                 "take_profit_prices": scenario.take_profit_prices, "reasons": scenario.reasons,
                 "decision": "PENDING" if allowed else "REJECTED",
-            })
+            }
+            scenarios.append(report_scenario); scenario_reports[scenario.id] = report_scenario
             if allowed:
-                pending.append((scenario, confidence))
+                pending.append((scenario, confidence, available_at, report_scenario["expires_at"]))
         if candle.timeframe != Timeframe(primary_timeframe):
             continue
-        pending = [item for item in pending if item[0].expires_at >= candle.timestamp]
+        expired = [item for item in pending if item[3] < available_at]
+        for item in expired: set_scenario_status(item[0].id, "EXPIRED")
+        pending = [item for item in pending if item[3] >= available_at]
+        had_position = position is not None
         if position:
             interval = config.funding_interval_hours * 3_600_000
-            funding_events = max(0, (candle.timestamp - position.last_funding_time) // interval)
+            funding_events = max(0, (available_at - position.last_funding_time) // interval)
             if funding_events:
                 funding = (
                     position.entry_price * position.quantity * config.funding_percent_per_day / 100
@@ -290,15 +343,17 @@ def run_smc_replay(
                 target = reached[0]
                 position.targets.remove(target)
                 close(candle, target, "TAKE_PROFIT", position.quantity / 2 if position.targets else position.quantity)
-        if position is None:
-            candidates = [item for item in pending if candle.timestamp >= item[0].created_at + config.execution_latency_ms
+        if position is None and not had_position:
+            candidates = [item for item in pending if available_at > item[2] + config.execution_latency_ms
                           and candle.low <= item[0].entry_zone_high and candle.high >= item[0].entry_zone_low]
             if candidates:
-                scenario, confidence = max(candidates, key=lambda item: (item[0].priority, item[1]))
+                scenario, confidence, _, _ = max(candidates, key=lambda item: (item[0].priority, item[1]))
                 raw_entry = min(max(candle.open, scenario.entry_zone_low), scenario.entry_zone_high)
                 entry = price_tick(raw_entry * (1 + slip if scenario.direction == "LONG" else 1 - slip))
+                template = manager.store.get(scenario.setup_type)
                 stop, targets = _execution_plan(
                     entry, scenario, config.smc_min_stop_percent, config.tick_size,
+                    template.risk_reward if template else None, config.smc_min_target_rr, config.smc_max_target_rr,
                 )
                 risk_distance = abs(entry - stop)
                 kelly = max(0, 2 * confidence - 1) * config.kelly_fraction * 100
@@ -313,24 +368,30 @@ def run_smc_replay(
                     entry_fee = entry * quantity * maker_rate
                     capital -= entry_fee
                     position = VirtualPosition(
-                        scenario.direction, entry, candle.timestamp, quantity, stop,
+                        scenario.direction, entry, available_at, quantity, stop,
                         targets, scenario.id, scenario.setup_type, confidence, quantity,
-                        fees=entry_fee, last_funding_time=candle.timestamp,
+                        realized=-entry_fee, fees=entry_fee, last_funding_time=available_at,
                     )
-                    report_scenario = next(item for item in reversed(scenarios) if item["id"] == scenario.id)
-                    report_scenario["decision"] = "EXECUTED"
+                    report_scenario = scenario_reports[scenario.id]
+                    set_scenario_status(scenario.id, "EXECUTED")
                     report_scenario["entry_price"] = entry
+                    report_scenario["entry_time"] = available_at
                     report_scenario["stop_loss_price"] = stop
                     report_scenario["take_profit_prices"] = targets
+                else:
+                    set_scenario_status(scenario.id, "REJECTED_SIZE")
+                for item in pending:
+                    if item[0].id != scenario.id: set_scenario_status(item[0].id, "SUPERSEDED")
                 pending.clear()
         unrealized = 0
         if position:
             unrealized = (candle.close - position.entry_price) * position.quantity * (1 if position.direction == "LONG" else -1)
-        equity.append({"timestamp": candle.timestamp, "equity": capital + unrealized})
+        equity.append({"timestamp": available_at, "equity": capital + unrealized})
+    for item in pending: set_scenario_status(item[0].id, "NOT_FILLED")
     if position and primary:
         last = primary[max(primary)]
         close(last, last.close, "END_OF_DATA")
-        equity.append({"timestamp": last.timestamp, "equity": capital})
+        equity.append({"timestamp": max(primary), "equity": capital})
     report = _report(config, candles_by_tf[primary_timeframe], capital, trades, equity, decisions, model)
     report["scenarios"] = scenarios
     report["pattern_diagnostics"] = manager.diagnostics

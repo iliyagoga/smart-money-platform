@@ -11,6 +11,7 @@ interface HistoryJob {
   ingested: number;
   progress: number;
   requests: number;
+  mode?: "FULL" | "INCREMENTAL";
   symbol: string;
   status: "QUEUED" | "RUNNING" | "PAUSED" | "CANCELLED" | "COMPLETED" | "FAILED";
   timeframe_status: Record<string, {
@@ -46,6 +47,8 @@ export function HistoryLoader({ canManage, from, symbol, timeframes, to }: Histo
   const jobId = job?.id;
   const jobStatus = job?.status;
 
+  useEffect(() => { setLoadTimeframes(timeframes); }, [timeframes]);
+
   useEffect(() => {
     void api<HistoryJobsResponse>("/api/v1/exchange/exchange/history?limit=50").then((response) => {
       setJob(response.jobs.find((item) => item.symbol === symbol));
@@ -64,7 +67,7 @@ export function HistoryLoader({ canManage, from, symbol, timeframes, to }: Histo
     return () => window.clearInterval(timer);
   }, [jobId, jobStatus, reloadDataset]);
 
-  const start = async () => {
+  const start = async (incremental = false) => {
     setError("");
     try {
       const created = await api<HistoryJob>("/api/v1/exchange/exchange/history", {
@@ -73,7 +76,8 @@ export function HistoryLoader({ canManage, from, symbol, timeframes, to }: Histo
           symbol,
           timeframes: loadTimeframes,
           from_timestamp: Date.parse(`${from}T00:00:00Z`),
-          to_timestamp: Date.parse(`${to}T23:59:59Z`),
+          to_timestamp: incremental ? Date.now() : Date.parse(`${to}T23:59:59Z`),
+          incremental,
         }),
       });
       setJob(created);
@@ -119,8 +123,11 @@ export function HistoryLoader({ canManage, from, symbol, timeframes, to }: Histo
             : current.filter((item) => item !== timeframe))} />} />)}
     </FormGroup>
     <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
-      <Button variant="contained" disabled={!canManage || active || !loadTimeframes.length} onClick={() => void start()}>
+      <Button variant="contained" disabled={!canManage || active || !loadTimeframes.length} onClick={() => void start(false)}>
         {active ? "Загружаем…" : "Загрузить все свечи за период"}
+      </Button>
+      <Button variant="outlined" disabled={!canManage || active || !loadTimeframes.length} onClick={() => void start(true)}>
+        Догрузить до текущей даты
       </Button>
       {job?.status === "RUNNING" && <Button onClick={() => void control("pause")}>Пауза</Button>}
       {job?.status === "PAUSED" && <Button onClick={() => void control("resume")}>Продолжить</Button>}
@@ -131,7 +138,9 @@ export function HistoryLoader({ canManage, from, symbol, timeframes, to }: Histo
     </Typography>
     {job && <Stack spacing={0.75} sx={{ mt: 2 }}>
       <LinearProgress variant="determinate" value={job.progress} />
-      <Typography variant="caption">{job.status} · сохранено {job.ingested} · запросов к OKX: {job.requests}</Typography>
+      <Typography variant="caption">
+        {job.status} · {job.mode === "INCREMENTAL" ? "догрузка" : "полная загрузка"} · сохранено {job.ingested} · запросов к OKX: {job.requests}
+      </Typography>
       <Stack spacing={1} sx={{ pt: 1 }}>
         {Object.entries(job.timeframe_status ?? {}).map(([timeframe, item]) => <Paper
           key={timeframe} variant="outlined" sx={{ p: 1.25 }}

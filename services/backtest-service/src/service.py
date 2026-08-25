@@ -3,6 +3,7 @@ import csv
 import io
 import json
 import time
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import asyncpg
@@ -52,6 +53,9 @@ class BacktestService:
                       ('ETH-USDT-SWAP','Ethereum perpetual','crypto',2,6,.000001,'ACTIVE')
                 ON CONFLICT(symbol) DO NOTHING
             """)
+            await connection.execute("ALTER TABLE trading_assets ADD COLUMN IF NOT EXISTS tick_size double precision")
+            await connection.execute("ALTER TABLE trading_assets ADD COLUMN IF NOT EXISTS lot_size double precision")
+            await connection.execute("ALTER TABLE trading_assets ADD COLUMN IF NOT EXISTS contract_value double precision NOT NULL DEFAULT 1")
             queued = await connection.fetch("SELECT id FROM backtest_runs WHERE status IN ('QUEUED','RUNNING')")
         for row in queued:
             self.schedule(row["id"])
@@ -99,9 +103,27 @@ class BacktestService:
             )
         try:
             request = BacktestCreate.model_validate(json.loads(row["request"]) if isinstance(row["request"], str) else row["request"])
+            async with self.db.acquire() as connection:
+                asset = await connection.fetchrow(
+                    "SELECT price_precision,quantity_precision,minimum_order_size,tick_size,lot_size,contract_value FROM trading_assets WHERE symbol=$1",
+                    request.symbol,
+                )
+            if not asset:
+                raise ValueError("asset metadata is missing")
+            execution_spec = {
+                "tick_size": float(asset["tick_size"] or 10 ** -asset["price_precision"]),
+                "lot_size": float(asset["lot_size"] or 10 ** -asset["quantity_precision"]),
+                "minimum_order_size": float(asset["minimum_order_size"]),
+                "contract_value": float(asset["contract_value"]),
+            }
+            request.config = request.config.model_copy(update={
+                key: execution_spec[key] for key in ("tick_size", "lot_size", "minimum_order_size")
+            })
             test_candles = await self.load_candles(
                 request.symbol, request.timeframes, request.test_from, request.test_to, request.candle_limit,
             )
+            for candles in test_candles.values():
+                for candle in candles: candle["volume"] *= execution_spec["contract_value"]
             async with self.db.acquire() as connection:
                 await connection.execute("UPDATE backtest_runs SET progress=35 WHERE id=$1", run_id)
             if request.config.strategy == StrategyType.SMC:
@@ -113,6 +135,8 @@ class BacktestService:
                         request.symbol, request.timeframes, request.train_from, request.train_to,
                         self.settings.max_candles,
                     )
+                    for candles in training_candles.values():
+                        for candle in candles: candle["volume"] *= execution_spec["contract_value"]
                     async with self.db.acquire() as connection:
                         await connection.execute("UPDATE backtest_runs SET progress=50 WHERE id=$1", run_id)
                     model = await asyncio.to_thread(
@@ -146,6 +170,16 @@ class BacktestService:
                 "stop_loss_percent": request.config.stop_loss_percent,
                 "smc_min_stop_percent": request.config.smc_min_stop_percent,
                 "take_profit_percent": request.config.take_profit_percent,
+            }
+            result["request_config"] = request.model_dump(mode="json")
+            result["execution_spec"] = execution_spec
+            result["engine"] = {
+                "name": "SMC_CLOSE_TIME_REPLAY" if request.config.strategy == StrategyType.SMC else "INDICATOR_REPLAY",
+                "version": 2,
+                "template_versions": {
+                    path.stem: json.loads(path.read_text(encoding="utf-8")).get("version", 1)
+                    for path in Path(self.settings.scenario_template_dir).glob("*.json")
+                } if request.config.strategy == StrategyType.SMC else {},
             }
             async with self.db.acquire() as connection:
                 await connection.execute(
@@ -335,14 +369,16 @@ class BacktestService:
     async def add_asset(self, asset: AssetCreate):
         async with self.db.acquire() as connection:
             row = await connection.fetchrow("""
-                INSERT INTO trading_assets(symbol,display_name,category,price_precision,quantity_precision,minimum_order_size,validation_status)
-                VALUES($1,$2,$3,$4,$5,$6,'ACTIVE')
+                INSERT INTO trading_assets(symbol,display_name,category,price_precision,quantity_precision,minimum_order_size,
+                                           tick_size,lot_size,validation_status)
+                VALUES($1,$2,$3,$4,$5,$6,$7,$8,'ACTIVE')
                 ON CONFLICT(symbol) DO UPDATE SET display_name=excluded.display_name,category=excluded.category,
                     price_precision=excluded.price_precision,quantity_precision=excluded.quantity_precision,
-                    minimum_order_size=excluded.minimum_order_size,enabled=true,updated_at=now()
+                    minimum_order_size=excluded.minimum_order_size,tick_size=coalesce(excluded.tick_size,trading_assets.tick_size),
+                    lot_size=coalesce(excluded.lot_size,trading_assets.lot_size),enabled=true,updated_at=now()
                 RETURNING *
             """, asset.symbol, asset.display_name, asset.category, asset.price_precision,
-                asset.quantity_precision, asset.minimum_order_size)
+                asset.quantity_precision, asset.minimum_order_size, asset.tick_size, asset.lot_size)
         return dict(row)
 
     async def disable_asset(self, symbol: str):

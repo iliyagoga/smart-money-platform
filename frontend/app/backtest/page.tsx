@@ -43,7 +43,7 @@ const defaultSettings: BacktestSettings = {
   directionMode: "BOTH",
   riskPerTradePercent: 1,
   kellyFraction: 0.25,
-  confidenceThreshold: 0.6,
+  confidenceThreshold: 0.5,
   templateIds: [],
   localRetraining: true,
 };
@@ -56,7 +56,7 @@ const timeframeMilliseconds: Record<string, number> = {
 export default function BacktestPage() {
   const { roles } = useAuth();
   const [asset, setAsset] = useState("");
-  const { addAsset, assets, reload: reloadAssets, removeAsset } = useTradingAssets();
+  const { addAsset, assetDetails, assets, reload: reloadAssets, removeAsset } = useTradingAssets();
   const [selectedTimeframes, setSelectedTimeframes] = useState(timeframes);
   const [candleLimit, setCandleLimit] = useState(10_000);
   const today = new Date().toISOString().slice(0, 10);
@@ -73,6 +73,7 @@ export default function BacktestPage() {
   const [workspaceTab, setWorkspaceTab] = useState(0);
   const runsResource = useApiResource<BacktestRunsResponse>("/api/v1/backtest/backtests");
   const selectedAsset = asset || assets[0];
+  const selectedAssetDetails = assetDetails.find((item) => item.symbol === selectedAsset);
   const testRangeMilliseconds = Math.max(
     0,
     Date.parse(`${testTo}T23:59:59Z`) - Date.parse(`${testFrom}T00:00:00Z`),
@@ -111,9 +112,9 @@ export default function BacktestPage() {
             funding_percent_per_day: settings.fundingPercentPerDay,
             funding_interval_hours: settings.fundingIntervalHours,
             execution_latency_ms: settings.executionLatencyMs,
-            tick_size: settings.tickSize,
-            lot_size: settings.lotSize,
-            minimum_order_size: settings.minimumOrderSize,
+            tick_size: selectedAssetDetails?.tick_size ?? settings.tickSize,
+            lot_size: selectedAssetDetails?.lot_size ?? settings.lotSize,
+            minimum_order_size: selectedAssetDetails?.minimum_order_size ?? settings.minimumOrderSize,
             volume_participation_percent: settings.volumeParticipationPercent,
             liquidation_fee_percent: settings.liquidationFeePercent,
             stop_loss_percent: settings.stopLossPercent,

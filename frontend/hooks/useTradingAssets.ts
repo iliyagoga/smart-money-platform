@@ -11,6 +11,8 @@ export interface TradingAsset {
   price_precision: number;
   quantity_precision: number;
   minimum_order_size: number;
+  tick_size?: number;
+  lot_size?: number;
   validation_status: string;
 }
 
