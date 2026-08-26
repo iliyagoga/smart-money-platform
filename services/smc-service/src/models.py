@@ -52,7 +52,8 @@ class FVG(BaseModel):
 
 class LiquidityZone(BaseModel):
     id: str = Field(default_factory=lambda:str(uuid4())); symbol: str; timeframe: Timeframe
-    type: str; price_level: float; swept: bool = False; strength: float = .5; created_at: int
+    type: str; price_level: float; swept: bool = False; swept_at: int | None = None
+    strength: float = .5; created_at: int
 
 
 class AnalysisResult(BaseModel):
@@ -66,4 +67,9 @@ class Scenario(BaseModel):
     confidence: float = Field(ge=0,le=1); entry_zone_low: float; entry_zone_high: float
     stop_loss_price: float; take_profit_prices: list[float]; status: str = "ACTIVE"
     reasons: list[str] = []; objections: list[str] = []; objects_used: list[dict] = []
+    target_allocations: list[float] = []
+    break_even_rule: str = "ONE_R"
+    move_stop_to_break_even_after_target: int | None = 1
+    one_trade_per_zone: bool = False; cooldown_bars_after_stop: int = 0
+    deduplication_key: str | None = None
     created_at: int = Field(default_factory=lambda:int(time()*1000)); expires_at: int

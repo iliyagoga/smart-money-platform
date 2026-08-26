@@ -98,7 +98,14 @@ class DecisionService:
     async def assess(self,signal:TradeSignal,capital:float|None=None):
         cfg=await self.config();capital=capital or float(await self.redis.get("portfolio:equity") or self.default_capital)
         daily=float(await self.redis.get("portfolio:daily_pnl") or 0);positions=int(await self.redis.scard("positions:open"))
-        decision=self.risk.calculate(signal,capital,cfg,daily,positions)
+        active_orders=await self.db.fetchval("SELECT count(*) FROM orders WHERE status IN ('PENDING','OPEN')")
+        recent=await self.db.fetch("SELECT pnl::float8,extract(epoch from closed_at)*1000 AS closed_at_ms FROM closed_trades ORDER BY closed_at DESC LIMIT 100")
+        consecutive_losses=0;last_loss_at=None
+        for row in recent:
+            if row["pnl"]>=0:break
+            consecutive_losses+=1
+            if last_loss_at is None:last_loss_at=int(row["closed_at_ms"])
+        decision=self.risk.calculate(signal,capital,cfg,daily,positions,int(active_orders or 0),consecutive_losses,last_loss_at)
         await self.db.execute("INSERT INTO risk_decisions(signal_id,approved,data) VALUES($1::uuid,$2,$3::jsonb)",signal.signal_id,decision.approved,json.dumps(decision.model_dump(mode="json")))
         if decision.approved:
             payload=decision.model_dump();payload["approved_at"]=payload.pop("timestamp");payload.pop("approved");payload.pop("rejection_reason")

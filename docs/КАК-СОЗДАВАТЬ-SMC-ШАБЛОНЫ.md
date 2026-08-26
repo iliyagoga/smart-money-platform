@@ -2,6 +2,18 @@
 
 Шаблон в `config/scenario-templates/*.json` полностью описывает торговый паттерн. Python-движок только обнаруживает базовые объекты рынка и исполняет настройки шаблона. Пустой `template_ids` в бэктесте означает: проверить все шаблоны с `enabled: true`.
 
+## Активный набор SM Trader
+
+По умолчанию включены только три шаблона, формализованные по материалам SM Trader:
+
+- `SM_TRADER_D1_M15_M1` — D1-контекст, POI на M15, вход на M1;
+- `SM_TRADER_H1_M5_INTRADAY` — интрадей-пара H1/M5;
+- `SM_TRADER_H4_M15_SWING` — свинговая пара H4/M15.
+
+Общая последовательность: HTF-контекст и POI → снятие ликвидности на LTF → CHOCH/MSS →
+возврат в Order Block → вход со стопом за локальную структуру. Цель должна давать минимум 1:2.
+Все прежние универсальные и исследовательские шаблоны отключены, но оставлены для явного replay.
+
 ## Последовательность анализа
 
 1. `timeframe_roles.context` задаёт ТФ первичной структуры.
@@ -29,6 +41,12 @@
 - `allowed_directions` — разрешённые стороны сделки (`LONG`, `SHORT`). Например, `["SHORT"]` полностью отключает LONG для этого шаблона.
 - `minimum_context_alignments` — сколько трендов из `timeframe_roles.context` должны совпасть с направлением сделки при `HIGHER_TIMEFRAME_ALIGNMENT`. Для строгого подтверждения D1+H4 укажите context `["D1", "H4"]` и значение `2`.
 - `minimum_stop_percent`, `maximum_stop_percent` — допустимый диапазон структурного стопа в процентах от входа. Сценарий вне диапазона отбрасывается, а не получает искусственно расширенный/суженный стоп. Проверка повторяется по фактической цене исполнения.
+- `primary_context_timeframe` — главный ТФ, структура которого задаёт направление, например `D1`.
+- `context_alignment_mode` — политика остальных context-ТФ: `ANY`, `ALL`, `PRIMARY_ONLY` или `PRIMARY_WITHOUT_CONFLICT`. Последний режим требует тренд главного ТФ по направлению сделки и запрещает противоположный тренд на остальных ТФ, но допускает `SIDEWAYS`.
+- `event_sequence` — строгий порядок событий из `LIQUIDITY_SWEEP`, `CONFIRMATION`, `ZONE_TOUCH`. Например, `["LIQUIDITY_SWEEP", "CONFIRMATION", "ZONE_TOUCH"]` не разрешит вход на свече самого CHOCH/MSS.
+- `zone_created_before_confirmation` — зона OB должна существовать до подтверждения.
+- `minimum_zone_retests`, `maximum_zone_retests` — допустимое число предыдущих касаний Order Block.
+- `maximum_zone_age_bars` — максимальный возраст OB/FVG в свечах собственного ТФ зоны.
 - `require_zone_touch` — создавать сценарий только после касания зоны trigger-свечой.
 - `require_confirmation`, `confirmation_types`, `confirmation_window_bars` — обязательность, типы и временное окно локального подтверждения.
 - `require_liquidity_sweep` — требовать SFP/sweep ликвидности в направлении разворота.
@@ -37,6 +55,13 @@
 - `stop_atr_buffer` — буфер за структурной границей, в долях ширины зоны.
 - `target_rule` — `FIXED_RR` или `LIQUIDITY_THEN_RR`; `risk_reward` содержит RR-цели.
 - `ttl_minutes` — срок жизни сценария.
+- `entry_valid_for_bars` — более точная альтернатива TTL: сколько trigger-свечей ждать вход после создания сценария.
+- `one_trade_per_zone` — в replay запрещает повторное исполнение по тому же Order Block.
+- `cooldown_bars_after_stop` — сколько свечей execution-ТФ не открывать новый сценарий этого шаблона после стопа.
+- `target_allocations` — доли позиции для целей `risk_reward`; число элементов должно совпадать, сумма должна быть равна 1.
+- `minimum_target_rr`, `maximum_target_rr` — границы RR целей конкретного шаблона; если не указаны, применяются общие настройки бэктеста.
+- `break_even_rule` — `NEVER`, `ONE_R` или `AFTER_TARGET`.
+- `move_stop_to_break_even_after_target` — после какой по счёту цели переносить стоп при `AFTER_TARGET`.
 - `base_confidence`, `context_bonus`, `confirmation_bonus`, `sweep_bonus`, `overlap_bonus`, `strength_weight` — полностью настраиваемая формула confidence.
 
 ## Пример: SFP-разворот от Order Block

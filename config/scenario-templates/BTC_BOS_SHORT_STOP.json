@@ -1,8 +1,8 @@
 {
   "id": "BTC_BOS_SHORT_STOP",
   "name": "BTC SHORT: BOS, стоп 0.75–1.5%",
-  "version": 1,
-  "enabled": true,
+  "version": 2,
+  "enabled": false,
   "priority": 89,
   "context_structure_types": ["BOS"],
   "required_objects": [{ "kind": "ORDER_BLOCK", "min_strength": 0.4 }],

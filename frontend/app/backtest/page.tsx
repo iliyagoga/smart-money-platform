@@ -78,7 +78,7 @@ export default function BacktestPage() {
     0,
     Date.parse(`${testTo}T23:59:59Z`) - Date.parse(`${testFrom}T00:00:00Z`),
   );
-  const requiredTestCandleLimit = Math.min(1_000_000, Math.max(
+  const requiredTestCandleLimit = Math.min(2_000_000, Math.max(
     ...selectedTimeframes.map((item) => Math.ceil(testRangeMilliseconds / timeframeMilliseconds[item]) + 2),
   ));
 
@@ -218,7 +218,7 @@ export default function BacktestPage() {
           type="number"
           onChange={(event) => setCandleLimit(Number(event.target.value))}
           helperText={`Нужно до ${requiredTestCandleLimit.toLocaleString("ru-RU")}; при запуске лимит увеличится автоматически`}
-          slotProps={{ htmlInput: { min: 100, max: 1_000_000 } }}
+          slotProps={{ htmlInput: { min: 100, max: 2_000_000 } }}
         />
         <Button variant="outlined" onClick={() => setCandleLimit(requiredTestCandleLimit)}>
           Рассчитать лимит бэктеста

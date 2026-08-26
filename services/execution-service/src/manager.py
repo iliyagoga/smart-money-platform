@@ -10,11 +10,23 @@ class PositionManager:
         reached=[x for x in targets if (c.high>=x if p.direction=="LONG" else c.low<=x)]
         if reached:
             target=reached[0]
+            target_index=p.take_profit_prices.index(target)
             if len(targets)>1 and p.quantity>p.initial_quantity*.25:
-                events.append(("partial",{"price":target,"reason":"TAKE_PROFIT","quantity":p.quantity/2}));p.take_profit_prices.remove(target)
+                allocation=(p.target_allocations[target_index] if len(p.target_allocations)==len(p.take_profit_prices)
+                            else .5)
+                quantity=min(p.quantity,p.initial_quantity*allocation)
+                events.append(("partial",{"price":target,"reason":"TAKE_PROFIT","quantity":quantity}));p.take_profit_prices.remove(target)
+                if p.target_allocations:p.target_allocations.pop(target_index)
+                p.targets_hit+=1
             else:return [("close",{"price":target,"reason":"TAKE_PROFIT","quantity":p.quantity})]
         initial_risk=abs(p.entry_price-(p.stop_loss_price or p.entry_price))
         one_r=p.entry_price+initial_risk*(1 if p.direction=="LONG" else -1)
-        if not p.protected and initial_risk>0 and (c.high>=one_r if p.direction=="LONG" else c.low<=one_r):
+        target_based_protection=(p.break_even_rule=="AFTER_TARGET"
+                                 and p.move_stop_to_break_even_after_target is not None
+                                 and p.targets_hit>=p.move_stop_to_break_even_after_target)
+        one_r_protection=(p.break_even_rule=="ONE_R" and (
+            c.high>=one_r if p.direction=="LONG" else c.low<=one_r
+        ))
+        if not p.protected and initial_risk>0 and (target_based_protection or one_r_protection):
             p.stop_loss_price=p.entry_price;p.protected=True;p.status="PROTECTED";events.append(("updated",{"stop_loss_price":p.entry_price,"status":"PROTECTED"}))
         return events

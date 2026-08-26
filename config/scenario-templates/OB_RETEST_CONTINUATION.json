@@ -1,7 +1,8 @@
 {
   "id": "OB_RETEST_CONTINUATION",
   "name": "Продолжение на ретесте Order Block",
-  "version": 3,
+  "version": 4,
+  "enabled": false,
   "priority": 75,
   "context_structure_types": ["BOS"],
   "required_objects": [{ "kind": "ORDER_BLOCK", "min_strength": 0.5 }],

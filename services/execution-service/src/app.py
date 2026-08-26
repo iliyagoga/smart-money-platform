@@ -25,7 +25,9 @@ async def create_order(data:OrderCreate):
         price=await service.db.fetchval("SELECT close::float8 FROM candles WHERE symbol=$1 ORDER BY ts DESC LIMIT 1",data.symbol)
         if price is None:raise HTTPException(422,"No market price available")
         data.price=price
-    order=await service.create_order(Order(**data.model_dump()));return {"order_id":order.id,"status":order.status}
+    try:order=await service.create_order(Order(**data.model_dump()))
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
+    return {"order_id":order.id,"status":order.status}
 @app.get("/orders/{order_id}")
 async def order(order_id:str):
     item=service.orders.get(order_id)

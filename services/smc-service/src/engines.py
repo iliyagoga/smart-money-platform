@@ -106,7 +106,7 @@ class LiquidityEngine:
         changed=[]
         for z in zones:
             if not z.swept and ((z.type=="BUY_STOP" and candle.high>=z.price_level and candle.close<z.price_level) or (z.type=="SELL_STOP" and candle.low<=z.price_level and candle.close>z.price_level)):
-                z.swept=True;changed.append(z)
+                z.swept=True;z.swept_at=candle.timestamp;changed.append(z)
         return changed
 
 

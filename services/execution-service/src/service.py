@@ -73,11 +73,14 @@ class ExecutionService:
         if any(x.signal_id==signal_id for x in self.orders.values()):return
         row=await self.db.fetchrow("SELECT data FROM trade_signals WHERE id=$1::uuid",signal_id)
         if not row:raise ValueError(f"Signal {signal_id} not found")
-        s=decode_json(row["data"]);order=Order(symbol=s["symbol"],side="BUY" if s["direction"]=="LONG" else "SELL",type=s["entry_type"],price=s["entry_price"],quantity=payload["position_size"],stop_loss_price=s["stop_loss_price"],take_profit_prices=s["take_profit_prices"],signal_id=signal_id)
+        s=decode_json(row["data"]);order=Order(symbol=s["symbol"],side="BUY" if s["direction"]=="LONG" else "SELL",type=s["entry_type"],price=s["entry_price"],quantity=payload["position_size"],stop_loss_price=s["stop_loss_price"],take_profit_prices=s["take_profit_prices"],signal_id=signal_id,target_allocations=s.get("target_allocations",[]),break_even_rule=s.get("break_even_rule","ONE_R"),move_stop_to_break_even_after_target=s.get("move_stop_to_break_even_after_target",1),deduplication_key=s.get("deduplication_key"))
         await self.create_order(order)
     async def create_order(self,order:Order):
         existing=next((x for x in self.orders.values() if order.signal_id and x.signal_id==order.signal_id),None)
         if existing:return existing
+        active_order=any(x.status in {"PENDING","OPEN"} for x in self.orders.values())
+        active_position=any(x.status!="CLOSED" for x in self.positions.values())
+        if active_order or active_position:raise ValueError("Another trade is still active")
         self.orders[order.id]=order;await self.save_order(order);await self.stream("order.request",order.model_dump(mode="json"))
         if order.type=="MARKET":await self.fill(order,order.price or 0)
         else:order.status="OPEN";await self.save_order(order)
@@ -90,7 +93,7 @@ class ExecutionService:
         scenario_id=None
         if o.signal_id:
             row=await self.db.fetchrow("SELECT scenario_id FROM trade_signals WHERE id=$1::uuid",o.signal_id);scenario_id=str(row["scenario_id"]) if row else None
-        p=Position(signal_id=o.signal_id,scenario_id=scenario_id,order_id=o.id,symbol=o.symbol,direction="LONG" if o.side=="BUY" else "SHORT",entry_price=price,current_price=price,quantity=o.quantity,initial_quantity=o.quantity,stop_loss_price=o.stop_loss_price,take_profit_prices=list(o.take_profit_prices))
+        p=Position(signal_id=o.signal_id,scenario_id=scenario_id,order_id=o.id,symbol=o.symbol,direction="LONG" if o.side=="BUY" else "SHORT",entry_price=price,current_price=price,quantity=o.quantity,initial_quantity=o.quantity,stop_loss_price=o.stop_loss_price,take_profit_prices=list(o.take_profit_prices),target_allocations=list(o.target_allocations),break_even_rule=o.break_even_rule,move_stop_to_break_even_after_target=o.move_stop_to_break_even_after_target)
         self.positions[p.id]=p;await self.redis.sadd("positions:open",p.id);await self.save_position(p,None,"OPENED","ORDER_EXECUTED")
         await self.publish("position.opened",{"position_id":p.id,"signal_id":p.signal_id,"symbol":p.symbol,"direction":p.direction,"entry_price":p.entry_price,"quantity":p.quantity,"leverage":p.leverage,"stop_loss_price":p.stop_loss_price,"take_profit_prices":p.take_profit_prices,"opened_at":p.opened_at})
     async def save_position(self,p,old,new,trigger):
@@ -111,7 +114,11 @@ class ExecutionService:
     async def close(self,p:Position,quantity:float,price:float,reason:str):
         qty=min(quantity,p.quantity);pnl=(price-p.entry_price)*qty*(1 if p.direction=="LONG" else -1);p.realized_pnl+=pnl;p.quantity-=qty
         if p.quantity>1e-12:
-            p.partial_takes.append({"price":price,"quantity":qty,"time":int(time()*1000),"pnl":pnl});p.stop_loss_price=p.entry_price;p.protected=True;p.status="PARTIAL_TP";await self.save_position(p,"OPENED",p.status,reason)
+            p.partial_takes.append({"price":price,"quantity":qty,"time":int(time()*1000),"pnl":pnl})
+            if (p.break_even_rule=="AFTER_TARGET" and p.move_stop_to_break_even_after_target is not None
+                    and p.targets_hit>=p.move_stop_to_break_even_after_target):
+                p.stop_loss_price=p.entry_price;p.protected=True
+            p.status="PARTIAL_TP";await self.save_position(p,"OPENED",p.status,reason)
             await self.publish("position.partial_closed",{"position_id":p.id,"closed_quantity":qty,"closing_price":price,"remaining_quantity":p.quantity,"realized_pnl":pnl,"new_stop_loss_price":p.stop_loss_price,"timestamp":int(time()*1000)})
         else:
             old=p.status;p.status="CLOSED";p.closed_at=int(time()*1000);await self.redis.srem("positions:open",p.id);await self.save_position(p,old,"CLOSED",reason)

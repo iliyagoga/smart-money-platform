@@ -27,6 +27,19 @@ def test_template_store_roundtrip(tmp_path):
     assert store.delete("TEST_TEMPLATE") is True
 
 
+def test_explicit_disabled_template_can_be_replayed(tmp_path, monkeypatch):
+    store = TemplateStore(tmp_path)
+    disabled = template().model_copy(update={"enabled": False})
+    store.save(disabled)
+    manager = ScenarioManager(store)
+    monkeypatch.setattr(manager, "_evaluate", lambda item, *args: [item.id])
+
+    assert manager.generate("BTC-USDT-SWAP", Timeframe.M5, [], [], []) == []
+    assert manager.generate(
+        "BTC-USDT-SWAP", Timeframe.M5, [], [], [], template_ids=[disabled.id]
+    ) == [disabled.id]
+
+
 def test_unknown_rule_is_rejected():
     with pytest.raises(ValueError):
         ScenarioTemplate.model_validate({
@@ -53,6 +66,28 @@ def test_template_validates_direction_and_stop_band():
         })
 
 
+def test_template_validates_sequence_context_and_exit_policy():
+    configured = ScenarioTemplate.model_validate({
+        "id": "CONFIGURABLE", "name": "Configurable", "required_objects": [],
+        "timeframe_roles": {"context": ["D1", "H4"], "zones": ["H1"], "triggers": ["M5"]},
+        "primary_context_timeframe": "D1",
+        "context_alignment_mode": "PRIMARY_WITHOUT_CONFLICT",
+        "event_sequence": ["LIQUIDITY_SWEEP", "CONFIRMATION", "ZONE_TOUCH"],
+        "risk_reward": [1, 2], "target_allocations": [.4, .6],
+        "break_even_rule": "AFTER_TARGET", "move_stop_to_break_even_after_target": 1,
+        "entry_valid_for_bars": 8, "one_trade_per_zone": True,
+        "cooldown_bars_after_stop": 12,
+    })
+    assert configured.primary_context_timeframe == Timeframe.D1
+    assert configured.target_allocations == [.4, .6]
+
+    with pytest.raises(ValueError):
+        ScenarioTemplate.model_validate({
+            "id": "BAD_SEQUENCE", "name": "Bad", "required_objects": [],
+            "event_sequence": ["CONFIRMATION", "CONFIRMATION"],
+        })
+
+
 def test_top_down_requires_htf_zone_sweep_and_ltf_confirmation(tmp_path):
     symbol = "BTC-USDT-SWAP"
     pipeline = SimpleNamespace(changes=defaultdict(list), obs=defaultdict(list),
@@ -65,7 +100,7 @@ def test_top_down_requires_htf_zone_sweep_and_ltf_confirmation(tmp_path):
                       zone_low=99, zone_high=101, created_at=2)
     pipeline.obs[(symbol, Timeframe.H1)].append(zone)
     sweep = LiquidityZone(symbol=symbol, timeframe=Timeframe.M5, type="SELL_STOP",
-                          price_level=98, swept=True, created_at=3)
+                          price_level=98, swept=True, swept_at=3, created_at=2)
     pipeline.liquidity[(symbol, Timeframe.M5)].append(sweep)
     pipeline.liquidity[(symbol, Timeframe.D1)].append(LiquidityZone(
         symbol=symbol, timeframe=Timeframe.D1, type="BUY_STOP", price_level=120, created_at=1,
@@ -78,6 +113,7 @@ def test_top_down_requires_htf_zone_sweep_and_ltf_confirmation(tmp_path):
             "required_objects": [{"kind": "ORDER_BLOCK"}],
             "timeframe_roles": {"context": ["D1"], "zones": ["H1"], "triggers": ["M5"]},
             "confirmation_types": ["CHOCH", "MSS"], "require_liquidity_sweep": True,
+            "event_sequence": ["LIQUIDITY_SWEEP", "CONFIRMATION", "ZONE_TOUCH"],
             "stop_rule": "TRIGGER_WICK",
         }))
     manager = ScenarioManager(store)
@@ -87,7 +123,9 @@ def test_top_down_requires_htf_zone_sweep_and_ltf_confirmation(tmp_path):
         symbol=symbol, timeframe=Timeframe.M5, type="CHOCH", direction=Direction.BULLISH,
         break_level_price=100, timestamp=4,
     ))
-    scenarios = manager.generate_top_down(symbol, candle, pipeline)
+    assert manager.generate_top_down(symbol, candle, pipeline) == []
+    retest = candle.model_copy(update={"timestamp": 5})
+    scenarios = manager.generate_top_down(symbol, retest, pipeline)
     assert len(scenarios) == 1
     assert scenarios[0].direction == "LONG"
     assert scenarios[0].stop_loss_price < 97

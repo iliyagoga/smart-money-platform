@@ -12,6 +12,13 @@ from pydantic import BaseModel, Field, model_validator
 from .models import Direction, FVG, LiquidityZone, OrderBlock, Scenario, Timeframe
 
 
+TIMEFRAME_MILLISECONDS = {
+    Timeframe.M1: 60_000, Timeframe.M5: 300_000, Timeframe.M15: 900_000,
+    Timeframe.M30: 1_800_000, Timeframe.H1: 3_600_000,
+    Timeframe.H4: 14_400_000, Timeframe.D1: 86_400_000,
+}
+
+
 class ObjectRule(BaseModel):
     kind: str
     active: bool = True
@@ -46,8 +53,15 @@ class ScenarioTemplate(BaseModel):
     require_liquidity_sweep: bool = False
     confirmation_window_bars: int = Field(default=6, ge=1, le=100)
     direction_source: str = "CONTEXT"
+    primary_context_timeframe: Timeframe | None = None
+    context_alignment_mode: str = "ANY"
     allowed_directions: list[str] = ["LONG", "SHORT"]
     minimum_context_alignments: int = Field(default=2, ge=1, le=7)
+    event_sequence: list[str] = []
+    zone_created_before_confirmation: bool = False
+    minimum_zone_retests: int = Field(default=0, ge=0, le=100)
+    maximum_zone_retests: int | None = Field(default=None, ge=0, le=100)
+    maximum_zone_age_bars: int | None = Field(default=None, ge=1, le=10000)
     entry_rule: str = "OB_FVG_INTERSECTION"
     stop_rule: str = "ORDER_BLOCK_EDGE"
     stop_atr_buffer: float = Field(default=.1, ge=0, le=10)
@@ -55,7 +69,15 @@ class ScenarioTemplate(BaseModel):
     maximum_stop_percent: float | None = Field(default=None, gt=0, le=20)
     target_rule: str = "LIQUIDITY_THEN_RR"
     risk_reward: list[float] = [2, 3]
+    minimum_target_rr: float | None = Field(default=None, gt=0, le=100)
+    maximum_target_rr: float | None = Field(default=None, gt=0, le=1000)
+    target_allocations: list[float] = []
+    break_even_rule: str = "ONE_R"
+    move_stop_to_break_even_after_target: int | None = Field(default=1, ge=1, le=20)
     ttl_minutes: int = Field(default=1440, ge=1)
+    entry_valid_for_bars: int | None = Field(default=None, ge=1, le=10000)
+    one_trade_per_zone: bool = False
+    cooldown_bars_after_stop: int = Field(default=0, ge=0, le=10000)
     base_confidence: float = Field(default=.5, ge=0, le=1)
     overlap_bonus: float = Field(default=.1, ge=0, le=1)
     strength_weight: float = Field(default=.1, ge=0, le=1)
@@ -89,6 +111,30 @@ class ScenarioTemplate(BaseModel):
                 raise ValueError(f"unsupported {field}")
         if self.direction_source not in {"CONTEXT", "ORDER_BLOCK", "FVG"}:
             raise ValueError("unsupported direction source")
+        if self.context_alignment_mode not in {"ANY", "ALL", "PRIMARY_ONLY", "PRIMARY_WITHOUT_CONFLICT"}:
+            raise ValueError("unsupported context alignment mode")
+        if self.primary_context_timeframe and self.timeframe_roles and self.primary_context_timeframe not in self.timeframe_roles.context:
+            raise ValueError("primary context timeframe must be present in timeframe_roles.context")
+        supported_events = {"LIQUIDITY_SWEEP", "CONFIRMATION", "ZONE_TOUCH"}
+        if len(set(self.event_sequence)) != len(self.event_sequence) or any(
+            item not in supported_events for item in self.event_sequence
+        ):
+            raise ValueError("unsupported or duplicate event in event_sequence")
+        if (self.maximum_zone_retests is not None
+                and self.minimum_zone_retests > self.maximum_zone_retests):
+            raise ValueError("minimum zone retests cannot exceed maximum zone retests")
+        if self.target_allocations:
+            if len(self.target_allocations) != len(self.risk_reward):
+                raise ValueError("target allocations must match risk_reward")
+            if any(item <= 0 or item > 1 for item in self.target_allocations):
+                raise ValueError("target allocations must be within (0, 1]")
+            if abs(sum(self.target_allocations) - 1) > 1e-6:
+                raise ValueError("target allocations must sum to 1")
+        if self.break_even_rule not in {"NEVER", "ONE_R", "AFTER_TARGET"}:
+            raise ValueError("unsupported break even rule")
+        if (self.minimum_target_rr is not None and self.maximum_target_rr is not None
+                and self.minimum_target_rr >= self.maximum_target_rr):
+            raise ValueError("minimum target RR must be below maximum target RR")
         if not self.allowed_directions or any(item not in {"LONG", "SHORT"} for item in self.allowed_directions):
             raise ValueError("allowed directions must contain LONG and/or SHORT")
         if (self.minimum_stop_percent is not None and self.maximum_stop_percent is not None
@@ -159,7 +205,9 @@ class ScenarioManager:
                  changes=None, swings=None, trends=None):
         created = []
         timestamp = now or int(time() * 1000)
-        templates = sorted(self.store.list(enabled_only=True), key=lambda item: (-item.priority, item.id))
+        # Disabled research templates stay out of default runs, but an explicit
+        # template_ids selection must still be reproducible.
+        templates = sorted(self.store.list(enabled_only=not template_ids), key=lambda item: (-item.priority, item.id))
         for template in templates:
             if template_ids and template.id not in template_ids:
                 continue
@@ -174,7 +222,7 @@ class ScenarioManager:
     def generate_top_down(self, symbol, candle, pipeline, template_ids=None):
         """Evaluate every template using its configured timeframe roles."""
         created = []
-        for template in self.store.list(enabled_only=True):
+        for template in self.store.list(enabled_only=not template_ids):
             if template_ids and template.id not in template_ids:
                 continue
             roles = template.timeframe_roles
@@ -197,15 +245,32 @@ class ScenarioManager:
         if template.require_context and not context:
             self._reject(template.id, "NO_CONTEXT_STRUCTURE")
             return []
-        bias = max(context, key=lambda item: item.timestamp) if context else None
+        direction_context = context
+        if template.primary_context_timeframe:
+            direction_context = [item for item in context if item.timeframe == template.primary_context_timeframe]
+            if template.require_context and not direction_context:
+                self._reject(template.id, "NO_PRIMARY_CONTEXT")
+                return []
+        bias = max(direction_context, key=lambda item: item.timestamp) if direction_context else None
         bias_direction = bias.direction if bias else None
         ob_rule = next((rule for rule in template.required_objects if rule.kind == "ORDER_BLOCK"), None)
         fvg_rule = next((rule for rule in template.required_objects if rule.kind == "FVG"), None)
+        def zone_age_allowed(item):
+            if template.maximum_zone_age_bars is None:
+                return True
+            return candle.timestamp - item.created_at <= (
+                template.maximum_zone_age_bars * TIMEFRAME_MILLISECONDS[item.timeframe]
+            )
+
         obs = [item for key in zone_keys for item in pipeline.obs[key]
                if not item.is_broken and (bias_direction is None or item.type == bias_direction)
-               and (not ob_rule or item.strength_score >= ob_rule.min_strength)]
+               and (not ob_rule or item.strength_score >= ob_rule.min_strength)
+               and zone_age_allowed(item)
+               and item.retest_count >= template.minimum_zone_retests
+               and (template.maximum_zone_retests is None or item.retest_count <= template.maximum_zone_retests)]
         fvgs = [item for key in zone_keys for item in pipeline.fvgs[key]
-                if not item.is_filled and (bias_direction is None or item.type == bias_direction)]
+                if not item.is_filled and (bias_direction is None or item.type == bias_direction)
+                and zone_age_allowed(item)]
         touched_obs = [item for item in obs if candle.low <= item.zone_high and candle.high >= item.zone_low]
         touched_fvgs = [item for item in fvgs if candle.low <= item.zone_high and candle.high >= item.zone_low]
         if ob_rule and not (touched_obs if template.require_zone_touch else obs):
@@ -216,7 +281,7 @@ class ScenarioManager:
             return []
         candidate_obs = touched_obs if template.require_zone_touch else obs
         candidate_fvgs = touched_fvgs if template.require_zone_touch else fvgs
-        ob = candidate_obs[0] if candidate_obs else None
+        ob = max(candidate_obs, key=lambda item: item.created_at) if candidate_obs else None
         fvg = next((gap for gap in candidate_fvgs if not ob or gap.zone_low <= ob.zone_high and gap.zone_high >= ob.zone_low), None)
         if "OB_OVERLAPS_FVG" in template.relations and (not ob or not fvg):
             self._reject(template.id, "NO_OB_FVG_OVERLAP")
@@ -243,6 +308,9 @@ class ScenarioManager:
             self._reject(template.id, "NO_TRIGGER_CONFIRMATION")
             return []
         confirmation = confirmations[-1] if confirmations else None
+        if template.zone_created_before_confirmation and confirmation and ob and ob.created_at >= confirmation.timestamp:
+            self._reject(template.id, "ZONE_CREATED_AFTER_CONFIRMATION")
+            return []
         if "STRUCTURE_BOS" in template.relations and not any(item.type == "BOS" for item in confirmations):
             self._reject(template.id, "NO_TRIGGER_BOS")
             return []
@@ -253,12 +321,26 @@ class ScenarioManager:
             return []
         sweep_type = "SELL_STOP" if direction == "LONG" else "BUY_STOP"
         sweeps = [item for item in pipeline.liquidity[trigger_key]
-                  if item.swept and item.type == sweep_type and cutoff <= item.created_at <= candle.timestamp]
+                  if item.swept and item.type == sweep_type
+                  and cutoff <= (item.swept_at or item.created_at) <= candle.timestamp]
         requires_sweep = template.require_liquidity_sweep or "LIQUIDITY_SWEPT" in template.relations
         if requires_sweep and not sweeps:
             self._reject(template.id, "NO_LIQUIDITY_SWEEP")
             return []
-        sweep = sweeps[-1] if sweeps else None
+        sweep = max(sweeps, key=lambda item: item.swept_at or item.created_at) if sweeps else None
+        if template.event_sequence:
+            event_times = {
+                "LIQUIDITY_SWEEP": sweep.swept_at if sweep else None,
+                "CONFIRMATION": confirmation.timestamp if confirmation else None,
+                "ZONE_TOUCH": candle.timestamp,
+            }
+            ordered = [event_times[item] for item in template.event_sequence]
+            if any(item is None for item in ordered):
+                self._reject(template.id, "EVENT_SEQUENCE_MISSING")
+                return []
+            if any(left >= right for left, right in zip(ordered, ordered[1:])):
+                self._reject(template.id, "EVENT_SEQUENCE_WRONG_ORDER")
+                return []
         if template.entry_rule == "FVG" and fvg:
             zone_low, zone_high = fvg.zone_low, fvg.zone_high
         elif template.entry_rule == "ORDER_BLOCK" and ob:
@@ -280,7 +362,32 @@ class ScenarioManager:
                 if direction == "LONG" and entry > equilibrium or direction == "SHORT" and entry < equilibrium:
                     self._reject(template.id, "WRONG_PREMIUM_DISCOUNT")
                     return []
-        if "HIGHER_TIMEFRAME_ALIGNMENT" in template.relations:
+        if template.context_alignment_mode != "ANY":
+            trends = {key[1]: pipeline.trends.get(key) for key in context_keys}
+            aligned = lambda item: item and (
+                direction == "LONG" and item.direction == "UP"
+                or direction == "SHORT" and item.direction == "DOWN"
+            )
+            opposite = lambda item: item and (
+                direction == "LONG" and item.direction == "DOWN"
+                or direction == "SHORT" and item.direction == "UP"
+            )
+            primary = trends.get(template.primary_context_timeframe) if template.primary_context_timeframe else None
+            secondary = [item for timeframe, item in trends.items() if timeframe != template.primary_context_timeframe]
+            if template.context_alignment_mode == "PRIMARY_ONLY" and not aligned(primary):
+                self._reject(template.id, "NO_PRIMARY_ALIGNMENT")
+                return []
+            if template.context_alignment_mode == "ALL" and (
+                len(trends) != len([item for item in trends.values() if aligned(item)])
+            ):
+                self._reject(template.id, "NO_HTF_ALIGNMENT")
+                return []
+            if template.context_alignment_mode == "PRIMARY_WITHOUT_CONFLICT" and (
+                not aligned(primary) or any(opposite(item) for item in secondary)
+            ):
+                self._reject(template.id, "HTF_CONTEXT_CONFLICT")
+                return []
+        elif "HIGHER_TIMEFRAME_ALIGNMENT" in template.relations:
             trends = [pipeline.trends.get(key) for key in context_keys]
             aligned = [item for item in trends if item and (
                 direction == "LONG" and item.direction == "UP" or direction == "SHORT" and item.direction == "DOWN"
@@ -322,6 +429,13 @@ class ScenarioManager:
                              reverse=direction == "SHORT")[:2]
         if template.target_rule in {"FIXED_RR", "LIQUIDITY_THEN_RR"}:
             targets.extend(entry + risk * rr * (1 if direction == "LONG" else -1) for rr in template.risk_reward)
+        # Do not let a nearby liquidity pool replace a structurally valid target
+        # when it cannot deliver the RR required by the strategy.
+        def target_rr(price):
+            return ((price-entry) if direction == "LONG" else (entry-price))/risk
+        targets = [price for price in targets if target_rr(price) > 0
+                   and (template.minimum_target_rr is None or target_rr(price) >= template.minimum_target_rr)
+                   and (template.maximum_target_rr is None or target_rr(price) <= template.maximum_target_rr)]
         targets = list(dict.fromkeys(targets))[:max(1, len(template.risk_reward))]
         object_ids = [item.id for item in (bias, confirmation, ob, fvg, sweep) if item]
         scenario_id = str(uuid5(NAMESPACE_URL, f"{template.id}:{':'.join(object_ids)}"))
@@ -333,11 +447,19 @@ class ScenarioManager:
                          + (template.overlap_bonus if fvg else 0)
                          + (template.strength_weight * ob.strength_score if ob else 0)
                          + (template.sweep_bonus if sweep else 0))
+        ttl = (template.entry_valid_for_bars * interval
+               if template.entry_valid_for_bars is not None else template.ttl_minutes * 60_000)
         scenario = Scenario(
             id=scenario_id, symbol=symbol, timeframe=candle.timeframe, direction=direction,
             setup_type=template.id, priority=template.priority, confidence=confidence, entry_zone_low=zone_low,
             entry_zone_high=zone_high, stop_loss_price=stop, take_profit_prices=targets,
-            created_at=candle.timestamp, expires_at=candle.timestamp + template.ttl_minutes * 60_000,
+            target_allocations=template.target_allocations,
+            break_even_rule=template.break_even_rule,
+            move_stop_to_break_even_after_target=template.move_stop_to_break_even_after_target,
+            one_trade_per_zone=template.one_trade_per_zone,
+            cooldown_bars_after_stop=template.cooldown_bars_after_stop,
+            deduplication_key=f"{template.id}:{ob.id}" if ob else None,
+            created_at=candle.timestamp, expires_at=candle.timestamp + ttl,
             reasons=[template.name, f"Контекст: {','.join(map(str, roles.context))}",
                      f"Зона: {','.join(map(str, roles.zones))}", f"Триггер: {candle.timeframe}"],
             objects_used=([{"type": "CONTEXT_STRUCTURE", "id": bias.id}] if bias else [])

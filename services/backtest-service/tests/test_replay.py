@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from smc_core.models import Timeframe
 from src.replay import (
     FrozenModel, TemplateModel, _execution_plan, _scenario_outcome,
-    _template_stop_distance_allowed, run_smc_replay,
+    _target_allocations, _template_stop_distance_allowed, run_smc_replay,
 )
 
 
@@ -80,6 +80,11 @@ def test_template_stop_distance_band_is_checked_on_actual_fill():
     assert _template_stop_distance_allowed(100, 101, template) is True
     assert _template_stop_distance_allowed(100, 100.5, template) is False
     assert _template_stop_distance_allowed(100, 102, template) is False
+
+
+def test_template_target_allocations_are_used_only_when_they_match_targets():
+    assert _target_allocations(SimpleNamespace(target_allocations=[.4, .6]), 2) == [.4, .6]
+    assert _target_allocations(SimpleNamespace(target_allocations=[.4, .6]), 1) == [1]
 
 
 def test_scenario_outcome_cannot_use_the_signal_candle():

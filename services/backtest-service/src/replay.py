@@ -30,6 +30,10 @@ class VirtualPosition:
     template_id: str
     confidence: float
     initial_quantity: float
+    target_allocations: list[float] = field(default_factory=list)
+    break_even_rule: str = "ONE_R"
+    move_stop_to_break_even_after_target: int | None = 1
+    targets_hit: int = 0
     realized: float = 0
     fees: float = 0
     funding: float = 0
@@ -142,8 +146,21 @@ def _template_stop_distance_allowed(entry: float, stop: float, template) -> bool
             and (maximum is None or stop_percent <= maximum))
 
 
+def _target_allocations(template, target_count: int) -> list[float]:
+    configured = list(getattr(template, "target_allocations", []) or [])
+    if configured and len(configured) == target_count:
+        return configured
+    return [1 / target_count] * target_count if target_count else []
+
+
+def _scenario_zone_key(scenario) -> str | None:
+    zone = next((item for item in getattr(scenario, "objects_used", []) if item.get("type") == "ORDER_BLOCK"), None)
+    return f"{scenario.setup_type}:{zone['id']}" if zone else None
+
+
 def _scenario_outcome(scenario, future: list[Candle], start: int = 0, ready_at: int | None = None,
-                      config: BacktestConfig | None = None, fixed_ratios: list[float] | None = None) -> int | None:
+                      config: BacktestConfig | None = None, fixed_ratios: list[float] | None = None,
+                      template=None) -> int | None:
     entered = False
     stop = scenario.stop_loss_price
     target = scenario.take_profit_prices[0]
@@ -165,7 +182,10 @@ def _scenario_outcome(scenario, future: list[Candle], start: int = 0, ready_at: 
                 entry = round(raw_entry / config.tick_size) * config.tick_size
                 stop, targets = _execution_plan(
                     entry, scenario, config.smc_min_stop_percent, config.tick_size, fixed_ratios,
-                    config.smc_min_target_rr, config.smc_max_target_rr,
+                    (template.minimum_target_rr if template and template.minimum_target_rr is not None
+                     else config.smc_min_target_rr),
+                    (template.maximum_target_rr if template and template.maximum_target_rr is not None
+                     else config.smc_max_target_rr),
                 )
                 target = targets[0]
         stop_hit = candle.low <= stop if scenario.direction == "LONG" else candle.high >= stop
@@ -197,7 +217,7 @@ def train_local_model(
             start = bisect_right(primary_timestamps, ready_at)
             template = manager.store.get(scenario.setup_type)
             outcome = _scenario_outcome(
-                scenario, primary, start, ready_at, config, template.risk_reward if template else None,
+                scenario, primary, start, ready_at, config, template.risk_reward if template else None, template,
             )
             if outcome is not None:
                 model.learn(scenario.setup_type, outcome)
@@ -239,6 +259,8 @@ def run_smc_replay(
     capital = config.initial_capital
     position: VirtualPosition | None = None
     pending = []
+    traded_zone_keys: set[str] = set()
+    last_stop_by_template: dict[str, int] = {}
     trades = []
     decisions = []
     scenarios = []
@@ -273,7 +295,11 @@ def run_smc_replay(
         position.fees += fees
         position.quantity -= quantity
         if position.quantity > 1e-12:
-            position.stop = position.entry_price
+            position.targets_hit += 1
+            if (position.break_even_rule == "AFTER_TARGET"
+                    and position.move_stop_to_break_even_after_target is not None
+                    and position.targets_hit >= position.move_stop_to_break_even_after_target):
+                position.stop = position.entry_price
             return
         trades.append({
             "id": len(trades) + 1, "direction": position.direction, "entry_time": position.entry_time,
@@ -285,6 +311,8 @@ def run_smc_replay(
             "scenario_id": position.scenario_id, "template_id": position.template_id,
             "confidence": position.confidence,
         })
+        if reason == "STOP_LOSS":
+            last_stop_by_template[position.template_id] = candle.timestamp + TIMEFRAME_MILLISECONDS[candle.timeframe]
         position = None
 
     for candle in events:
@@ -350,8 +378,18 @@ def run_smc_replay(
                 close(candle, gap_price, "STOP_LOSS")
             elif reached:
                 target = reached[0]
+                target_index = position.targets.index(target)
                 position.targets.remove(target)
-                close(candle, target, "TAKE_PROFIT", position.quantity / 2 if position.targets else position.quantity)
+                allocation = position.target_allocations.pop(target_index)
+                close(candle, target, "TAKE_PROFIT", min(
+                    position.quantity,
+                    position.initial_quantity * allocation if position.targets else position.quantity,
+                ))
+            if position and position.break_even_rule == "ONE_R":
+                initial_risk = abs(position.entry_price - position.stop)
+                one_r = position.entry_price + initial_risk * (1 if position.direction == "LONG" else -1)
+                if candle.high >= one_r if position.direction == "LONG" else candle.low <= one_r:
+                    position.stop = position.entry_price
         if position is None and not had_position:
             candidates = [item for item in pending if available_at > item[2] + config.execution_latency_ms
                           and candle.low <= item[0].entry_zone_high and candle.high >= item[0].entry_zone_low]
@@ -363,9 +401,25 @@ def run_smc_replay(
                     raw_entry = min(max(candle.open, scenario.entry_zone_low), scenario.entry_zone_high)
                     entry = price_tick(raw_entry * (1 + slip if scenario.direction == "LONG" else 1 - slip))
                     template = manager.store.get(scenario.setup_type)
+                    zone_key = _scenario_zone_key(scenario)
+                    if template and getattr(template, "one_trade_per_zone", False) and zone_key in traded_zone_keys:
+                        set_scenario_status(scenario.id, "REJECTED_ZONE_REUSE")
+                        rejected_ids.add(scenario.id)
+                        continue
+                    last_stop = last_stop_by_template.get(scenario.setup_type)
+                    cooldown = (getattr(template, "cooldown_bars_after_stop", 0) * TIMEFRAME_MILLISECONDS[Timeframe(primary_timeframe)]
+                                if template else 0)
+                    if last_stop is not None and available_at <= last_stop + cooldown:
+                        set_scenario_status(scenario.id, "REJECTED_COOLDOWN")
+                        rejected_ids.add(scenario.id)
+                        continue
                     stop, targets = _execution_plan(
                         entry, scenario, config.smc_min_stop_percent, config.tick_size,
-                        template.risk_reward if template else None, config.smc_min_target_rr, config.smc_max_target_rr,
+                        template.risk_reward if template else None,
+                        (template.minimum_target_rr if template and getattr(template, "minimum_target_rr", None) is not None
+                         else config.smc_min_target_rr),
+                        (template.maximum_target_rr if template and getattr(template, "maximum_target_rr", None) is not None
+                         else config.smc_max_target_rr),
                     )
                     if template and not _template_stop_distance_allowed(entry, stop, template):
                         set_scenario_status(scenario.id, "REJECTED_STOP_DISTANCE")
@@ -393,8 +447,16 @@ def run_smc_replay(
                         position = VirtualPosition(
                             scenario.direction, entry, available_at, quantity, stop,
                             targets, scenario.id, scenario.setup_type, confidence, quantity,
+                            target_allocations=_target_allocations(template, len(targets)),
+                            break_even_rule=getattr(template, "break_even_rule", "ONE_R") if template else "ONE_R",
+                            move_stop_to_break_even_after_target=(
+                                getattr(template, "move_stop_to_break_even_after_target", 1) if template else 1
+                            ),
                             realized=-entry_fee, fees=entry_fee, last_funding_time=available_at,
                         )
+                        zone_key = _scenario_zone_key(scenario)
+                        if template and getattr(template, "one_trade_per_zone", False) and zone_key:
+                            traded_zone_keys.add(zone_key)
                         report_scenario = scenario_reports[scenario.id]
                         set_scenario_status(scenario.id, "EXECUTED")
                         report_scenario["entry_price"] = entry

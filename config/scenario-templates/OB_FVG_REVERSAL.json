@@ -1,10 +1,10 @@
 {
   "id": "OB_FVG_REVERSAL",
   "name": "Разворот от Order Block с подтверждением FVG",
-  "version": 3,
+  "version": 4,
   "priority": 85,
   "context_structure_types": ["CHOCH", "MSS", "BOS"],
-  "enabled": true,
+  "enabled": false,
   "required_objects": [
     { "kind": "ORDER_BLOCK", "active": true, "same_direction": true, "min_strength": 0.4 },
     { "kind": "FVG", "active": true, "same_direction": true, "min_strength": 0 }

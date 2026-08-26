@@ -15,4 +15,9 @@ class ConflictResolver:
         return best,rejected
     def signal(self,s:Scenario)->TradeSignal:
         return TradeSignal(scenario_id=s.id,symbol=s.symbol,direction=s.direction,entry_price=(s.entry_zone_low+s.entry_zone_high)/2,
-          stop_loss_price=s.stop_loss_price,take_profit_prices=s.take_profit_prices,confidence=s.confidence)
+          stop_loss_price=s.stop_loss_price,take_profit_prices=s.take_profit_prices,confidence=s.confidence,
+          target_allocations=s.target_allocations,
+          break_even_rule=s.break_even_rule,
+          move_stop_to_break_even_after_target=s.move_stop_to_break_even_after_target,
+          one_trade_per_zone=s.one_trade_per_zone,cooldown_bars_after_stop=s.cooldown_bars_after_stop,
+          deduplication_key=s.deduplication_key)

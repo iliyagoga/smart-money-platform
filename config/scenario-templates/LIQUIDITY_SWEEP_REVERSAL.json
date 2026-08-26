@@ -1,7 +1,8 @@
 {
   "id": "LIQUIDITY_SWEEP_REVERSAL",
   "name": "Разворот после снятия ликвидности",
-  "version": 3,
+  "version": 4,
+  "enabled": false,
   "priority": 95,
   "context_structure_types": ["CHOCH", "MSS", "BOS"],
   "required_objects": [{ "kind": "ORDER_BLOCK", "min_strength": 0.35 }],

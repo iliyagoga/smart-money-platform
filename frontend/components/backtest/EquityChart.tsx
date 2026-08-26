@@ -6,12 +6,18 @@ export function EquityChart({ points }: { points: EquityPoint[] }) {
   const width = 1000;
   const height = 280;
   const padding = 24;
-  const values = points.map((point) => point.equity);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
+  let min = points[0].equity;
+  let max = points[0].equity;
+  for (const point of points) {
+    min = Math.min(min, point.equity);
+    max = Math.max(max, point.equity);
+  }
+  const maximumRenderedPoints = 2_000;
+  const step = Math.max(1, Math.ceil(points.length / maximumRenderedPoints));
+  const renderedPoints = points.filter((_, index) => index % step === 0 || index === points.length - 1);
   const range = max - min || 1;
-  const path = points.map((point, index) => {
-    const x = padding + index / (points.length - 1) * (width - padding * 2);
+  const path = renderedPoints.map((point, index) => {
+    const x = padding + index / (renderedPoints.length - 1) * (width - padding * 2);
     const y = padding + (max - point.equity) / range * (height - padding * 2);
     return `${index === 0 ? "M" : "L"}${x.toFixed(2)},${y.toFixed(2)}`;
   }).join(" ");
