@@ -2,7 +2,6 @@
   "id": "BTC_HTF_CHOCH_MSS_SHORT",
   "name": "BTC SHORT: CHOCH/MSS по D1 и H4 со структурным стопом",
   "version": 2,
-  "enabled": false,
   "priority": 92,
   "context_structure_types": ["BOS", "CHOCH", "MSS"],
   "required_objects": [{ "kind": "ORDER_BLOCK", "min_strength": 0.45 }],

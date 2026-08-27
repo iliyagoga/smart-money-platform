@@ -1,0 +1,110 @@
+{
+  "id": "ETHUSDT_D1_H1_M5_OB_SWEEP",
+  "name": "ETHUSDT: D1 context, H1 Order Block, M5 liquidity sweep",
+  "version": 1,
+  "sources": [
+    "https://smart-money.trading/smart-money-concept/",
+    "https://smart-money.trading/ready-to-use-smart-money-strategy/"
+  ],
+  "draft_notes": [
+    "Таймфреймы перенесены из Edge Lab: D1 задаёт направление, H1 формирует зону и структуру, M5 подтверждает вход и является единственным торговым таймфреймом.",
+    "Для строгого однозначного сценария выбрана модель H1 Order Block: касание зоны, снятие ликвидности и затем M5 CHOCH или MSS в направлении D1.",
+    "Donchian 200, RSI 14, ADX 14 >= 25, MAE/MFE 3/5/12, комиссия 0.05%, плечо 1, капитал 1000 и лимит пяти сделок не поддерживаются этой схемой Scenario Manager и должны остаться внешними фильтрами и ограничениями бота.",
+    "stop_atr_buffer=0.15 в этой схеме означает долю ширины Order Block, поэтому это только ближайшее допустимое приближение к исходному H1 ATR-буферу 0.15; фактический ATR-буфер должен применяться внешним риск-модулем.",
+    "Три выхода сохранены как 33/33/34 и резервные 1R/2R/3R. Фактические цели исходного пакета должны сначала ставиться перед доступными H1 уровнями, а недостающие цели продолжаться по ATR.",
+    "Эталон исходного пакета отрицательный: выбранный период -59.79%, Profit Factor 0.38, win rate 18.58%, 969 сделок; предыдущий равный период -54.09%. Шаблон предназначен только для повторного бэктеста и paper/testnet, а не для live-торговли."
+  ],
+  "priority": 80,
+  "allowed_timeframes": [
+    "D1",
+    "H1",
+    "M5"
+  ],
+  "timeframe_roles": {
+    "context": [
+      "D1"
+    ],
+    "zones": [
+      "H1"
+    ],
+    "triggers": [
+      "M5"
+    ]
+  },
+  "primary_context_timeframe": "D1",
+  "context_alignment_mode": "PRIMARY_ONLY",
+  "context_structure_types": [
+    "BOS",
+    "CHOCH",
+    "MSS"
+  ],
+  "direction_source": "CONTEXT",
+  "allowed_directions": [
+    "LONG",
+    "SHORT"
+  ],
+  "minimum_context_alignments": 1,
+  "required_objects": [
+    {
+      "kind": "ORDER_BLOCK",
+      "active": true,
+      "same_direction": true,
+      "min_strength": 0.5
+    }
+  ],
+  "required_relations": [
+    "LIQUIDITY_IN_DIRECTION",
+    "LIQUIDITY_SWEPT",
+    "STRUCTURE_CHOCH_OR_MSS",
+    "OB_RETESTED",
+    "HIGHER_TIMEFRAME_ALIGNMENT"
+  ],
+  "require_context": true,
+  "require_zone_touch": true,
+  "require_confirmation": true,
+  "confirmation_types": [
+    "CHOCH",
+    "MSS"
+  ],
+  "require_liquidity_sweep": true,
+  "confirmation_window_bars": 12,
+  "event_sequence": [
+    "ZONE_TOUCH",
+    "LIQUIDITY_SWEEP",
+    "CONFIRMATION"
+  ],
+  "zone_created_before_confirmation": true,
+  "minimum_zone_retests": 1,
+  "maximum_zone_retests": 2,
+  "maximum_zone_age_bars": 12,
+  "entry_rule": "ORDER_BLOCK",
+  "stop_rule": "LAST_SWING",
+  "stop_atr_buffer": 0.15,
+  "minimum_stop_pct": null,
+  "maximum_stop_pct": null,
+  "target_rule": "LIQUIDITY_THEN_RR",
+  "risk_reward": [
+    1,
+    2,
+    3
+  ],
+  "minimum_target_rr": 1,
+  "maximum_target_rr": 3,
+  "target_allocations": [
+    0.33,
+    0.33,
+    0.34
+  ],
+  "break_even_rule": "AFTER_TARGET",
+  "move_stop_to_break_even_after_target": 1,
+  "ttl_minutes": 60,
+  "entry_valid_for_bars": 12,
+  "one_trade_per_zone": true,
+  "cooldown_bars_after_stop": 12,
+  "base_confidence": 0.45,
+  "overlap_bonus": 0,
+  "strength_weight": 0.15,
+  "context_bonus": 0.12,
+  "confirmation_bonus": 0.15,
+  "sweep_bonus": 0.13
+}

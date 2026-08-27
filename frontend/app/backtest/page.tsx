@@ -1,7 +1,7 @@
 "use client";
 
 import { Alert, Box, Button, Checkbox, FormControlLabel, FormGroup, Grid, Paper, Stack, Tab, Tabs, TextField, Typography } from "@mui/material";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AssetManager } from "../../components/backtest/AssetManager";
 import { BacktestReport } from "../../components/backtest/BacktestReport";
 import { BacktestHistory } from "../../components/backtest/BacktestHistory";
@@ -53,6 +53,11 @@ const timeframeMilliseconds: Record<string, number> = {
   M1: 60_000, M5: 300_000, M15: 900_000, M30: 1_800_000, H1: 3_600_000, H4: 14_400_000, D1: 86_400_000,
 };
 
+interface ScenarioTemplatesResponse {
+  templates: Array<{ id: string; name: string }>;
+  total: number;
+}
+
 export default function BacktestPage() {
   const { roles } = useAuth();
   const [asset, setAsset] = useState("");
@@ -72,6 +77,16 @@ export default function BacktestPage() {
   const [progress, setProgress] = useState(0);
   const [workspaceTab, setWorkspaceTab] = useState(0);
   const runsResource = useApiResource<BacktestRunsResponse>("/api/v1/backtest/backtests");
+  const templatesResource = useApiResource<ScenarioTemplatesResponse>("/api/v1/smc/scenario-templates");
+  const templateSelectionInitialized = useRef(false);
+  const templates = templatesResource.data?.templates ?? [];
+  useEffect(() => {
+    if (templateSelectionInitialized.current || !templates.length) return;
+    templateSelectionInitialized.current = true;
+    setSettings((current) => current.templateIds.length
+      ? current
+      : { ...current, templateIds: templates.map((template) => template.id) });
+  }, [templates]);
   const selectedAsset = asset || assets[0];
   const selectedAssetDetails = assetDetails.find((item) => item.symbol === selectedAsset);
   const testRangeMilliseconds = Math.max(
@@ -278,6 +293,7 @@ export default function BacktestPage() {
           onRun={() => void run()}
           isRunning={isRunning}
           progress={progress}
+          templates={templates}
         />
       </Grid>
       <Grid size={{ xs: 12, xl: 7 }}>

@@ -4,7 +4,6 @@
   "version": 4,
   "priority": 85,
   "context_structure_types": ["CHOCH", "MSS", "BOS"],
-  "enabled": false,
   "required_objects": [
     { "kind": "ORDER_BLOCK", "active": true, "same_direction": true, "min_strength": 0.4 },
     { "kind": "FVG", "active": true, "same_direction": true, "min_strength": 0 }

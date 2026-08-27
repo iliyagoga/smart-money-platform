@@ -2,7 +2,6 @@
   "id": "SM_TRADER_H1_M5_INTRADAY",
   "name": "SM Trader Intraday: H1 POI → M5 sweep/CHoCH",
   "version": 1,
-  "enabled": true,
   "sources": [
     "https://smart-money.trading/time-frame/",
     "https://smart-money.trading/ready-to-use-smart-money-strategy/"

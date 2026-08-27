@@ -2,7 +2,6 @@
   "id": "BTC_CHOCH_MSS_SHORT_STOP",
   "name": "BTC SHORT: CHOCH/MSS, стоп 0.75–1.5%",
   "version": 2,
-  "enabled": false,
   "priority": 90,
   "context_structure_types": ["BOS", "CHOCH", "MSS"],
   "required_objects": [{ "kind": "ORDER_BLOCK", "min_strength": 0.45 }],

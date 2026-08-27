@@ -1,12 +1,11 @@
 "use client";
 
-import { Alert, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle, Paper, Stack, TextField, Typography } from "@mui/material";
+import { Alert, Button, Dialog, DialogActions, DialogContent, DialogTitle, Paper, Stack, TextField, Typography } from "@mui/material";
 import { useState } from "react";
 import { useApiResource } from "../../hooks/useApiResource";
 import { api } from "../../lib/api";
 
 interface ScenarioTemplate {
-  enabled: boolean;
   id: string;
   name: string;
   version: number;
@@ -22,7 +21,6 @@ const starterTemplate = {
   id: "NEW_TEMPLATE",
   name: "Новый сценарий",
   version: 1,
-  enabled: false,
   required_objects: [{ kind: "ORDER_BLOCK", active: true, same_direction: true, min_strength: 0.5 }],
   relations: [],
   allowed_timeframes: ["M15", "H1", "H4"],
@@ -84,7 +82,6 @@ export function TemplateManager({ canManage }: { canManage: boolean }) {
       {(resource.data?.templates ?? []).map((template) => <Paper key={template.id} variant="outlined" sx={{ p: 2 }}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" } }}>
           <Typography sx={{ flex: 1 }}>{template.name} · {template.id} · v{template.version}</Typography>
-          <Chip size="small" color={template.enabled ? "success" : "default"} label={template.enabled ? "Включён" : "Отключён"} />
           <Button disabled={!canManage} onClick={() => edit(template)}>JSON</Button>
           <Button color="error" disabled={!canManage} onClick={() => void remove(template.id)}>Удалить</Button>
         </Stack>

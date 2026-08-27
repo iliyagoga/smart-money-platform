@@ -76,8 +76,8 @@ async def scenarios(symbol:str|None=None,status:str|None=None,limit:int=Query(10
     items=service.scenarios.list(symbol,status);return {"scenarios":items[-limit:],"total":len(items)}
 
 @app.get("/scenario-templates")
-async def scenario_templates(enabled_only:bool=False):
-    items=service.scenarios.store.list(enabled_only);return {"templates":items,"total":len(items)}
+async def scenario_templates():
+    items=service.scenarios.store.list();return {"templates":items,"total":len(items)}
 
 @app.get("/scenario-templates/{template_id}")
 async def scenario_template(template_id:str):

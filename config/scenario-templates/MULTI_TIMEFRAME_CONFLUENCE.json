@@ -2,7 +2,6 @@
   "id": "MULTI_TIMEFRAME_CONFLUENCE",
   "name": "Мультитаймфреймовое подтверждение",
   "version": 4,
-  "enabled": false,
   "priority": 90,
   "context_structure_types": ["BOS"],
   "required_objects": [

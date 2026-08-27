@@ -23,21 +23,22 @@ def test_template_store_roundtrip(tmp_path):
     saved = store.save(template())
     assert saved.id == "TEST_TEMPLATE"
     assert store.get("test_template").name == "Test"
-    assert json.loads((tmp_path / "TEST_TEMPLATE.json").read_text())["enabled"] is True
+    assert "enabled" not in json.loads((tmp_path / "TEST_TEMPLATE.json").read_text())
     assert store.delete("TEST_TEMPLATE") is True
 
 
-def test_explicit_disabled_template_can_be_replayed(tmp_path, monkeypatch):
+def test_explicit_template_selection_filters_replay(tmp_path, monkeypatch):
     store = TemplateStore(tmp_path)
-    disabled = template().model_copy(update={"enabled": False})
-    store.save(disabled)
+    selected = template()
+    store.save(selected)
+    store.save(selected.model_copy(update={"id": "OTHER_TEMPLATE"}))
     manager = ScenarioManager(store)
     monkeypatch.setattr(manager, "_evaluate", lambda item, *args: [item.id])
 
-    assert manager.generate("BTC-USDT-SWAP", Timeframe.M5, [], [], []) == []
+    assert manager.generate("BTC-USDT-SWAP", Timeframe.M5, [], [], []) == ["OTHER_TEMPLATE", "TEST_TEMPLATE"]
     assert manager.generate(
-        "BTC-USDT-SWAP", Timeframe.M5, [], [], [], template_ids=[disabled.id]
-    ) == [disabled.id]
+        "BTC-USDT-SWAP", Timeframe.M5, [], [], [], template_ids=[selected.id]
+    ) == [selected.id]
 
 
 def test_unknown_rule_is_rejected():

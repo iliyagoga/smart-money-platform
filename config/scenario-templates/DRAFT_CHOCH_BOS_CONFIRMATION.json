@@ -2,7 +2,6 @@
   "id": "DRAFT_CHOCH_BOS_CONFIRMATION",
   "name": "Черновик: CHoCH и первый подтверждающий BOS",
   "version": 1,
-  "enabled": false,
   "sources": [
     "https://ru.tradingview.com/chart/BTCUSD/RCZ0BZJ1-osnovy-kontseptsii-smart-money-chastb-2/"
   ],

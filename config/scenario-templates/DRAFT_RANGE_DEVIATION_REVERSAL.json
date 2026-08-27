@@ -2,7 +2,6 @@
   "id": "DRAFT_RANGE_DEVIATION_REVERSAL",
   "name": "Черновик: возврат в диапазон после девиации",
   "version": 1,
-  "enabled": false,
   "sources": [
     "https://ru.tradingview.com/chart/BTCUSD/1xrc88U4-osnovy-kontseptsii-smart-money-chastb-1/"
   ],

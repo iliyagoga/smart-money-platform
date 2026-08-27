@@ -2,7 +2,6 @@
   "id": "DRAFT_OB_IMBALANCE_REACTION",
   "name": "Черновик: реакция Order Block и Imbalance",
   "version": 1,
-  "enabled": false,
   "sources": [
     "https://ru.tradingview.com/chart/BTCUSD/buE4Yslp-osnovy-kontseptsii-smart-money-chastb-3/",
     "https://www.binance.com/ru/square/post/14699041660993"

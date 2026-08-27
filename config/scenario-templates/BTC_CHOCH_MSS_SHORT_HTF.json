@@ -2,7 +2,6 @@
   "id": "BTC_CHOCH_MSS_SHORT_HTF",
   "name": "BTC SHORT: CHOCH/MSS с подтверждением D1 и H4",
   "version": 2,
-  "enabled": false,
   "priority": 88,
   "context_structure_types": ["BOS", "CHOCH", "MSS"],
   "required_objects": [{ "kind": "ORDER_BLOCK", "min_strength": 0.45 }],

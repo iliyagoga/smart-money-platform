@@ -37,7 +37,6 @@ class ScenarioTemplate(BaseModel):
     id: str = Field(pattern=r"^[A-Z][A-Z0-9_]+$")
     name: str
     version: int = Field(default=1, ge=1)
-    enabled: bool = True
     sources: list[str] = []
     draft_notes: list[str] = []
     required_objects: list[ObjectRule]
@@ -162,9 +161,8 @@ class TemplateStore:
                 if not destination.exists() or source_data.get("version", 1) > destination_version:
                     shutil.copyfile(source, destination)
 
-    def list(self, enabled_only: bool = False) -> list[ScenarioTemplate]:
-        templates = [self._read(path) for path in sorted(self.directory.glob("*.json"))]
-        return [item for item in templates if item.enabled or not enabled_only]
+    def list(self) -> list[ScenarioTemplate]:
+        return [self._read(path) for path in sorted(self.directory.glob("*.json"))]
 
     def get(self, template_id: str) -> ScenarioTemplate | None:
         path = self._path(template_id)
@@ -205,9 +203,7 @@ class ScenarioManager:
                  changes=None, swings=None, trends=None):
         created = []
         timestamp = now or int(time() * 1000)
-        # Disabled research templates stay out of default runs, but an explicit
-        # template_ids selection must still be reproducible.
-        templates = sorted(self.store.list(enabled_only=not template_ids), key=lambda item: (-item.priority, item.id))
+        templates = sorted(self.store.list(), key=lambda item: (-item.priority, item.id))
         for template in templates:
             if template_ids and template.id not in template_ids:
                 continue
@@ -222,7 +218,7 @@ class ScenarioManager:
     def generate_top_down(self, symbol, candle, pipeline, template_ids=None):
         """Evaluate every template using its configured timeframe roles."""
         created = []
-        for template in self.store.list(enabled_only=not template_ids):
+        for template in self.store.list():
             if template_ids and template.id not in template_ids:
                 continue
             roles = template.timeframe_roles

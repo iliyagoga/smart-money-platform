@@ -2,7 +2,6 @@
   "id": "SM_TRADER_D1_M15_M1",
   "name": "SM Trader: D1 контекст → M15 POI → M1 sweep/CHoCH",
   "version": 1,
-  "enabled": true,
   "sources": [
     "https://smart-money.trading/time-frame/",
     "https://smart-money.trading/ready-to-use-smart-money-strategy/",

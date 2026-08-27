@@ -2,7 +2,6 @@
   "id": "SM_TRADER_H4_M15_SWING",
   "name": "SM Trader Swing: H4 POI → M15 sweep/CHoCH",
   "version": 1,
-  "enabled": true,
   "sources": [
     "https://smart-money.trading/time-frame/",
     "https://smart-money.trading/ready-to-use-smart-money-strategy/"

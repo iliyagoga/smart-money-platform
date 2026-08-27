@@ -2,7 +2,6 @@
   "id": "BTC_SWEEP_CHOCH_RETEST_CONFIGURABLE",
   "name": "BTC: sweep → CHOCH/MSS → ретест OB",
   "version": 1,
-  "enabled": false,
   "draft_notes": [
     "Исследовательский шаблон: включать только явным выбором в walk-forward бэктесте."
   ],

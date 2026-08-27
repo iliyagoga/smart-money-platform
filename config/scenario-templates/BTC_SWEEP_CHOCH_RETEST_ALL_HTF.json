@@ -2,7 +2,6 @@
   "id": "BTC_SWEEP_CHOCH_RETEST_ALL_HTF",
   "name": "BTC: sweep → CHOCH/MSS → ретест, D1+H4",
   "version": 1,
-  "enabled": false,
   "draft_notes": ["Строгий эксперимент D1+H4; только явный walk-forward запуск."],
   "priority": 96,
   "timeframe_roles": { "context": ["D1", "H4"], "zones": ["H1", "M30"], "triggers": ["M15", "M5"] },

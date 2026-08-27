@@ -2,7 +2,6 @@
   "id": "BTC_SWEEP_CHOCH_RETEST_SHORT",
   "name": "BTC SHORT: sweep → CHOCH/MSS → ретест OB",
   "version": 1,
-  "enabled": false,
   "draft_notes": ["Экспериментальная SHORT-версия; только явный walk-forward запуск."],
   "priority": 95,
   "timeframe_roles": { "context": ["D1", "H4"], "zones": ["H1", "M30"], "triggers": ["M15", "M5"] },

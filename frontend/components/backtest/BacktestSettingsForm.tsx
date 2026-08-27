@@ -1,6 +1,6 @@
 "use client";
 
-import { Button, MenuItem, Paper, Stack, TextField, Typography } from "@mui/material";
+import { Button, Checkbox, FormControl, InputLabel, ListItemText, MenuItem, Paper, Select, Stack, TextField, Typography } from "@mui/material";
 import type { BacktestSettings, DirectionMode } from "../../lib/backtest/types";
 
 interface BacktestSettingsFormProps {
@@ -9,14 +9,16 @@ interface BacktestSettingsFormProps {
   onRun: () => void;
   progress: number;
   settings: BacktestSettings;
+  templates: Array<{ id: string; name: string }>;
 }
 
-export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, settings }: BacktestSettingsFormProps) {
+export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, settings, templates }: BacktestSettingsFormProps) {
   const updateNumber = (key: keyof BacktestSettings, value: string) => onChange({ ...settings, [key]: Number(value) });
   const isValid = settings.initialCapital > 0
     && settings.positionSizePercent > 0
     && settings.positionSizePercent <= 100
-    && settings.riskPerTradePercent > 0;
+    && settings.riskPerTradePercent > 0
+    && settings.templateIds.length > 0;
 
   return <Paper variant="outlined" sx={{ p: 3 }}>
     <Typography variant="h6">Параметры стратегии</Typography>
@@ -33,8 +35,27 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
       >
         <MenuItem value="BOTH">Long и Short</MenuItem><MenuItem value="LONG">Только Long</MenuItem><MenuItem value="SHORT">Только Short</MenuItem>
       </TextField>
+      <FormControl fullWidth>
+        <InputLabel id="backtest-templates-label">Шаблоны для теста</InputLabel>
+        <Select
+          labelId="backtest-templates-label"
+          multiple
+          label="Шаблоны для теста"
+          value={settings.templateIds}
+          onChange={(event) => onChange({
+            ...settings,
+            templateIds: typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value,
+          })}
+          renderValue={(selected) => `Выбрано: ${selected.length}`}
+        >
+          {templates.map((template) => <MenuItem key={template.id} value={template.id}>
+            <Checkbox checked={settings.templateIds.includes(template.id)} />
+            <ListItemText primary={template.name} secondary={template.id} />
+          </MenuItem>)}
+        </Select>
+      </FormControl>
       <Typography variant="body2" color="text.secondary">
-        Автоматически проверяются все включённые шаблоны и их собственные роли таймфреймов.
+        В расчёте участвуют только отмеченные шаблоны и их собственные роли таймфреймов.
       </Typography>
       <TextField label="Начальный капитал" value={settings.initialCapital} type="number"
         onChange={(event) => updateNumber("initialCapital", event.target.value)} />
@@ -91,7 +112,7 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
         {isRunning ? `Выполняем расчёт… ${progress}%` : "Запустить бэктест"}
       </Button>
       {!isValid && <Typography variant="caption" color="error.main">
-        Проверьте капитал, риск, размер позиции и параметры исполнения.
+        Проверьте капитал, риск, размер позиции, параметры исполнения и выберите хотя бы один шаблон.
       </Typography>}
     </Stack>
   </Paper>;
