@@ -1,0 +1,96 @@
+{
+  "id": "ETHUSDT_D1_M15_M5_OB",
+  "name": "ETHUSDT: D1 context, M15 Order Block, M5 confirmation",
+  "version": 1,
+  "sources": [
+    "Derived from ETHUSDT_D1_H1_M5_OB_SWEEP"
+  ],
+  "draft_notes": [
+    "Более частотная версия стратегии: D1 задаёт направление, M15 формирует Order Block, M5 подтверждает вход.",
+    "Liquidity sweep повышает confidence при наличии, но не является обязательным условием.",
+    "Вход выполняется на 50% M15 Order Block после M5 CHOCH или MSS. Шаблон предназначен для бэктеста и paper/testnet до отдельной валидации."
+  ],
+  "priority": 75,
+  "allowed_timeframes": [
+    "D1",
+    "M15",
+    "M5"
+  ],
+  "timeframe_roles": {
+    "context": [
+      "D1"
+    ],
+    "zones": [
+      "M15"
+    ],
+    "triggers": [
+      "M5"
+    ]
+  },
+  "primary_context_timeframe": "D1",
+  "context_alignment_mode": "PRIMARY_ONLY",
+  "context_structure_types": [
+    "BOS",
+    "CHOCH",
+    "MSS"
+  ],
+  "direction_source": "CONTEXT",
+  "allowed_directions": [
+    "LONG",
+    "SHORT"
+  ],
+  "minimum_context_alignments": 1,
+  "required_objects": [
+    {
+      "kind": "ORDER_BLOCK",
+      "active": true,
+      "same_direction": true,
+      "min_strength": 0.4
+    }
+  ],
+  "relations": [],
+  "require_context": true,
+  "require_zone_touch": true,
+  "require_confirmation": true,
+  "confirmation_types": [
+    "CHOCH",
+    "MSS"
+  ],
+  "require_liquidity_sweep": false,
+  "confirmation_window_bars": 36,
+  "event_sequence": [],
+  "zone_created_before_confirmation": true,
+  "minimum_zone_retests": 0,
+  "maximum_zone_retests": 6,
+  "maximum_zone_age_bars": 96,
+  "entry_rule": "FIFTY_PERCENT",
+  "stop_rule": "LAST_SWING",
+  "stop_atr_buffer": 0.15,
+  "minimum_stop_percent": null,
+  "maximum_stop_percent": null,
+  "target_rule": "LIQUIDITY_THEN_RR",
+  "risk_reward": [
+    1,
+    2,
+    3
+  ],
+  "minimum_target_rr": 1,
+  "maximum_target_rr": 3,
+  "target_allocations": [
+    0.33,
+    0.33,
+    0.34
+  ],
+  "break_even_rule": "AFTER_TARGET",
+  "move_stop_to_break_even_after_target": 1,
+  "ttl_minutes": 180,
+  "entry_valid_for_bars": 36,
+  "one_trade_per_zone": true,
+  "cooldown_bars_after_stop": 6,
+  "base_confidence": 0.42,
+  "overlap_bonus": 0,
+  "strength_weight": 0.15,
+  "context_bonus": 0.12,
+  "confirmation_bonus": 0.15,
+  "sweep_bonus": 0.13
+}

@@ -1,7 +1,7 @@
 {
   "id": "ETHUSDT_D1_H1_M5_OB_SWEEP",
   "name": "ETHUSDT: D1 context, H1 Order Block, M5 liquidity sweep",
-  "version": 1,
+  "version": 4,
   "sources": [
     "https://smart-money.trading/smart-money-concept/",
     "https://smart-money.trading/ready-to-use-smart-money-strategy/"
@@ -49,16 +49,10 @@
       "kind": "ORDER_BLOCK",
       "active": true,
       "same_direction": true,
-      "min_strength": 0.5
+      "min_strength": 0.4
     }
   ],
-  "required_relations": [
-    "LIQUIDITY_IN_DIRECTION",
-    "LIQUIDITY_SWEPT",
-    "STRUCTURE_CHOCH_OR_MSS",
-    "OB_RETESTED",
-    "HIGHER_TIMEFRAME_ALIGNMENT"
-  ],
+  "relations": [],
   "require_context": true,
   "require_zone_touch": true,
   "require_confirmation": true,
@@ -66,22 +60,18 @@
     "CHOCH",
     "MSS"
   ],
-  "require_liquidity_sweep": true,
-  "confirmation_window_bars": 12,
-  "event_sequence": [
-    "ZONE_TOUCH",
-    "LIQUIDITY_SWEEP",
-    "CONFIRMATION"
-  ],
+  "require_liquidity_sweep": false,
+  "confirmation_window_bars": 24,
+  "event_sequence": [],
   "zone_created_before_confirmation": true,
-  "minimum_zone_retests": 1,
-  "maximum_zone_retests": 2,
-  "maximum_zone_age_bars": 12,
-  "entry_rule": "ORDER_BLOCK",
+  "minimum_zone_retests": 0,
+  "maximum_zone_retests": 4,
+  "maximum_zone_age_bars": 48,
+  "entry_rule": "FIFTY_PERCENT",
   "stop_rule": "LAST_SWING",
   "stop_atr_buffer": 0.15,
-  "minimum_stop_pct": null,
-  "maximum_stop_pct": null,
+  "minimum_stop_percent": null,
+  "maximum_stop_percent": null,
   "target_rule": "LIQUIDITY_THEN_RR",
   "risk_reward": [
     1,
