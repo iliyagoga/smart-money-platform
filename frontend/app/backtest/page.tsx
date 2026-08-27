@@ -45,7 +45,7 @@ const defaultSettings: BacktestSettings = {
   kellyFraction: 0.25,
   confidenceThreshold: 0.5,
   templateIds: [],
-  localRetraining: true,
+  localRetraining: false,
 };
 
 const timeframes = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
@@ -251,11 +251,11 @@ export default function BacktestPage() {
       <Typography variant="subtitle2" sx={{ mt: 2.5, mb: 1 }}>Периоды без пересечения</Typography>
       <Grid container spacing={1.5}>
         <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
-          <TextField fullWidth type="date" label="Обучение: начало" value={trainFrom}
+          <TextField fullWidth type="date" label="История: начало" value={trainFrom}
             onChange={(event) => setTrainFrom(event.target.value)} slotProps={{ inputLabel: { shrink: true } }} />
         </Grid>
         <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
-          <TextField fullWidth type="date" label="Обучение: конец" value={trainTo}
+          <TextField fullWidth type="date" label="История: граница" value={trainTo}
             onChange={(event) => setTrainTo(event.target.value)} slotProps={{ inputLabel: { shrink: true } }} />
         </Grid>
         <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
@@ -267,14 +267,6 @@ export default function BacktestPage() {
             onChange={(event) => setTestTo(event.target.value)} slotProps={{ inputLabel: { shrink: true } }} />
         </Grid>
       </Grid>
-      <FormControlLabel
-        sx={{ mt: 1 }}
-        control={<Checkbox checked={settings.localRetraining} onChange={(event) => setSettings({
-          ...settings,
-          localRetraining: event.target.checked,
-        })} />}
-        label="Локально переобучить модель только на обучающем периоде"
-      />
       <HistoryLoader
         canManage={roles.includes("admin")}
         symbol={selectedAsset}

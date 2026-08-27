@@ -1,30 +1,13 @@
 # Smart Money Service
 
-Событийный Python-сервис анализа рынка. Подписывается на Redis `candle.update` и последовательно выполняет Swing, Trend, Structure (BOS/CHOCH/MSS), Order Block, FVG, Liquidity и Scenario engines.
+Событийный детерминированный анализатор рынка:
 
-Активное состояние кешируется в Redis, история объектов записывается в TimescaleDB. События публикуются в `structure.update`, `smc.update` и `scenario.update` в общем envelope-формате.
-
-REST API соответствует разделу Smart Money документации. Для детерминированной загрузки/тестирования также доступен `POST /internal/analyze`.
-
-## Шаблоны сценариев
-
-Шаблоны не зашиты в Python. Исходные JSON-файлы находятся в `config/scenario-templates`, а рабочая библиотека хранится в общем Docker
-volume `scenario_templates`. Scenario Manager перечитывает включённые шаблоны при каждом анализе структуры.
-
-- `GET /scenario-templates` — список и чтение;
-- `GET /scenario-templates/{id}` — один шаблон;
-- `PUT /scenario-templates/{id}` — создать или атомарно обновить JSON;
-- `DELETE /scenario-templates/{id}` — удалить.
-
-Изменение и удаление через API Gateway разрешено только роли `admin`. JSON валидируется до сохранения.
-
-```bash
-docker compose up --build -d smc-service
-curl http://localhost:8010/health
+```text
+closed candle → Swing/structure → BOS/CHOCH → structural OB/FVG → AlgorithmEngine → AlgorithmSignal
 ```
 
-Тесты:
+Встроенная последовательность находится в коде. JSON из `config/algorithm-configs` является только входной конфигурацией параметров: таймфреймы, направления, режим границ OB, ATR/volume/ADX-пороги, вход, Stop Loss, RR и срок действия.
 
-```bash
-pytest -q services/smc-service/tests
-```
+Произвольных relations, event sequence, генерации сценариев и ML нет. Сигналы публикуются как `algorithm.signal` в Redis `signal.update` и сохраняются в `algorithm_signals`.
+
+Основные API: `/smart-money/*`, `/signals`, `/scenario-templates`. Старое имя `/scenario-templates` временно сохранено для совместимости фронтенда; endpoint возвращает `AlgorithmConfig`.

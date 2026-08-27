@@ -99,17 +99,16 @@ export interface Scenario {
   symbol: string;
   timeframe: string;
   direction: string;
-  setup_type: string;
-  confidence: number;
+  config_id: string;
+  score: number;
   entry_zone_low: number;
   entry_zone_high: number;
   stop_loss_price: number;
   take_profit_prices: number[];
-  status: string;
 }
 
 export interface ScenariosResponse {
-  scenarios: Scenario[];
+  signals: Scenario[];
   total: number;
 }
 

@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-from bisect import bisect_right
 from dataclasses import dataclass, field
 from math import ceil, floor, sqrt
 from statistics import mean, pstdev
-from math import exp
 
 from smc_core.engines import AnalysisPipeline
 from smc_core.models import Candle, Timeframe
-from smc_core.scenarios import ScenarioManager, TemplateStore
+from smc_core.algorithm import AlgorithmConfigStore, AlgorithmEngine
 
 from .models import BacktestConfig, DirectionMode
 
@@ -38,41 +36,6 @@ class VirtualPosition:
     fees: float = 0
     funding: float = 0
     last_funding_time: int = 0
-
-
-@dataclass
-class TemplateModel:
-    outcomes: dict[str, list[int]] = field(default_factory=dict)
-    metrics: dict = field(default_factory=dict)
-    folds: list[dict] = field(default_factory=list)
-
-    def probability(self, template_id: str, fallback: float) -> float:
-        values = self.outcomes.get(template_id, [])
-        posterior = (sum(values) + 2 * fallback) / (len(values) + 2)
-        return fallback * .65 + posterior * .35
-
-    def learn(self, template_id: str, outcome: int):
-        self.outcomes.setdefault(template_id, []).append(outcome)
-
-
-@dataclass
-class FrozenModel:
-    version: str
-    feature_names: list[str]
-    weights: list[float]
-    bias: float
-
-    def probability(self, template_id: str, fallback: float) -> float:
-        features = {
-            "confidence": fallback,
-            "risk_reward": 2,
-            "pnl_excursion_ratio": 0,
-            "duration_log": 0,
-            "direction_long": 0,
-        }
-        score = self.bias + sum(weight * features.get(name, 0) for name, weight in zip(self.feature_names, self.weights))
-        predicted = 1 / (1 + exp(-max(-30, min(30, score))))
-        return fallback * .65 + predicted * .35
 
 
 def _candle(item: dict) -> Candle:
@@ -154,91 +117,7 @@ def _target_allocations(template, target_count: int) -> list[float]:
 
 
 def _scenario_zone_key(scenario) -> str | None:
-    zone = next((item for item in getattr(scenario, "objects_used", []) if item.get("type") == "ORDER_BLOCK"), None)
-    return f"{scenario.setup_type}:{zone['id']}" if zone else None
-
-
-def _scenario_outcome(scenario, future: list[Candle], start: int = 0, ready_at: int | None = None,
-                      config: BacktestConfig | None = None, fixed_ratios: list[float] | None = None,
-                      template=None) -> int | None:
-    entered = False
-    stop = scenario.stop_loss_price
-    target = scenario.take_profit_prices[0]
-    ready_at = ready_at if ready_at is not None else scenario.created_at
-    expires_at = ready_at + max(0, scenario.expires_at - scenario.created_at)
-    for index in range(start, len(future)):
-        candle = future[index]
-        available_at = candle.timestamp + TIMEFRAME_MILLISECONDS[candle.timeframe]
-        if available_at > expires_at:
-            break
-        if available_at <= ready_at:
-            continue
-        if not entered:
-            entered = candle.low <= scenario.entry_zone_high and candle.high >= scenario.entry_zone_low
-            if not entered:
-                continue
-            if config:
-                raw_entry = min(max(candle.open, scenario.entry_zone_low), scenario.entry_zone_high)
-                entry = round(raw_entry / config.tick_size) * config.tick_size
-                stop, targets = _execution_plan(
-                    entry, scenario, config.smc_min_stop_percent, config.tick_size, fixed_ratios,
-                    (template.minimum_target_rr if template and template.minimum_target_rr is not None
-                     else config.smc_min_target_rr),
-                    (template.maximum_target_rr if template and template.maximum_target_rr is not None
-                     else config.smc_max_target_rr),
-                )
-                target = targets[0]
-        stop_hit = candle.low <= stop if scenario.direction == "LONG" else candle.high >= stop
-        target_hit = candle.high >= target if scenario.direction == "LONG" else candle.low <= target
-        if stop_hit:
-            return 0
-        if target_hit:
-            return 1
-    return None
-
-
-def train_local_model(
-    candles_by_tf: dict[str, list[dict]], primary_timeframe: str, config: BacktestConfig, template_dir: str,
-) -> TemplateModel:
-    pipeline = AnalysisPipeline()
-    manager = ScenarioManager(TemplateStore(template_dir))
-    model = TemplateModel()
-    primary = [_candle(item) for item in candles_by_tf[primary_timeframe]]
-    primary_timestamps = [item.timestamp + TIMEFRAME_MILLISECONDS[item.timeframe] for item in primary]
-    rank = {Timeframe.D1: 0, Timeframe.H4: 1, Timeframe.H1: 2, Timeframe.M30: 3,
-            Timeframe.M15: 4, Timeframe.M5: 5, Timeframe.M1: 6}
-    events = sorted((_candle(item) for values in candles_by_tf.values() for item in values),
-                    key=lambda item: (item.timestamp + TIMEFRAME_MILLISECONDS[item.timeframe], rank[item.timeframe]))
-    for candle in events:
-        ready_at = candle.timestamp + TIMEFRAME_MILLISECONDS[candle.timeframe]
-        pipeline.process(candle)
-        generated = manager.generate_top_down(candle.symbol, candle, pipeline, set(config.template_ids) or None)
-        for scenario in generated:
-            start = bisect_right(primary_timestamps, ready_at)
-            template = manager.store.get(scenario.setup_type)
-            outcome = _scenario_outcome(
-                scenario, primary, start, ready_at, config, template.risk_reward if template else None, template,
-            )
-            if outcome is not None:
-                model.learn(scenario.setup_type, outcome)
-    all_outcomes=[(template,value) for template,values in model.outcomes.items() for value in values]
-    folds=[]
-    for fold in range(3):
-        train_end=max(1,int(len(all_outcomes)*(.5+fold*.15)));validation_end=min(len(all_outcomes),train_end+max(1,len(all_outcomes)//6))
-        training=all_outcomes[:train_end];validation=all_outcomes[train_end:validation_end]
-        probabilities={}
-        for template,value in training:probabilities.setdefault(template,[]).append(value)
-        predictions=[(sum(probabilities.get(template,[]))+1)/(len(probabilities.get(template,[]))+2) for template,_ in validation]
-        accuracy=sum((probability>=.5)==bool(item[1]) for probability,item in zip(predictions,validation))/len(validation) if validation else 0
-        brier=sum((probability-item[1])**2 for probability,item in zip(predictions,validation))/len(validation) if validation else 0
-        folds.append({"fold":fold+1,"training_samples":len(training),"validation_samples":len(validation),"accuracy":accuracy,"brier_score":brier})
-    model.folds=folds;valid=[item for item in folds if item["validation_samples"]]
-    model.metrics={
-        "accuracy":mean(item["accuracy"] for item in valid) if valid else 0,
-        "brier_score":mean(item["brier_score"] for item in valid) if valid else 0,
-        "folds":len(valid),
-    }
-    return model
+    return f"{scenario.config_id}:{scenario.zone_id}" if scenario.zone_id else None
 
 
 def run_smc_replay(
@@ -246,10 +125,10 @@ def run_smc_replay(
     primary_timeframe: str,
     config: BacktestConfig,
     template_dir: str,
-    model: TemplateModel | FrozenModel | None = None,
+    model=None,
 ) -> dict:
     pipeline = AnalysisPipeline()
-    manager = ScenarioManager(TemplateStore(template_dir))
+    manager = AlgorithmEngine(AlgorithmConfigStore(template_dir))
     rank = {Timeframe.D1: 0, Timeframe.H4: 1, Timeframe.H1: 2, Timeframe.M30: 3,
             Timeframe.M15: 4, Timeframe.M5: 5, Timeframe.M1: 6}
     events = sorted((_candle(item) for values in candles_by_tf.values() for item in values),
@@ -318,12 +197,10 @@ def run_smc_replay(
     for candle in events:
         available_at = candle.timestamp + TIMEFRAME_MILLISECONDS[candle.timeframe]
         pipeline.process(candle)
-        generated = manager.generate_top_down(candle.symbol, candle, pipeline, set(config.template_ids) or None)
+        generated = manager.generate(candle, pipeline, set(config.template_ids) or None)
         for scenario in generated:
-            confidence = model.probability(scenario.setup_type, scenario.confidence) if model else scenario.confidence
-            allowed = confidence >= config.confidence_threshold and (
-                config.direction_mode == DirectionMode.BOTH or config.direction_mode.value == scenario.direction
-            )
+            confidence = scenario.score
+            allowed = config.direction_mode == DirectionMode.BOTH or config.direction_mode.value == scenario.direction
             decision = {
                 "timestamp": available_at, "scenario_id": scenario.id, "template_id": scenario.setup_type,
                 "confidence": confidence, "decision": "PENDING" if allowed else "REJECTED",
@@ -416,10 +293,8 @@ def run_smc_replay(
                     stop, targets = _execution_plan(
                         entry, scenario, config.smc_min_stop_percent, config.tick_size,
                         template.risk_reward if template else None,
-                        (template.minimum_target_rr if template and getattr(template, "minimum_target_rr", None) is not None
-                         else config.smc_min_target_rr),
-                        (template.maximum_target_rr if template and getattr(template, "maximum_target_rr", None) is not None
-                         else config.smc_max_target_rr),
+                        (template.minimum_rr if template else config.smc_min_target_rr),
+                        config.smc_max_target_rr,
                     )
                     if template and not _template_stop_distance_allowed(entry, stop, template):
                         set_scenario_status(scenario.id, "REJECTED_STOP_DISTANCE")
@@ -433,8 +308,7 @@ def run_smc_replay(
                         executable, key=lambda item: (item[0][0].priority, item[0][1])
                     )
                     risk_distance = abs(entry - stop)
-                    kelly = max(0, 2 * confidence - 1) * config.kelly_fraction * 100
-                    risk_percent = min(config.risk_per_trade_percent, kelly)
+                    risk_percent = config.risk_per_trade_percent
                     quantity = min(
                         capital * risk_percent / 100 / max(risk_distance, 1e-12),
                         capital * config.leverage / entry,
@@ -479,6 +353,7 @@ def run_smc_replay(
         equity.append({"timestamp": max(primary), "equity": capital})
     report = _report(config, candles_by_tf[primary_timeframe], capital, trades, equity, decisions, model)
     report["scenarios"] = scenarios
+    report["algorithm_signals"] = scenarios
     report["pattern_diagnostics"] = manager.diagnostics
     report["chart_candles"] = _chart_candles(candles_by_tf[primary_timeframe])
     report["chart_candles_by_timeframe"] = {
@@ -519,11 +394,5 @@ def _report(config, candles, capital, trades, equity, decisions, model):
             "test_from": min((item["timestamp"] for item in candles), default=None),
             "test_to": max((item["timestamp"] for item in candles), default=None),
             "closed_candles_only": True,
-        }, "model_training": {
-            "mode": "LOCAL_RETRAIN" if isinstance(model, TemplateModel) else "PRETRAINED" if model else "BASELINE",
-            "version": model.version if isinstance(model, FrozenModel) else None,
-            "samples": sum(map(len, model.outcomes.values())) if isinstance(model, TemplateModel) else 0,
-            "metrics": model.metrics if isinstance(model, TemplateModel) else {},
-            "folds": model.folds if isinstance(model, TemplateModel) else [],
         },
     }

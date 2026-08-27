@@ -65,16 +65,10 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
         onChange={(event) => updateNumber("leverage", event.target.value)} />
       <TextField label="Поддерживающая маржа, %" value={settings.maintenanceMarginPercent} type="number"
         onChange={(event) => updateNumber("maintenanceMarginPercent", event.target.value)} />
-      <Stack direction="row" spacing={1.5}>
-        <TextField fullWidth label="Риск на сделку, %" value={settings.riskPerTradePercent} type="number"
-          onChange={(event) => updateNumber("riskPerTradePercent", event.target.value)} />
-        <TextField fullWidth label="Доля Kelly" value={settings.kellyFraction} type="number"
-          onChange={(event) => updateNumber("kellyFraction", event.target.value)} />
-      </Stack>
-      <TextField fullWidth label="Порог confidence" value={settings.confidenceThreshold} type="number"
-        onChange={(event) => updateNumber("confidenceThreshold", event.target.value)} />
+      <TextField fullWidth label="Фиксированный риск на сделку, %" value={settings.riskPerTradePercent} type="number"
+        onChange={(event) => updateNumber("riskPerTradePercent", event.target.value)} />
       <Typography variant="body2" color="text.secondary">
-        Stop Loss рассчитывается за структурной границей OB, цели — по ликвидности и RR выбранного JSON-шаблона.
+        Stop Loss рассчитывается за структурной границей OB, цели — по RR входной конфигурации алгоритма.
       </Typography>
       <Stack direction="row" spacing={1.5}>
         <TextField fullWidth label="Maker, %" value={settings.makerFeePercent} type="number"

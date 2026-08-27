@@ -20,7 +20,7 @@ class Infrastructure:
                 event_ts timestamptz NOT NULL, data jsonb NOT NULL, PRIMARY KEY(id,event_ts));
               SELECT create_hypertable('smc_objects','event_ts',if_not_exists=>TRUE);
               CREATE INDEX IF NOT EXISTS smc_lookup_idx ON smc_objects(symbol,timeframe,object_type,event_ts DESC);
-              CREATE TABLE IF NOT EXISTS scenarios(id uuid PRIMARY KEY,symbol text NOT NULL,status text NOT NULL,data jsonb NOT NULL,created_at timestamptz NOT NULL);
+              CREATE TABLE IF NOT EXISTS algorithm_signals(id uuid PRIMARY KEY,symbol text NOT NULL,status text NOT NULL,data jsonb NOT NULL,created_at timestamptz NOT NULL);
             """)
     async def close(self):
         if self.redis:await self.redis.aclose()

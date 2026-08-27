@@ -111,8 +111,7 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
     </Grid>
     <Alert severity="info" sx={{ mt: 1.5 }}>
       Только закрытые свечи · ТФ: {result.dataset?.timeframes.join(", ") ?? "—"} · свечей теста: {result.dataset?.testCandles ?? 0}
-      {" · "}модель: {result.modelTraining?.mode ?? "BASELINE"}
-      {result.modelTraining?.version ? ` (${result.modelTraining.version})` : ""}
+      {" · "}режим: фиксированный алгоритм
     </Alert>
     <EquityChart points={result.equity} />
     <BacktestPriceChart

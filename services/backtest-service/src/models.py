@@ -47,10 +47,7 @@ class BacktestConfig(BaseModel):
     smc_min_stop_percent: float = Field(default=.3, gt=0, le=10)
     smc_min_target_rr: float = Field(default=1.5, gt=0, le=100)
     smc_max_target_rr: float = Field(default=8, gt=0, le=1000)
-    kelly_fraction: float = Field(default=.25, ge=0, le=1)
-    confidence_threshold: float = Field(default=.5, ge=0, le=1)
     template_ids: list[str] = Field(default_factory=list)
-    local_retraining: bool = False
 
     @model_validator(mode="after")
     def validate_periods(self):
@@ -72,7 +69,6 @@ class BacktestCreate(BaseModel):
     train_to: int | None = Field(default=None, ge=0)
     test_from: int | None = Field(default=None, ge=0)
     test_to: int | None = Field(default=None, ge=0)
-    model_version: str | None = None
     config: BacktestConfig = Field(default_factory=BacktestConfig)
 
     @model_validator(mode="after")

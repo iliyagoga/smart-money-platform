@@ -46,7 +46,7 @@ export default function Dashboard() {
     void loadDashboard();
     // На обзорной странице нужны только события, требующие внимания. Рыночный
     // поток candle/trade/orderbook остаётся на странице «Рынок».
-    const socket = new EventSocket(["scenario.*", "position.*", "model.*", "bandit.*"]);
+    const socket = new EventSocket(["algorithm.*", "position.*"]);
     socket.subscribeStatus(setIsLive);
     socket.subscribe((event) => {
       setEvents((currentEvents) => [event, ...currentEvents].slice(0, 8));

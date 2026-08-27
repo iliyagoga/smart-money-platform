@@ -20,8 +20,7 @@ class RiskManager:
               cooldown_until=cooldown_until,capital_multiplier=config.loss_size_multiplier,**decision_meta)
         distance=abs(signal.entry_price-signal.stop_loss_price)
         if distance<=0:return RiskDecision(signal_id=signal.signal_id,approved=False,rejection_reason="Stop loss distance must be positive")
-        kelly=max(0,2*signal.confidence-1)*config.kelly_fraction*100
-        risk_percent=min(config.max_risk_per_trade_percent,kelly)
+        risk_percent=config.max_risk_per_trade_percent
         capital_multiplier=config.loss_size_multiplier if consecutive_losses else 1
         risk_amount=capital*capital_multiplier*risk_percent/100;size=risk_amount/distance
         if size<config.min_position_size:return RiskDecision(signal_id=signal.signal_id,approved=False,position_size=size,rejection_reason="Position size below minimum")

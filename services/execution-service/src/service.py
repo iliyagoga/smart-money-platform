@@ -90,10 +90,10 @@ class ExecutionService:
         if o.status=="FILLED":return
         o.status="FILLED";o.filled_at=int(time()*1000);o.filled_price=price;o.exchange_order_id=f"paper-{o.id}";await self.save_order(o)
         event={"order_id":o.id,"signal_id":o.signal_id,"exchange_order_id":o.exchange_order_id,"symbol":o.symbol,"side":o.side,"price":price,"quantity":o.quantity,"filled_price":price,"filled_quantity":o.quantity,"status":"FILLED","executed_at":o.filled_at};await self.publish("order.executed",event)
-        scenario_id=None
+        source_signal_id=None
         if o.signal_id:
-            row=await self.db.fetchrow("SELECT scenario_id FROM trade_signals WHERE id=$1::uuid",o.signal_id);scenario_id=str(row["scenario_id"]) if row else None
-        p=Position(signal_id=o.signal_id,scenario_id=scenario_id,order_id=o.id,symbol=o.symbol,direction="LONG" if o.side=="BUY" else "SHORT",entry_price=price,current_price=price,quantity=o.quantity,initial_quantity=o.quantity,stop_loss_price=o.stop_loss_price,take_profit_prices=list(o.take_profit_prices),target_allocations=list(o.target_allocations),break_even_rule=o.break_even_rule,move_stop_to_break_even_after_target=o.move_stop_to_break_even_after_target)
+            row=await self.db.fetchrow("SELECT source_signal_id FROM trade_signals WHERE id=$1::uuid",o.signal_id);source_signal_id=str(row["source_signal_id"]) if row and row["source_signal_id"] else None
+        p=Position(signal_id=o.signal_id,source_signal_id=source_signal_id,order_id=o.id,symbol=o.symbol,direction="LONG" if o.side=="BUY" else "SHORT",entry_price=price,current_price=price,quantity=o.quantity,initial_quantity=o.quantity,stop_loss_price=o.stop_loss_price,take_profit_prices=list(o.take_profit_prices),target_allocations=list(o.target_allocations),break_even_rule=o.break_even_rule,move_stop_to_break_even_after_target=o.move_stop_to_break_even_after_target)
         self.positions[p.id]=p;await self.redis.sadd("positions:open",p.id);await self.save_position(p,None,"OPENED","ORDER_EXECUTED")
         await self.publish("position.opened",{"position_id":p.id,"signal_id":p.signal_id,"symbol":p.symbol,"direction":p.direction,"entry_price":p.entry_price,"quantity":p.quantity,"leverage":p.leverage,"stop_loss_price":p.stop_loss_price,"take_profit_prices":p.take_profit_prices,"opened_at":p.opened_at})
     async def save_position(self,p,old,new,trigger):
@@ -122,6 +122,6 @@ class ExecutionService:
             await self.publish("position.partial_closed",{"position_id":p.id,"closed_quantity":qty,"closing_price":price,"remaining_quantity":p.quantity,"realized_pnl":pnl,"new_stop_loss_price":p.stop_loss_price,"timestamp":int(time()*1000)})
         else:
             old=p.status;p.status="CLOSED";p.closed_at=int(time()*1000);await self.redis.srem("positions:open",p.id);await self.save_position(p,old,"CLOSED",reason)
-            duration=max(0,(p.closed_at-p.opened_at)//1000);payload={"position_id":p.id,"signal_id":p.signal_id,"scenario_id":p.scenario_id,"symbol":p.symbol,"direction":p.direction,"entry_price":p.entry_price,"exit_price":price,"quantity":p.initial_quantity,"pnl":p.realized_pnl,"pnl_percent":p.realized_pnl/max(p.entry_price*p.initial_quantity,1e-12)*100,"reason":reason,"duration_seconds":duration,"max_unrealized_pnl":p.max_unrealized_pnl,"max_unrealized_loss":p.max_unrealized_loss,"closed_at":p.closed_at}
+            duration=max(0,(p.closed_at-p.opened_at)//1000);payload={"position_id":p.id,"signal_id":p.signal_id,"source_signal_id":p.source_signal_id,"symbol":p.symbol,"direction":p.direction,"entry_price":p.entry_price,"exit_price":price,"quantity":p.initial_quantity,"pnl":p.realized_pnl,"pnl_percent":p.realized_pnl/max(p.entry_price*p.initial_quantity,1e-12)*100,"reason":reason,"duration_seconds":duration,"max_unrealized_pnl":p.max_unrealized_pnl,"max_unrealized_loss":p.max_unrealized_loss,"closed_at":p.closed_at}
             await self.db.execute("INSERT INTO closed_trades(id,position_id,symbol,pnl,data,closed_at) VALUES($1::uuid,$2::uuid,$3,$4,$5::jsonb,to_timestamp($6/1000.0)) ON CONFLICT(id) DO NOTHING",str(uuid4()),p.id,p.symbol,p.realized_pnl,json.dumps(payload),p.closed_at);await self.publish("position.closed",payload)
         return qty,p.quantity,pnl

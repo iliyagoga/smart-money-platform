@@ -1,3 +1,4 @@
+from src.algorithm import AlgorithmConfig, adx
 from src.engines import AnalysisPipeline,FVGEngine,SwingEngine
 from src.models import *
 
@@ -18,3 +19,12 @@ def test_pipeline_deduplicates_replaced_candle():
     pipeline=AnalysisPipeline(lookback=1)
     pipeline.process(candle(1,10,11,9,10));pipeline.process(candle(2,10,12,9,11));pipeline.process(candle(2,10,13,9,12))
     assert len(pipeline.candles[("BTC-USDT",Timeframe.M1)])==2
+
+def test_algorithm_config_contains_parameters_not_scenario_relations():
+    config=AlgorithmConfig(id="DEMO",name="Demo")
+    assert config.entry_source=="ORDER_BLOCK"
+    assert "relations" not in config.model_dump()
+    assert "event_sequence" not in config.model_dump()
+
+def test_adx_needs_enough_closed_bars():
+    assert adx([candle(i,10,11,9,10) for i in range(10)],14)==0

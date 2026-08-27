@@ -3,7 +3,7 @@ from fastapi import FastAPI,HTTPException,Query
 from .infrastructure import Infrastructure
 from .models import *
 from .service import SMCService
-from .scenarios import ScenarioTemplate
+from .algorithm import AlgorithmConfig
 from .settings import settings
 
 infra=Infrastructure(settings.database_url,settings.redis_url)
@@ -71,38 +71,26 @@ async def context(symbol:str):
     regime="TRENDING_UP" if up>down and up/total>=.6 else "TRENDING_DOWN" if down>up and down/total>=.6 else "RANGING"
     return {"symbol":symbol,"regime":regime,"confidence":max(up,down)/total,"adx":None,"volatility":None}
 
-@app.get("/scenarios")
-async def scenarios(symbol:str|None=None,status:str|None=None,limit:int=Query(100,ge=1,le=1000)):
-    items=service.scenarios.list(symbol,status);return {"scenarios":items[-limit:],"total":len(items)}
+@app.get("/signals")
+async def signals(symbol:str|None=None,limit:int=Query(100,ge=1,le=1000)):
+    items=[item for item in service.signals.values() if not symbol or item.symbol==symbol.upper()]
+    return {"signals":items[-limit:],"total":len(items)}
 
 @app.get("/scenario-templates")
 async def scenario_templates():
-    items=service.scenarios.store.list();return {"templates":items,"total":len(items)}
+    items=service.algorithm.store.list();return {"templates":items,"total":len(items)}
 
 @app.get("/scenario-templates/{template_id}")
 async def scenario_template(template_id:str):
-    item=service.scenarios.store.get(template_id)
-    if not item:raise HTTPException(404,"Scenario template not found")
+    item=service.algorithm.store.get(template_id)
+    if not item:raise HTTPException(404,"Algorithm config not found")
     return item
 
 @app.put("/scenario-templates/{template_id}")
-async def save_scenario_template(template_id:str,template:ScenarioTemplate):
+async def save_scenario_template(template_id:str,template:AlgorithmConfig):
     if template.id!=template_id.upper():raise HTTPException(422,"Template id does not match path")
-    return service.scenarios.store.save(template)
+    return service.algorithm.store.save(template)
 
 @app.delete("/scenario-templates/{template_id}")
 async def delete_scenario_template(template_id:str):
-    if not service.scenarios.store.delete(template_id):raise HTTPException(404,"Scenario template not found")
-    return {"success":True,"id":template_id.upper()}
-
-@app.get("/scenarios/{scenario_id}")
-async def scenario(scenario_id:str):
-    item=next((x for x in service.scenarios.items.values() if x.id==scenario_id),None)
-    if not item:raise HTTPException(404,"Scenario not found")
-    return item
-
-@app.post("/scenarios/{scenario_id}/recalculate")
-async def recalculate(scenario_id:str):
-    item=next((x for x in service.scenarios.items.values() if x.id==scenario_id),None)
-    if not item:raise HTTPException(404,"Scenario not found")
-    return {"updated":True,"confidence":item.confidence}
+    raise HTTPException(405,"Built-in algorithm configs cannot be deleted through the API")

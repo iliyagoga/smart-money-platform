@@ -3,11 +3,11 @@ import asyncio,json,logging
 from .engines import AnalysisPipeline
 from .infrastructure import Infrastructure,resilient_loop
 from .models import *
-from .scenarios import ScenarioManager
+from .algorithm import AlgorithmEngine
 
 log=logging.getLogger(__name__)
 class SMCService:
-    def __init__(self,infra:Infrastructure,lookback:int=5):self.infra=infra;self.pipeline=AnalysisPipeline(lookback);self.scenarios=ScenarioManager();self.task=None
+    def __init__(self,infra:Infrastructure,lookback:int=5):self.infra=infra;self.pipeline=AnalysisPipeline(lookback);self.algorithm=AlgorithmEngine();self.signals={};self.task=None
     async def start(self):
         await self.restore()
         self.task=asyncio.create_task(resilient_loop(self.subscribe))
@@ -22,10 +22,10 @@ class SMCService:
           WHERE rn<=500 ORDER BY symbol,timeframe,ts
         """)
         for row in rows:self.pipeline.process(Candle.model_validate(dict(row)))
-        scenarios=await self.infra.db.fetch("SELECT data FROM scenarios WHERE status='ACTIVE'")
-        for row in scenarios:
-            item=Scenario.model_validate_json(row["data"] if isinstance(row["data"],str) else json.dumps(row["data"]))
-            self.scenarios.items[item.id]=item
+        rows=await self.infra.db.fetch("SELECT data FROM algorithm_signals WHERE status='ACTIVE'")
+        for row in rows:
+            item=AlgorithmSignal.model_validate_json(row["data"] if isinstance(row["data"],str) else json.dumps(row["data"]))
+            self.signals[item.id]=item;self.algorithm.emitted.add(f"{item.config_id}:{item.zone_id}")
     async def subscribe(self):
         pubsub=self.infra.redis.pubsub();await pubsub.subscribe("candle.update")
         try:
@@ -54,9 +54,9 @@ class SMCService:
                 FROM candles WHERE symbol=$1 AND timeframe=ANY($2::text[])) recent
           WHERE rn<=$3 ORDER BY ts,timeframe
         """,symbol,[str(item) for item in timeframes],limit)
-        before=len(self.scenarios.items)
+        before=len(self.signals)
         for row in rows:await self.process(Candle.model_validate(dict(row)),"history-rebuild")
-        return {"symbol":symbol,"candles":len(rows),"scenarios_created":len(self.scenarios.items)-before}
+        return {"symbol":symbol,"candles":len(rows),"signals_created":len(self.signals)-before}
     async def process(self,candle:Candle,correlation_id:str|None=None):
         result=self.pipeline.process(candle);key=(candle.symbol,candle.timeframe)
         mappings=[(result.swings,"swing","structure.update","swing.detected"),(result.changes,"structure_change","smc.update","structure.changed")]
@@ -74,8 +74,9 @@ class SMCService:
         await self.infra.cache("ob",candle.symbol,candle.timeframe,[x for x in self.pipeline.obs[key] if not x.is_broken])
         await self.infra.cache("fvg",candle.symbol,candle.timeframe,[x for x in self.pipeline.fvgs[key] if not x.is_filled])
         await self.infra.cache("liquidity",candle.symbol,candle.timeframe,[x for x in self.pipeline.liquidity[key] if not x.swept])
-        generated=self.scenarios.generate_top_down(candle.symbol,candle,self.pipeline)
-        for scenario in generated:
-            await self.infra.db.execute("INSERT INTO scenarios(id,symbol,status,data,created_at) VALUES($1::uuid,$2,$3,$4::jsonb,to_timestamp($5/1000.0)) ON CONFLICT(id) DO NOTHING",scenario.id,scenario.symbol,scenario.status,json.dumps(scenario.model_dump(mode="json")),scenario.created_at)
-            await self.infra.publish("scenario.update","scenario.created",scenario,correlation_id)
+        generated=self.algorithm.generate(candle,self.pipeline)
+        for signal in generated:
+            self.signals[signal.id]=signal
+            await self.infra.db.execute("INSERT INTO algorithm_signals(id,symbol,status,data,created_at) VALUES($1::uuid,$2,'ACTIVE',$3::jsonb,to_timestamp($4/1000.0)) ON CONFLICT(id) DO NOTHING",signal.id,signal.symbol,json.dumps(signal.model_dump(mode="json")),signal.created_at)
+            await self.infra.publish("signal.update","algorithm.signal",signal,correlation_id)
         return result

@@ -37,17 +37,23 @@ class Trend(BaseModel):
 class StructureChange(BaseModel):
     id: str = Field(default_factory=lambda:str(uuid4())); symbol: str; timeframe: Timeframe
     type: str; direction: Direction; break_level_price: float; timestamp: int; confirmed: bool = True
+    broken_swing_id: str | None = None; displacement_atr: float = 0
 
 
 class OrderBlock(BaseModel):
     id: str = Field(default_factory=lambda:str(uuid4())); symbol: str; timeframe: Timeframe; type: Direction
     zone_high: float; zone_low: float; strength_score: float = .5; retest_count: int = 0
     mitigation_depth: float = 0; is_active: bool = False; is_broken: bool = False; created_at: int
+    source_break_id: str | None = None; source_candle_timestamp: int | None = None
+    displacement_atr: float = 0; volume_ratio: float = 1; boundary_mode: str = "FULL"
+    body_low: float | None = None; body_high: float | None = None
+    traded: bool = False; last_touch_at: int | None = None; inside_zone: bool = False
 
 
 class FVG(BaseModel):
     id: str = Field(default_factory=lambda:str(uuid4())); symbol: str; timeframe: Timeframe; type: Direction
     zone_high: float; zone_low: float; is_filled: bool = False; fill_percent: float = 0; created_at: int
+    consequent_encroachment: float | None = None; size_atr: float = 0; displacement_atr: float = 0
 
 
 class LiquidityZone(BaseModel):
@@ -61,15 +67,24 @@ class AnalysisResult(BaseModel):
     order_blocks: list[OrderBlock] = []; fvgs: list[FVG] = []; liquidity_zones: list[LiquidityZone] = []
 
 
-class Scenario(BaseModel):
-    id: str = Field(default_factory=lambda:str(uuid4())); symbol: str; timeframe: Timeframe; direction: str
-    setup_type: str; priority: int = Field(default=50, ge=0, le=100)
-    confidence: float = Field(ge=0,le=1); entry_zone_low: float; entry_zone_high: float
-    stop_loss_price: float; take_profit_prices: list[float]; status: str = "ACTIVE"
-    reasons: list[str] = []; objections: list[str] = []; objects_used: list[dict] = []
-    target_allocations: list[float] = []
-    break_even_rule: str = "ONE_R"
-    move_stop_to_break_even_after_target: int | None = 1
-    one_trade_per_zone: bool = False; cooldown_bars_after_stop: int = 0
-    deduplication_key: str | None = None
-    created_at: int = Field(default_factory=lambda:int(time()*1000)); expires_at: int
+class AlgorithmSignal(BaseModel):
+    """Executable output of the built-in algorithm; it is not a generated scenario."""
+    id: str = Field(default_factory=lambda:str(uuid4())); config_id: str; symbol: str; timeframe: Timeframe
+    direction: str; entry_zone_low: float; entry_zone_high: float; stop_loss_price: float
+    take_profit_prices: list[float]; score: float = Field(default=.5, ge=0, le=1)
+    reason_codes: list[str] = []; object_ids: list[str] = []; zone_id: str | None = None
+    one_trade_per_zone: bool = True; target_allocations: list[float] = []
+    break_even_rule: str = "ONE_R"; move_stop_to_break_even_after_target: int | None = 1
+    created_at: int; expires_at: int
+
+    @property
+    def setup_type(self): return self.config_id
+    @property
+    def confidence(self): return self.score
+    @property
+    def priority(self): return 50
+    @property
+    def reasons(self): return self.reason_codes
+    @property
+    def objects_used(self):
+        return ([{"type":"ORDER_BLOCK","id":self.zone_id}] if self.zone_id else [])

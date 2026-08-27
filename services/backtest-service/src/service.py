@@ -8,11 +8,10 @@ from uuid import UUID, uuid4
 
 import asyncpg
 import httpx
-import boto3
 
 from .engine import run_backtest
 from .models import AssetCreate, BacktestCreate, StrategyType
-from .replay import FrozenModel, run_smc_replay, train_local_model
+from .replay import run_smc_replay
 from .settings import Settings
 
 
@@ -23,10 +22,6 @@ class BacktestService:
         self.client: httpx.AsyncClient | None = None
         self.tasks: set[asyncio.Task] = set()
         self.semaphore = asyncio.Semaphore(settings.job_concurrency)
-        self.s3 = boto3.client(
-            "s3", endpoint_url=settings.minio_endpoint, aws_access_key_id=settings.minio_access_key,
-            aws_secret_access_key=settings.minio_secret_key,
-        )
 
     async def start(self):
         self.db = await asyncpg.create_pool(self.settings.database_url)
@@ -127,32 +122,11 @@ class BacktestService:
             async with self.db.acquire() as connection:
                 await connection.execute("UPDATE backtest_runs SET progress=35 WHERE id=$1", run_id)
             if request.config.strategy == StrategyType.SMC:
-                model = None
-                if request.config.local_retraining:
-                    if request.train_from is None:
-                        raise ValueError("explicit train and test periods are required for local retraining")
-                    training_candles = await self.load_candles(
-                        request.symbol, request.timeframes, request.train_from, request.train_to,
-                        self.settings.max_candles,
-                    )
-                    for candles in training_candles.values():
-                        for candle in candles: candle["volume"] *= execution_spec["contract_value"]
-                    async with self.db.acquire() as connection:
-                        await connection.execute("UPDATE backtest_runs SET progress=50 WHERE id=$1", run_id)
-                    model = await asyncio.to_thread(
-                        train_local_model, training_candles, request.timeframe, request.config,
-                        self.settings.scenario_template_dir,
-                    )
-                    async with self.db.acquire() as connection:
-                        await connection.execute("UPDATE backtest_runs SET progress=70 WHERE id=$1", run_id)
-                    artifact_path = await self.save_local_model(run_id, model, request)
-                else:
-                    model = await self.load_frozen_model(request.model_version, request.test_from)
                 async with self.db.acquire() as connection:
                     await connection.execute("UPDATE backtest_runs SET progress=80 WHERE id=$1", run_id)
                 result = await asyncio.to_thread(
                     run_smc_replay, test_candles, request.timeframe, request.config,
-                    self.settings.scenario_template_dir, model,
+                    self.settings.scenario_template_dir, None,
                 )
                 result["dataset"]["timeframes"] = request.timeframes
                 result["dataset"]["execution_timeframe"] = request.timeframe
@@ -160,8 +134,6 @@ class BacktestService:
                 result["dataset"]["requested_train_to"] = request.train_to
                 result["dataset"]["requested_test_from"] = request.test_from
                 result["dataset"]["requested_test_to"] = request.test_to
-                if request.config.local_retraining:
-                    result["model_training"]["artifact_path"] = artifact_path
             else:
                 result = await asyncio.to_thread(run_backtest, test_candles[request.timeframe], request.config)
             result["strategy_config"] = {
@@ -175,7 +147,7 @@ class BacktestService:
             result["execution_spec"] = execution_spec
             result["engine"] = {
                 "name": "SMC_CLOSE_TIME_REPLAY" if request.config.strategy == StrategyType.SMC else "INDICATOR_REPLAY",
-                "version": 2,
+                "version": 3,
                 "template_versions": {
                     path.stem: json.loads(path.read_text(encoding="utf-8")).get("version", 1)
                     for path in Path(self.settings.scenario_template_dir).glob("*.json")
@@ -234,50 +206,6 @@ class BacktestService:
             if incomplete:
                 raise ValueError(f"stored candles do not cover the requested period for: {', '.join(incomplete)}")
         return result
-
-    async def save_local_model(self, run_id, model, request):
-        bucket = "models"
-        key = f"backtests/{run_id}/local-template-model.json"
-        artifact = {
-            "type": "TEMPLATE_BAYES_WALK_FORWARD", "run_id": str(run_id),
-            "train_from": request.train_from, "train_to": request.train_to,
-            "outcomes": model.outcomes, "metrics": model.metrics, "folds": model.folds,
-        }
-        await asyncio.to_thread(
-            self.s3.put_object, Bucket=bucket, Key=key, Body=json.dumps(artifact).encode(),
-            ContentType="application/json",
-        )
-        return f"s3://{bucket}/{key}"
-
-    async def load_frozen_model(self, version, test_from):
-        try:
-            async with self.db.acquire() as connection:
-                if version:
-                    row = await connection.fetchrow(
-                        "SELECT version,path,training_date FROM model_versions WHERE version=$1", version,
-                    )
-                else:
-                    row = await connection.fetchrow(
-                        """
-                        SELECT version,path,training_date FROM model_versions
-                        WHERE ($1::bigint IS NULL OR training_date<to_timestamp($1/1000.0))
-                        ORDER BY is_active DESC,training_date DESC LIMIT 1
-                        """,
-                        test_from,
-                    )
-        except asyncpg.UndefinedTableError:
-            return None
-        if not row:
-            return None
-        if test_from and int(row["training_date"].timestamp() * 1000) >= test_from:
-            raise ValueError("selected model was trained after the backtest period started")
-        bucket, key = row["path"].removeprefix("s3://").split("/", 1)
-        response = await asyncio.to_thread(self.s3.get_object, Bucket=bucket, Key=key)
-        artifact = json.loads(await asyncio.to_thread(response["Body"].read))
-        return FrozenModel(
-            version=artifact["version"], feature_names=list(artifact["feature_names"]),
-            weights=[float(item) for item in artifact["weights"]], bias=float(artifact.get("bias", 0)),
-        )
 
     async def runs(self, user_id: str, limit: int = 50):
         async with self.db.acquire() as connection:

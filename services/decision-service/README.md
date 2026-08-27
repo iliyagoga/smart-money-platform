@@ -1,19 +1,7 @@
 # Decision and Risk Service
 
-Содержит Probability Engine, Conflict Resolver и Risk Manager.
+Детерминированный слой риска и передачи ордеров. Сервис принимает `algorithm.signal` из Redis `signal.update`, преобразует его в исполнимый `TradeSignal`, применяет фиксированные лимиты риска и публикует `signal.created` и `risk.approved/rejected` в stream `trading.command`.
 
-- принимает `scenario.created` из Redis Pub/Sub;
-- рассчитывает ансамблевый confidence;
-- разрешает конфликт LONG/SHORT по порогу и минимальной разнице;
-- создаёт `TradeSignal`;
-- проверяет дневной убыток и число позиций;
-- рассчитывает размер позиции по ограниченному дробному Kelly;
-- записывает `signal.created` и `risk.approved/rejected` в Redis Stream `trading.command`;
-- сохраняет журнал решений и риск-проверок в PostgreSQL.
+В сервисе нет ML, probability engine, bandit, confidence threshold и выбора сценариев. Размер позиции определяется фиксированным процентом риска, расстоянием до Stop Loss и защитными лимитами портфеля.
 
-REST API: `/probability/calculate`, `/risk/config`, `/risk/calculate`. OpenAPI доступен на `/docs`.
-
-```bash
-docker compose up --build -d decision-service
-curl http://localhost:8020/health
-```
+REST API: `/risk/config`, `/risk/calculate`, `/internal/signals/evaluate`.

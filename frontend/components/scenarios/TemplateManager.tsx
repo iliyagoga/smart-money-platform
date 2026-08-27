@@ -18,22 +18,28 @@ interface TemplatesResponse {
 }
 
 const starterTemplate = {
-  id: "NEW_TEMPLATE",
-  name: "Новый сценарий",
+  id: "NEW_CONFIG",
+  name: "Новая конфигурация алгоритма",
   version: 1,
-  required_objects: [{ kind: "ORDER_BLOCK", active: true, same_direction: true, min_strength: 0.5 }],
-  relations: [],
-  allowed_timeframes: ["M15", "H1", "H4"],
-  direction_source: "ORDER_BLOCK",
-  entry_rule: "ORDER_BLOCK",
-  stop_rule: "ORDER_BLOCK_EDGE",
-  stop_atr_buffer: 0.1,
-  target_rule: "FIXED_RR",
+  enabled: true,
+  execution_timeframes: ["M1", "M5", "M15"],
+  allowed_directions: ["LONG", "SHORT"],
+  entry_source: "ORDER_BLOCK",
+  ob_entry_mode: "MIDPOINT",
+  ob_boundary_mode: "FULL",
+  ob_mitigation_mode: "CLOSE_INSIDE",
+  minimum_ob_strength: 0.45,
+  minimum_impulse_atr: 1,
+  volume_period: 20,
+  minimum_volume_ratio: 0.8,
+  adx_period: 14,
+  minimum_adx: 18,
+  stop_buffer_atr: 0.1,
   risk_reward: [2, 3],
-  ttl_minutes: 1440,
-  base_confidence: 0.5,
-  overlap_bonus: 0.1,
-  strength_weight: 0.1,
+  minimum_rr: 1.5,
+  entry_valid_for_bars: 30,
+  one_trade_per_zone: true,
+  target_allocations: [0.5, 0.5],
 };
 
 export function TemplateManager({ canManage }: { canManage: boolean }) {
@@ -59,21 +65,11 @@ export function TemplateManager({ canManage }: { canManage: boolean }) {
     }
   };
 
-  const remove = async (templateId: string) => {
-    if (!window.confirm(`Удалить шаблон ${templateId}?`)) return;
-    try {
-      await api(`/api/v1/smc/scenario-templates/${templateId}`, { method: "DELETE" });
-      resource.reload();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    }
-  };
-
   return <Paper variant="outlined" sx={{ p: 3, mt: 2 }}>
     <Stack direction="row" spacing={2} sx={{ alignItems: "center", justifyContent: "space-between" }}>
       <div>
-        <Typography variant="h6">JSON-шаблоны сценариев</Typography>
-        <Typography variant="body2" color="text.secondary">Scenario Manager перечитывает эти файлы при каждом анализе.</Typography>
+        <Typography variant="h6">Конфигурации встроенного алгоритма</Typography>
+        <Typography variant="body2" color="text.secondary">JSON задаёт параметры; последовательность расчёта зафиксирована в коде.</Typography>
       </div>
       <Button variant="contained" disabled={!canManage} onClick={create}>Добавить шаблон</Button>
     </Stack>
@@ -83,12 +79,11 @@ export function TemplateManager({ canManage }: { canManage: boolean }) {
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" } }}>
           <Typography sx={{ flex: 1 }}>{template.name} · {template.id} · v{template.version}</Typography>
           <Button disabled={!canManage} onClick={() => edit(template)}>JSON</Button>
-          <Button color="error" disabled={!canManage} onClick={() => void remove(template.id)}>Удалить</Button>
         </Stack>
       </Paper>)}
     </Stack>
     <Dialog open={Boolean(editor)} onClose={close} fullWidth maxWidth="md">
-      <DialogTitle>Редактор JSON-шаблона</DialogTitle>
+      <DialogTitle>Редактор входной конфигурации</DialogTitle>
       <DialogContent>
         <TextField multiline minRows={22} fullWidth value={editor} onChange={(event) => setEditor(event.target.value)}
           sx={{ mt: 1, fontFamily: "monospace" }} />
