@@ -22,6 +22,17 @@ def test_train_and_test_periods_cannot_overlap():
         )
 
 
+def test_test_period_can_be_used_without_training_period():
+    request = BacktestCreate(symbol="BTC-USDT-SWAP", test_from=200, test_to=400)
+    assert request.train_from is None
+    assert request.test_from == 200
+
+
+def test_partial_test_period_is_rejected():
+    with pytest.raises(ValidationError):
+        BacktestCreate(symbol="BTC-USDT-SWAP", test_from=200)
+
+
 def test_smc_execution_timeframe_is_selected_automatically():
     request = BacktestCreate(symbol="BTC-USDT-SWAP", timeframe="H4", timeframes=["H4", "M15", "H1"])
     assert request.timeframe == "M15"

@@ -185,10 +185,17 @@ class BacktestCreate(BaseModel):
         elif self.timeframe not in self.timeframes:
             self.timeframes.append(self.timeframe)
         values = (self.train_from, self.train_to, self.test_from, self.test_to)
-        if any(value is not None for value in values):
-            if any(value is None for value in values):
-                raise ValueError("all train/test boundaries are required")
-            if not self.train_from < self.train_to < self.test_from < self.test_to:
+        train_values = values[:2]
+        test_values = values[2:]
+        if any(value is not None for value in test_values):
+            if any(value is None for value in test_values):
+                raise ValueError("both test boundaries are required")
+            if not self.test_from < self.test_to:
+                raise ValueError("test_from must be below test_to")
+        if any(value is not None for value in train_values):
+            if any(value is None for value in train_values) or any(value is None for value in test_values):
+                raise ValueError("training boundaries require a complete test period")
+            if not self.train_from < self.train_to < self.test_from:
                 raise ValueError("periods must satisfy train_from < train_to < test_from < test_to")
         return self
 

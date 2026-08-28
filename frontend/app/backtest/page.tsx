@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AssetManager } from "../../components/backtest/AssetManager";
 import { BacktestReport } from "../../components/backtest/BacktestReport";
 import { BacktestHistory } from "../../components/backtest/BacktestHistory";
+import { BacktestOptimizer } from "../../components/backtest/BacktestOptimizer";
 import { BacktestSettingsForm } from "../../components/backtest/BacktestSettingsForm";
 import { HistoryLoader } from "../../components/backtest/HistoryLoader";
 import { DatasetOverview } from "../../components/backtest/DatasetOverview";
@@ -101,7 +102,6 @@ export default function BacktestPage() {
       : { ...current, templateIds: templates.map((template) => template.id) });
   }, [templates]);
   const selectedAsset = asset || assets[0];
-  const selectedAssetDetails = assetDetails.find((item) => item.symbol === selectedAsset);
   const testRangeMilliseconds = Math.max(
     0,
     Date.parse(`${testTo}T23:59:59Z`) - Date.parse(`${testFrom}T00:00:00Z`),
@@ -110,80 +110,92 @@ export default function BacktestPage() {
     ...selectedTimeframes.map((item) => Math.ceil(testRangeMilliseconds / timeframeMilliseconds[item]) + 2),
   ));
 
-  const run = async () => {
-    const effectiveCandleLimit = Math.max(candleLimit, requiredTestCandleLimit);
+  const executeBacktest = async (
+    candidateSettings: BacktestSettings,
+    period: { from: string; to: string },
+    onProgress?: (value: number) => void,
+    runAsset = selectedAsset,
+    runTimeframes = selectedTimeframes,
+    includeTrainingPeriod = true,
+  ): Promise<BacktestResult> => {
+    const periodMilliseconds = Math.max(
+      0,
+      Date.parse(`${period.to}T23:59:59Z`) - Date.parse(`${period.from}T00:00:00Z`),
+    );
+    const requiredCandleLimit = Math.min(2_000_000, Math.max(
+      ...runTimeframes.map((item) => Math.ceil(periodMilliseconds / timeframeMilliseconds[item]) + 2),
+    ));
+    const effectiveCandleLimit = Math.max(candleLimit, requiredCandleLimit);
     if (effectiveCandleLimit !== candleLimit) setCandleLimit(effectiveCandleLimit);
-    setIsRunning(true);
-    setError("");
+    const runAssetDetails = assetDetails.find((item) => item.symbol === runAsset);
     try {
-      setProgress(0);
       const created = await api<BacktestCreateResponse>("/api/v1/backtest/backtests", {
         method: "POST",
         body: JSON.stringify({
-          symbol: selectedAsset,
-          timeframes: selectedTimeframes,
+          symbol: runAsset,
+          timeframes: runTimeframes,
           candle_limit: effectiveCandleLimit,
-          train_from: Date.parse(`${trainFrom}T00:00:00Z`),
-          train_to: Date.parse(`${trainTo}T23:59:59Z`),
-          test_from: Date.parse(`${testFrom}T00:00:00Z`),
-          test_to: Date.parse(`${testTo}T23:59:59Z`),
+          train_from: includeTrainingPeriod ? Date.parse(`${trainFrom}T00:00:00Z`) : undefined,
+          train_to: includeTrainingPeriod ? Date.parse(`${trainTo}T23:59:59Z`) : undefined,
+          test_from: Date.parse(`${period.from}T00:00:00Z`),
+          test_to: Date.parse(`${period.to}T23:59:59Z`),
           config: {
-            strategy: settings.strategy,
-            initial_capital: settings.initialCapital,
-            position_size_percent: settings.positionSizePercent,
-            leverage: settings.leverage,
-            fee_percent: settings.feePercent,
-            maker_fee_percent: settings.makerFeePercent,
-            taker_fee_percent: settings.takerFeePercent,
-            slippage_percent: settings.slippagePercent,
-            funding_percent_per_day: settings.fundingPercentPerDay,
-            funding_interval_hours: settings.fundingIntervalHours,
-            execution_latency_ms: settings.executionLatencyMs,
-            tick_size: selectedAssetDetails?.tick_size ?? settings.tickSize,
-            lot_size: selectedAssetDetails?.lot_size ?? settings.lotSize,
-            minimum_order_size: selectedAssetDetails?.minimum_order_size ?? settings.minimumOrderSize,
-            volume_participation_percent: settings.volumeParticipationPercent,
-            liquidation_fee_percent: settings.liquidationFeePercent,
-            stop_loss_percent: settings.stopLossPercent,
-            take_profit_percent: settings.takeProfitPercent,
-            trailing_stop_percent: settings.trailingStopPercent,
-            fast_period: settings.fastPeriod,
-            slow_period: settings.slowPeriod,
-            direction_mode: settings.directionMode,
-            risk_per_trade_percent: settings.riskPerTradePercent,
-            smc_target_rr: settings.smcTargetMode === "FIXED" ? settings.smcTargetRr : undefined,
-            smc_min_target_rr: settings.smcMinTargetRr,
-            smc_max_target_rr: settings.smcMaxTargetRr,
-            kelly_fraction: settings.kellyFraction,
-            confidence_threshold: settings.confidenceThreshold,
-            template_ids: settings.templateIds,
-            local_retraining: settings.localRetraining,
+            strategy: candidateSettings.strategy,
+            initial_capital: candidateSettings.initialCapital,
+            position_size_percent: candidateSettings.positionSizePercent,
+            leverage: candidateSettings.leverage,
+            fee_percent: candidateSettings.feePercent,
+            maker_fee_percent: candidateSettings.makerFeePercent,
+            taker_fee_percent: candidateSettings.takerFeePercent,
+            slippage_percent: candidateSettings.slippagePercent,
+            funding_percent_per_day: candidateSettings.fundingPercentPerDay,
+            funding_interval_hours: candidateSettings.fundingIntervalHours,
+            execution_latency_ms: candidateSettings.executionLatencyMs,
+            tick_size: runAssetDetails?.tick_size ?? candidateSettings.tickSize,
+            lot_size: runAssetDetails?.lot_size ?? candidateSettings.lotSize,
+            minimum_order_size: runAssetDetails?.minimum_order_size ?? candidateSettings.minimumOrderSize,
+            volume_participation_percent: candidateSettings.volumeParticipationPercent,
+            liquidation_fee_percent: candidateSettings.liquidationFeePercent,
+            stop_loss_percent: candidateSettings.stopLossPercent,
+            take_profit_percent: candidateSettings.takeProfitPercent,
+            trailing_stop_percent: candidateSettings.trailingStopPercent,
+            fast_period: candidateSettings.fastPeriod,
+            slow_period: candidateSettings.slowPeriod,
+            direction_mode: candidateSettings.directionMode,
+            risk_per_trade_percent: candidateSettings.riskPerTradePercent,
+            smc_target_rr: candidateSettings.smcTargetMode === "FIXED" ? candidateSettings.smcTargetRr : undefined,
+            smc_min_target_rr: candidateSettings.smcMinTargetRr,
+            smc_max_target_rr: candidateSettings.smcMaxTargetRr,
+            kelly_fraction: candidateSettings.kellyFraction,
+            confidence_threshold: candidateSettings.confidenceThreshold,
+            template_ids: candidateSettings.templateIds,
+            local_retraining: candidateSettings.localRetraining,
             elliott: {
-              use_margin: settings.elliott.useMargin,
-              reinvest_profits: settings.elliott.reinvestProfits,
-              macro_timeframe: settings.elliott.macroTimeframe,
-              structure_timeframe: settings.elliott.structureTimeframe,
-              entry_timeframe: settings.elliott.entryTimeframe,
-              atr_period: settings.elliott.atrPeriod,
-              zigzag_reversal_atr: settings.elliott.zigzagReversalAtr,
-              min_swing_atr: settings.elliott.minSwingAtr,
-              wave1_min_atr: settings.elliott.wave1MinAtr,
-              wave1_min_efficiency: settings.elliott.wave1MinEfficiency,
-              wave2_min_retracement: settings.elliott.wave2MinRetracement,
-              wave2_max_retracement: settings.elliott.wave2MaxRetracement,
-              entry_model: settings.elliott.entryModel,
-              entry_retracement: settings.elliott.entryRetracement,
-              entry_expiry_bars: settings.elliott.entryExpiryBars,
-              choch_min_atr: settings.elliott.chochMinAtr,
-              choch_min_body_ratio: settings.elliott.chochMinBodyRatio,
-              macro_filter: settings.elliott.macroFilter,
-              stop_buffer_atr: settings.elliott.stopBufferAtr,
-              take_profit_count: settings.elliott.takeProfitCount,
-              take_profit_rr: settings.elliott.takeProfitRr,
-              second_take_profit_rr: settings.elliott.secondTakeProfitRr,
-              first_take_action: settings.elliott.firstTakeAction,
-              minimum_rr: settings.elliott.minimumRr,
-              break_even_at_one_r: settings.elliott.breakEvenAtOneR,
+              use_margin: candidateSettings.elliott.useMargin,
+              reinvest_profits: candidateSettings.elliott.reinvestProfits,
+              macro_timeframe: candidateSettings.elliott.macroTimeframe,
+              structure_timeframe: candidateSettings.elliott.structureTimeframe,
+              entry_timeframe: candidateSettings.elliott.entryTimeframe,
+              atr_period: candidateSettings.elliott.atrPeriod,
+              zigzag_reversal_atr: candidateSettings.elliott.zigzagReversalAtr,
+              min_swing_atr: candidateSettings.elliott.minSwingAtr,
+              wave1_min_atr: candidateSettings.elliott.wave1MinAtr,
+              wave1_min_efficiency: candidateSettings.elliott.wave1MinEfficiency,
+              wave2_min_retracement: candidateSettings.elliott.wave2MinRetracement,
+              wave2_max_retracement: candidateSettings.elliott.wave2MaxRetracement,
+              entry_model: candidateSettings.elliott.entryModel,
+              entry_retracement: candidateSettings.elliott.entryRetracement,
+              entry_expiry_bars: candidateSettings.elliott.entryExpiryBars,
+              choch_min_atr: candidateSettings.elliott.chochMinAtr,
+              choch_min_body_ratio: candidateSettings.elliott.chochMinBodyRatio,
+              macro_filter: candidateSettings.elliott.macroFilter,
+              stop_buffer_atr: candidateSettings.elliott.stopBufferAtr,
+              take_profit_count: candidateSettings.elliott.takeProfitCount,
+              take_profit_rr: candidateSettings.elliott.takeProfitRr,
+              second_take_profit_rr: candidateSettings.elliott.secondTakeProfitRr,
+              first_take_action: candidateSettings.elliott.firstTakeAction,
+              minimum_rr: candidateSettings.elliott.minimumRr,
+              break_even_at_one_r: candidateSettings.elliott.breakEvenAtOneR,
             },
           },
         }),
@@ -191,7 +203,7 @@ export default function BacktestPage() {
       let completed: BacktestRun | undefined;
       for (let attempt = 0; attempt < 3_600; attempt += 1) {
         const current = await api<BacktestRun>(`/api/v1/backtest/backtests/${created.id}`);
-        setProgress(current.progress);
+        onProgress?.(current.progress);
         if (current.status === "FAILED") throw new Error(current.error ?? "Бэктест завершился с ошибкой");
         if (current.status === "COMPLETED") {
           completed = current;
@@ -200,14 +212,18 @@ export default function BacktestPage() {
         await new Promise((resolve) => window.setTimeout(resolve, 1_000));
       }
       if (!completed?.result) throw new Error("Расчёт выполняется дольше часа. Его результат останется в истории запусков.");
-      setResult(mapBacktestResult(completed.result));
-      setWorkspaceTab(2);
-      runsResource.reload();
+      return mapBacktestResult(completed.result);
+    } finally { /* the caller owns its loading state */ }
+  };
+
+  const run = async () => {
+    setIsRunning(true); setError(""); setProgress(0);
+    try {
+      const completed = await executeBacktest(settings, { from: testFrom, to: testTo }, setProgress);
+      setResult(completed); setWorkspaceTab(2); runsResource.reload();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setIsRunning(false);
-    }
+    } finally { setIsRunning(false); }
   };
 
   const openRun = async (runId: string) => {
@@ -250,6 +266,7 @@ export default function BacktestPage() {
         <Tab label="1. Данные" /><Tab label="2. Настройка и запуск" />
         <Tab label={result ? "3. Результаты" : "3. Результаты · нет данных"} />
         <Tab label="4. История запусков" />
+        <Tab label="5. Перебор параметров" />
       </Tabs>
     </Paper>
     {error && <Alert severity="error" sx={{ mb: 1.5 }}>{error}</Alert>}
@@ -378,5 +395,30 @@ export default function BacktestPage() {
       </Stack>
     </Paper>}
     </Box>}
+    <Box sx={{
+      display: workspaceTab === 4 ? "block" : "none",
+      p: { xs: 1, md: 2 }, borderRadius: 2, bgcolor: "action.hover",
+    }}>
+      <BacktestOptimizer
+        settings={settings}
+        assets={assets}
+        initialAsset={selectedAsset}
+        initialTimeframes={selectedTimeframes}
+        testFrom={testFrom}
+        testTo={testTo}
+        runCandidate={async (candidateSettings, period, optimizerAsset, optimizerTimeframes) => {
+          const candidateResult = await executeBacktest(
+            candidateSettings, period, undefined, optimizerAsset, optimizerTimeframes, false,
+          );
+          runsResource.reload();
+          return candidateResult;
+        }}
+        onApply={(candidateSettings, candidateResult) => {
+          setSettings(candidateSettings);
+          setResult(candidateResult);
+          setWorkspaceTab(2);
+        }}
+      />
+    </Box>
   </SectionPage>;
 }
