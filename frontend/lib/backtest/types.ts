@@ -40,6 +40,10 @@ export interface BacktestSettings {
   trailingStopPercent?: number;
   directionMode: DirectionMode;
   riskPerTradePercent: number;
+  smcTargetMode: "FIXED" | "TEMPLATE";
+  smcTargetRr: number;
+  smcMinTargetRr: number;
+  smcMaxTargetRr: number;
   kellyFraction: number;
   confidenceThreshold: number;
   templateIds: string[];

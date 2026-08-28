@@ -320,7 +320,11 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
                 targets = [pattern.points["P2"].price + side * extension * wave1 for extension in ec.take_profit_extensions]
                 rr = side * (targets[0] - entry_price) / max(risk, 1e-12)
                 allowed = config.direction_mode == DirectionMode.BOTH or config.direction_mode.value == pattern.direction
-                if risk > 0 and rr >= ec.minimum_rr and allowed:
+                # A structural stop must always be on the loss side of the entry.
+                # Reject malformed CHOCH retraces instead of producing a favorable
+                # price move labelled as a stop loss.
+                stop_on_loss_side = stop < entry_price if side == 1 else stop > entry_price
+                if risk > 0 and rr >= ec.minimum_rr and allowed and stop_on_loss_side:
                     risk_capital = capital * config.risk_per_trade_percent / 100
                     quantity = min(risk_capital / risk, capital * config.position_size_percent / 100 * config.leverage / entry_price)
                     if quantity >= config.minimum_order_size:
@@ -367,4 +371,10 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
                                      "traded_signals": len(used), "lookahead_safe": True,
                                      "excluded_v1_patterns": ["DIAGONAL", "FLAT", "TRIANGLE", "DOUBLE_THREE", "TRIPLE_THREE"]},
             "pattern_diagnostics": [], "template_distribution": {},
-            "dataset": {"candles_by_timeframe": {key: len(value) for key, value in candles_by_tf.items()}}}
+            "dataset": {
+                "candles_by_timeframe": {key: len(value) for key, value in candles_by_tf.items()},
+                "test_candles": len(entry),
+                "test_from": int(entry[0]["timestamp"]) if entry else None,
+                "test_to": int(entry[-1]["timestamp"]) if entry else None,
+                "closed_candles_only": True,
+            }}

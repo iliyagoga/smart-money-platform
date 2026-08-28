@@ -120,19 +120,31 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, elliottPattern
       });
     });
     if (showTrades) trades.forEach((trade) => {
-      const target = trade.takeProfitPrices?.[0];
+      const targets = trade.takeProfitPrices ?? [];
       const stop = trade.initialStop;
-      if (target !== undefined) {
+      const entryTimestamp = nearestTimestamp(selectedCandles, trade.entryTime);
+      const exitTimestamp = nearestTimestamp(selectedCandles, trade.exitTime);
+      const tradeCandles = selectedCandles.filter((item) => item.timestamp >= trade.entryTime && item.timestamp <= trade.exitTime);
+      const reached = tradeCandles.length
+        ? (trade.direction === "LONG" ? Math.max(...tradeCandles.map((item) => item.high)) : Math.min(...tradeCandles.map((item) => item.low)))
+        : trade.exitPrice;
+      targets.forEach((target, index) => {
         const targetZone = activeChart.addSeries(BaselineSeries, {
           baseValue: { type: "price", price: trade.entryPrice }, lineVisible: false,
-          topFillColor1: "rgba(0,200,83,.24)", topFillColor2: "rgba(0,200,83,.08)",
-          bottomFillColor1: "rgba(0,200,83,.24)", bottomFillColor2: "rgba(0,200,83,.08)",
-          priceLineVisible: false, lastValueVisible: false, title: `TP · ${trade.signalTimeframe ?? "—"}`,
+          topFillColor1: "rgba(0,200,83,.18)", topFillColor2: "rgba(0,200,83,.04)",
+          bottomFillColor1: "rgba(0,200,83,.18)", bottomFillColor2: "rgba(0,200,83,.04)",
+          priceLineVisible: false, lastValueVisible: false, title: `TP${index + 1} · ${trade.signalTimeframe ?? "—"}`,
         });
-        targetZone.setData([
-          { time: chartTime(nearestTimestamp(selectedCandles, trade.entryTime)), value: target },
-          { time: chartTime(nearestTimestamp(selectedCandles, trade.exitTime)), value: target },
-        ]);
+        targetZone.setData([{ time: chartTime(entryTimestamp), value: target }, { time: chartTime(exitTimestamp), value: target }]);
+      });
+      if (tradeCandles.length && trade.direction && Math.abs(reached - trade.entryPrice) > 1e-9) {
+        const reachedZone = activeChart.addSeries(BaselineSeries, {
+          baseValue: { type: "price", price: trade.entryPrice }, lineVisible: false,
+          topFillColor1: "rgba(144,238,144,.42)", topFillColor2: "rgba(144,238,144,.16)",
+          bottomFillColor1: "rgba(144,238,144,.42)", bottomFillColor2: "rgba(144,238,144,.16)",
+          priceLineVisible: false, lastValueVisible: false, title: "Фактически достигнуто",
+        });
+        reachedZone.setData([{ time: chartTime(entryTimestamp), value: reached }, { time: chartTime(exitTimestamp), value: reached }]);
       }
       if (stop !== undefined) {
         const stopZone = activeChart.addSeries(BaselineSeries, {
@@ -142,8 +154,8 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, elliottPattern
           priceLineVisible: false, lastValueVisible: false, title: "SL",
         });
         stopZone.setData([
-          { time: chartTime(nearestTimestamp(selectedCandles, trade.entryTime)), value: stop },
-          { time: chartTime(nearestTimestamp(selectedCandles, trade.exitTime)), value: stop },
+          { time: chartTime(entryTimestamp), value: stop },
+          { time: chartTime(exitTimestamp), value: stop },
         ]);
       }
     });

@@ -80,3 +80,8 @@ def test_replay_returns_serializable_wave_contract():
     assert "elliott_patterns" in result
     assert set(result["chart_candles_by_timeframe"]) == {"H4", "H1", "M15"}
     assert result["final_capital"] == pytest.approx(config.initial_capital + result["net_profit"])
+    for trade in result["trades"]:
+        if trade["direction"] == "LONG":
+            assert trade["initial_stop"] < trade["entry_price"]
+        else:
+            assert trade["initial_stop"] > trade["entry_price"]

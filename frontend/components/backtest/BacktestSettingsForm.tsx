@@ -18,6 +18,8 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
     && settings.positionSizePercent > 0
     && settings.positionSizePercent <= 100
     && settings.riskPerTradePercent > 0
+    && (settings.strategy !== "SMC" || (settings.smcMinTargetRr > 0 && settings.smcMaxTargetRr > settings.smcMinTargetRr
+      && (settings.smcTargetMode === "TEMPLATE" || settings.smcTargetRr > 0)))
     && (settings.strategy !== "SMC" || settings.templateIds.length > 0);
   const updateElliottNumber = (key: keyof BacktestSettings["elliott"], value: string) =>
     onChange({ ...settings, elliott: { ...settings.elliott, [key]: Number(value) } });
@@ -119,8 +121,21 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
       </Stack>
       {settings.strategy === "SMC" && <TextField fullWidth label="Порог confidence" value={settings.confidenceThreshold} type="number"
         onChange={(event) => updateNumber("confidenceThreshold", event.target.value)} />}
+      {settings.strategy === "SMC" && <TextField fullWidth select label="Управление Risk/Reward" value={settings.smcTargetMode}
+        onChange={(event) => onChange({ ...settings, smcTargetMode: event.target.value as BacktestSettings["smcTargetMode"] })}>
+        <MenuItem value="TEMPLATE">По шаблону, в заданном диапазоне</MenuItem>
+        <MenuItem value="FIXED">Фиксированная цель</MenuItem>
+      </TextField>}
+      {settings.strategy === "SMC" && <Stack direction="row" spacing={1.5}>
+        <TextField fullWidth label="Risk/Reward: минимум" value={settings.smcMinTargetRr} type="number"
+          slotProps={{ htmlInput: { min: 0.01, step: 0.1 } }} onChange={(event) => updateNumber("smcMinTargetRr", event.target.value)} />
+        <TextField fullWidth label="Risk/Reward: максимум" value={settings.smcMaxTargetRr} type="number"
+          slotProps={{ htmlInput: { min: 0.01, step: 0.1 } }} onChange={(event) => updateNumber("smcMaxTargetRr", event.target.value)} />
+      </Stack>}
+      {settings.strategy === "SMC" && settings.smcTargetMode === "FIXED" && <TextField fullWidth label="Фиксированный Risk/Reward" value={settings.smcTargetRr} type="number"
+        slotProps={{ htmlInput: { min: 0.01, step: 0.1 } }} onChange={(event) => updateNumber("smcTargetRr", event.target.value)} />}
       <Typography variant="body2" color="text.secondary">
-        Stop Loss рассчитывается за структурной границей OB, цели — по ликвидности и RR выбранного JSON-шаблона.
+        Stop Loss рассчитывается за структурной границей OB, тейк выставляется на указанном расстоянии Risk/Reward.
       </Typography>
       <Stack direction="row" spacing={1.5}>
         <TextField fullWidth label="Maker, %" value={settings.makerFeePercent} type="number"
@@ -158,7 +173,7 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
         {isRunning ? `Выполняем расчёт… ${progress}%` : "Запустить бэктест"}
       </Button>
       {!isValid && <Typography variant="caption" color="error.main">
-        Проверьте капитал, риск, размер позиции, параметры исполнения и выберите хотя бы один шаблон.
+        Проверьте капитал, риск, Risk/Reward, размер позиции, параметры исполнения и выберите хотя бы один шаблон.
       </Typography>}
     </Stack>
   </Paper>;

@@ -97,7 +97,7 @@ def _chart_candles(candles: list[dict], maximum: int = 3000) -> list[dict]:
 
 def _execution_plan(entry: float, scenario, minimum_stop_percent: float, tick_size: float,
                     fixed_ratios: list[float] | None = None, minimum_target_rr: float = 1.5,
-                    maximum_target_rr: float = 8) -> tuple[float, list[float]]:
+                    maximum_target_rr: float = 8, fixed_only: bool = False) -> tuple[float, list[float]]:
     """Rebase the structural plan on the actual fill and enforce a usable stop distance."""
     side = 1 if scenario.direction == "LONG" else -1
     planned_entry = (scenario.entry_zone_low + scenario.entry_zone_high) / 2
@@ -109,7 +109,7 @@ def _execution_plan(entry: float, scenario, minimum_stop_percent: float, tick_si
     # Preserve each scenario target's intended R multiple, but measure it from
     # the actual fill and the corrected stop instead of the zone midpoint.
     ratios = []
-    if planned_risk > 0:
+    if planned_risk > 0 and not fixed_only:
         ratios = [
             (target - planned_entry) * side / planned_risk
             for target in scenario.take_profit_prices
@@ -180,12 +180,13 @@ def _scenario_outcome(scenario, future: list[Candle], start: int = 0, ready_at: 
             if config:
                 raw_entry = min(max(candle.open, scenario.entry_zone_low), scenario.entry_zone_high)
                 entry = round(raw_entry / config.tick_size) * config.tick_size
+                target_rr = config.smc_target_rr
                 stop, targets = _execution_plan(
-                    entry, scenario, config.smc_min_stop_percent, config.tick_size, fixed_ratios,
-                    (template.minimum_target_rr if template and template.minimum_target_rr is not None
-                     else config.smc_min_target_rr),
-                    (template.maximum_target_rr if template and template.maximum_target_rr is not None
-                     else config.smc_max_target_rr),
+                    entry, scenario, config.smc_min_stop_percent, config.tick_size,
+                    [target_rr] if target_rr is not None else fixed_ratios,
+                    target_rr if target_rr is not None else (template.minimum_target_rr if template and template.minimum_target_rr is not None else config.smc_min_target_rr),
+                    target_rr if target_rr is not None else (template.maximum_target_rr if template and template.maximum_target_rr is not None else config.smc_max_target_rr),
+                    fixed_only=target_rr is not None,
                 )
                 target = targets[0]
         stop_hit = candle.low <= stop if scenario.direction == "LONG" else candle.high >= stop
@@ -413,13 +414,13 @@ def run_smc_replay(
                         set_scenario_status(scenario.id, "REJECTED_COOLDOWN")
                         rejected_ids.add(scenario.id)
                         continue
+                    target_rr = config.smc_target_rr
                     stop, targets = _execution_plan(
                         entry, scenario, config.smc_min_stop_percent, config.tick_size,
-                        template.risk_reward if template else None,
-                        (template.minimum_target_rr if template and getattr(template, "minimum_target_rr", None) is not None
-                         else config.smc_min_target_rr),
-                        (template.maximum_target_rr if template and getattr(template, "maximum_target_rr", None) is not None
-                         else config.smc_max_target_rr),
+                        [target_rr] if target_rr is not None else (template.risk_reward if template else None),
+                        target_rr if target_rr is not None else (template.minimum_target_rr if template and getattr(template, "minimum_target_rr", None) is not None else config.smc_min_target_rr),
+                        target_rr if target_rr is not None else (template.maximum_target_rr if template and getattr(template, "maximum_target_rr", None) is not None else config.smc_max_target_rr),
+                        fixed_only=target_rr is not None,
                     )
                     if template and not _template_stop_distance_allowed(entry, stop, template):
                         set_scenario_status(scenario.id, "REJECTED_STOP_DISTANCE")

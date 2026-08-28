@@ -173,6 +173,14 @@ class BacktestService:
                 result["dataset"]["macro_timeframe"] = request.config.elliott.macro_timeframe
             else:
                 result = await asyncio.to_thread(run_backtest, test_candles[request.timeframe], request.config)
+            result.setdefault("dataset", {})
+            result["dataset"].setdefault("timeframes", request.timeframes)
+            result["dataset"].setdefault("test_candles", len(test_candles.get(request.timeframe, [])))
+            result["dataset"].setdefault("closed_candles_only", True)
+            if request.test_from is not None:
+                result["dataset"]["test_from"] = request.test_from
+            if request.test_to is not None:
+                result["dataset"]["test_to"] = request.test_to
             result["strategy_config"] = {
                 "leverage": request.config.leverage,
                 "position_size_percent": request.config.position_size_percent,
