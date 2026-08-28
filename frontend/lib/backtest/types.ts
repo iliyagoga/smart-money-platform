@@ -2,7 +2,18 @@ import type { Candle } from "../types";
 
 export type TradeDirection = "LONG" | "SHORT";
 export type DirectionMode = "LONG" | "SHORT" | "BOTH";
-export type StrategyType = "SMC" | "SMA_CROSS" | "RSI" | "MACD" | "BOLLINGER";
+export type StrategyType = "SMC" | "ELLIOTT" | "SMA_CROSS" | "RSI" | "MACD" | "BOLLINGER";
+
+export interface ElliottSettings {
+  macroTimeframe: string; structureTimeframe: string; entryTimeframe: string;
+  atrPeriod: number; zigzagReversalAtr: number; minSwingAtr: number;
+  wave1MinAtr: number; wave1MinEfficiency: number;
+  wave2MinRetracement: number; wave2MaxRetracement: number;
+  entryModel: "CHOCH_MARKET" | "CHOCH_RETRACE" | "WAVE1_BREAK_RETRACE";
+  entryRetracement: number; chochMinAtr: number; chochMinBodyRatio: number;
+  macroFilter: "OFF" | "STRUCTURE" | "EMA200" | "EMA_CROSS";
+  stopBufferAtr: number; minimumRr: number; breakEvenAtOneR: boolean;
+}
 
 export interface BacktestSettings {
   initialCapital: number;
@@ -33,6 +44,7 @@ export interface BacktestSettings {
   confidenceThreshold: number;
   templateIds: string[];
   localRetraining: boolean;
+  elliott: ElliottSettings;
 }
 
 export interface BacktestTrade {
@@ -47,7 +59,13 @@ export interface BacktestTrade {
   pnlPercent: number;
   scenarioId?: string;
   templateId?: string;
-  reason: "SIGNAL" | "STOP_LOSS" | "TAKE_PROFIT" | "LIQUIDATION" | "END_OF_DATA";
+  initialStop?: number;
+  takeProfitPrices?: number[];
+  signalTimeframe?: string;
+  structureTimeframe?: string;
+  fees?: number;
+  reason: "SIGNAL" | "STOP_LOSS" | "TAKE_PROFIT" | "STRUCTURAL_STOP" | "ELLIOTT_EXTENSION"
+    | "BREAK_EVEN" | "LIQUIDATION" | "END_OF_DATA";
 }
 
 export interface EquityPoint { timestamp: number; equity: number }
@@ -85,12 +103,21 @@ export interface BacktestResult {
   chartCandlesByTimeframe: Record<string, BacktestChartCandle[]>;
   scenarios: BacktestScenario[];
   patternDiagnostics: Record<string, Record<string, number>>;
+  elliottPatterns: ElliottPattern[];
+  elliottDiagnostics?: { states: Record<string, number>; patterns: number; signals: number; tradedSignals: number; lookaheadSafe: boolean };
   strategyConfig?: {
     leverage: number;
     positionSizePercent: number;
     stopLossPercent?: number;
     takeProfitPercent?: number;
   };
+}
+
+export interface ElliottPoint { timestamp: number; confirmedAt: number; price: number; kind: "HIGH" | "LOW" }
+export interface ElliottPattern {
+  id: string; direction: TradeDirection; state: string; invalidReason?: string; signalTime?: number;
+  points: Record<string, ElliottPoint>; features: Record<string, number | string>;
+  structureTimeframe: string; entryTimeframe: string;
 }
 
 export interface OpenBacktestPosition {

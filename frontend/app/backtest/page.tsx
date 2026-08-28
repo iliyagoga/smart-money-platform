@@ -1,7 +1,7 @@
 "use client";
 
 import { Alert, Box, Button, Checkbox, FormControlLabel, FormGroup, Grid, Paper, Stack, Tab, Tabs, TextField, Typography } from "@mui/material";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AssetManager } from "../../components/backtest/AssetManager";
 import { BacktestReport } from "../../components/backtest/BacktestReport";
 import { BacktestHistory } from "../../components/backtest/BacktestHistory";
@@ -19,7 +19,7 @@ import { useAuth } from "../../components/auth/AuthProvider";
 
 const defaultSettings: BacktestSettings = {
   initialCapital: 10_000,
-  strategy: "SMC",
+  strategy: "ELLIOTT",
   fastPeriod: 9,
   slowPeriod: 21,
   feePercent: 0.05,
@@ -45,7 +45,14 @@ const defaultSettings: BacktestSettings = {
   kellyFraction: 0.25,
   confidenceThreshold: 0.5,
   templateIds: [],
-  localRetraining: true,
+  localRetraining: false,
+  elliott: {
+    macroTimeframe: "H4", structureTimeframe: "H1", entryTimeframe: "M15", atrPeriod: 14,
+    zigzagReversalAtr: 1.5, minSwingAtr: 1, wave1MinAtr: 1.5, wave1MinEfficiency: 0.45,
+    wave2MinRetracement: 0.382, wave2MaxRetracement: 0.786, entryModel: "CHOCH_RETRACE",
+    entryRetracement: 0.5, chochMinAtr: 0.5, chochMinBodyRatio: 0.5,
+    macroFilter: "STRUCTURE", stopBufferAtr: 0.2, minimumRr: 1.5, breakEvenAtOneR: false,
+  },
 };
 
 const timeframes = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
@@ -79,7 +86,7 @@ export default function BacktestPage() {
   const runsResource = useApiResource<BacktestRunsResponse>("/api/v1/backtest/backtests");
   const templatesResource = useApiResource<ScenarioTemplatesResponse>("/api/v1/smc/scenario-templates");
   const templateSelectionInitialized = useRef(false);
-  const templates = templatesResource.data?.templates ?? [];
+  const templates = useMemo(() => templatesResource.data?.templates ?? [], [templatesResource.data?.templates]);
   useEffect(() => {
     if (templateSelectionInitialized.current || !templates.length) return;
     templateSelectionInitialized.current = true;
@@ -143,6 +150,26 @@ export default function BacktestPage() {
             confidence_threshold: settings.confidenceThreshold,
             template_ids: settings.templateIds,
             local_retraining: settings.localRetraining,
+            elliott: {
+              macro_timeframe: settings.elliott.macroTimeframe,
+              structure_timeframe: settings.elliott.structureTimeframe,
+              entry_timeframe: settings.elliott.entryTimeframe,
+              atr_period: settings.elliott.atrPeriod,
+              zigzag_reversal_atr: settings.elliott.zigzagReversalAtr,
+              min_swing_atr: settings.elliott.minSwingAtr,
+              wave1_min_atr: settings.elliott.wave1MinAtr,
+              wave1_min_efficiency: settings.elliott.wave1MinEfficiency,
+              wave2_min_retracement: settings.elliott.wave2MinRetracement,
+              wave2_max_retracement: settings.elliott.wave2MaxRetracement,
+              entry_model: settings.elliott.entryModel,
+              entry_retracement: settings.elliott.entryRetracement,
+              choch_min_atr: settings.elliott.chochMinAtr,
+              choch_min_body_ratio: settings.elliott.chochMinBodyRatio,
+              macro_filter: settings.elliott.macroFilter,
+              stop_buffer_atr: settings.elliott.stopBufferAtr,
+              minimum_rr: settings.elliott.minimumRr,
+              break_even_at_one_r: settings.elliott.breakEvenAtOneR,
+            },
           },
         }),
       });

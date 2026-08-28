@@ -120,7 +120,14 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
       candlesByTimeframe={result.chartCandlesByTimeframe}
       scenarios={result.scenarios}
       trades={result.trades}
+      elliottPatterns={result.elliottPatterns}
     />
+    {result.elliottDiagnostics && <Alert severity="success" sx={{ mt: 1.5 }}>
+      Elliott: {result.elliottDiagnostics.patterns} кандидатов · {result.elliottDiagnostics.signals} сигналов
+      {" · "}{result.elliottDiagnostics.tradedSignals} обработано
+      {" · "}close-time replay: {result.elliottDiagnostics.lookaheadSafe ? "без look-ahead" : "не подтверждено"}
+      {" · "}{Object.entries(result.elliottDiagnostics.states).map(([state, count]) => `${state}: ${count}`).join("; ")}
+    </Alert>}
     <Paper variant="outlined" sx={{ mt: 1.5, p: 2.5 }}>
       <Typography variant="h6" sx={{ mb: 1.5 }}>Распределение по шаблонам</Typography>
       <Stack spacing={1}>{Object.entries(result.templateDistribution ?? {}).map(([templateId, item]) => (
@@ -171,8 +178,11 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
         </TableRow></TableHead>
         <TableBody>{visibleTrades.map((trade) => {
           const scenario = trade.scenarioId ? scenariosById.get(trade.scenarioId) : undefined;
-          const takePercents = scenario?.takeProfitPrices.map((price) => Math.abs(price-trade.entryPrice)/trade.entryPrice*100);
-          const stopPercent = scenario
+          const takePrices = trade.takeProfitPrices ?? scenario?.takeProfitPrices;
+          const takePercents = takePrices?.map((price) => Math.abs(price-trade.entryPrice)/trade.entryPrice*100);
+          const stopPercent = trade.initialStop !== undefined
+            ? Math.abs(trade.initialStop-trade.entryPrice)/trade.entryPrice*100
+            : scenario
             ? Math.abs(scenario.stopLossPrice-trade.entryPrice)/trade.entryPrice*100
             : result.strategyConfig?.stopLossPercent;
           const fallbackTake = result.strategyConfig?.takeProfitPercent;
@@ -191,7 +201,7 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
           <TableCell sx={{ color: trade.pnlPercent >= 0 ? "success.main" : "error.main", fontWeight: 700 }}>
             {trade.pnlPercent.toFixed(2)}%
           </TableCell>
-          <TableCell><Chip size="small" label={trade.reason} variant="outlined" /></TableCell>
+          <TableCell><Chip size="small" label={`${trade.reason}${trade.fees ? ` · fee ${trade.fees.toFixed(2)}` : ""}`} variant="outlined" /></TableCell>
         </TableRow>})}</TableBody>
       </Table></TableContainer>
       <TablePagination component="div" count={filteredTrades.length} page={tradePage} rowsPerPage={tradesPerPage}

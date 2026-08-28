@@ -1,7 +1,7 @@
 "use client";
 
 import { Button, Checkbox, FormControl, InputLabel, ListItemText, MenuItem, Paper, Select, Stack, TextField, Typography } from "@mui/material";
-import type { BacktestSettings, DirectionMode } from "../../lib/backtest/types";
+import type { BacktestSettings, DirectionMode, StrategyType } from "../../lib/backtest/types";
 
 interface BacktestSettingsFormProps {
   isRunning: boolean;
@@ -18,15 +18,20 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
     && settings.positionSizePercent > 0
     && settings.positionSizePercent <= 100
     && settings.riskPerTradePercent > 0
-    && settings.templateIds.length > 0;
+    && (settings.strategy !== "SMC" || settings.templateIds.length > 0);
+  const updateElliottNumber = (key: keyof BacktestSettings["elliott"], value: string) =>
+    onChange({ ...settings, elliott: { ...settings.elliott, [key]: Number(value) } });
 
   return <Paper variant="outlined" sx={{ p: 3 }}>
     <Typography variant="h6">Параметры стратегии</Typography>
     <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 2.5 }}>
-      Полный SMC-конвейер на сохранённых закрытых свечах.
+      SMC или Elliott replay на сохранённых закрытых свечах без заглядывания вперёд.
     </Typography>
     <Stack spacing={2}>
-      <TextField label="Стратегия" value="Smart Money Concept" disabled />
+      <TextField select label="Стратегия" value={settings.strategy}
+        onChange={(event) => onChange({ ...settings, strategy: event.target.value as StrategyType })}>
+        <MenuItem value="ELLIOTT">Elliott Wave</MenuItem><MenuItem value="SMC">Smart Money Concept</MenuItem>
+      </TextField>
       <TextField
         select
         label="Направление"
@@ -35,7 +40,7 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
       >
         <MenuItem value="BOTH">Long и Short</MenuItem><MenuItem value="LONG">Только Long</MenuItem><MenuItem value="SHORT">Только Short</MenuItem>
       </TextField>
-      <FormControl fullWidth>
+      {settings.strategy === "SMC" && <FormControl fullWidth>
         <InputLabel id="backtest-templates-label">Шаблоны для теста</InputLabel>
         <Select
           labelId="backtest-templates-label"
@@ -53,10 +58,51 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
             <ListItemText primary={template.name} secondary={template.id} />
           </MenuItem>)}
         </Select>
-      </FormControl>
-      <Typography variant="body2" color="text.secondary">
+      </FormControl>}
+      {settings.strategy === "SMC" && <Typography variant="body2" color="text.secondary">
         В расчёте участвуют только отмеченные шаблоны и их собственные роли таймфреймов.
-      </Typography>
+      </Typography>}
+      {settings.strategy === "ELLIOTT" && <Stack spacing={1.5}>
+        <Typography variant="subtitle2">Архитектура Elliott и ATR ZigZag</Typography>
+        <Stack direction="row" spacing={1.5}>
+          {(["macroTimeframe", "structureTimeframe", "entryTimeframe"] as const).map((key) =>
+            <TextField key={key} fullWidth select label={{ macroTimeframe: "Macro TF", structureTimeframe: "Structure TF", entryTimeframe: "Entry TF" }[key]}
+              value={settings.elliott[key]}
+              onChange={(event) => onChange({ ...settings, elliott: { ...settings.elliott, [key]: event.target.value } })}>
+              {timeframeOptions(key).map((tf) => <MenuItem key={tf} value={tf}>{tf}</MenuItem>)}
+            </TextField>)}
+        </Stack>
+        <Stack direction="row" spacing={1.5}>
+          <TextField fullWidth label="ATR период" type="number" value={settings.elliott.atrPeriod} onChange={(e) => updateElliottNumber("atrPeriod", e.target.value)} />
+          <TextField fullWidth label="Разворот ZigZag, ATR" type="number" value={settings.elliott.zigzagReversalAtr} onChange={(e) => updateElliottNumber("zigzagReversalAtr", e.target.value)} />
+          <TextField fullWidth label="Мин. swing, ATR" type="number" value={settings.elliott.minSwingAtr} onChange={(e) => updateElliottNumber("minSwingAtr", e.target.value)} />
+        </Stack>
+        <Stack direction="row" spacing={1.5}>
+          <TextField fullWidth label="Wave 1 мин., ATR" type="number" value={settings.elliott.wave1MinAtr} onChange={(e) => updateElliottNumber("wave1MinAtr", e.target.value)} />
+          <TextField fullWidth label="Wave 1 efficiency" type="number" value={settings.elliott.wave1MinEfficiency} onChange={(e) => updateElliottNumber("wave1MinEfficiency", e.target.value)} />
+        </Stack>
+        <Stack direction="row" spacing={1.5}>
+          <TextField fullWidth label="Wave 2 retracement от" type="number" value={settings.elliott.wave2MinRetracement} onChange={(e) => updateElliottNumber("wave2MinRetracement", e.target.value)} />
+          <TextField fullWidth label="Wave 2 retracement до" type="number" value={settings.elliott.wave2MaxRetracement} onChange={(e) => updateElliottNumber("wave2MaxRetracement", e.target.value)} />
+        </Stack>
+        <Stack direction="row" spacing={1.5}>
+          <TextField fullWidth select label="Модель входа" value={settings.elliott.entryModel}
+            onChange={(e) => onChange({ ...settings, elliott: {
+              ...settings.elliott, entryModel: e.target.value as typeof settings.elliott.entryModel,
+            } })}>
+            <MenuItem value="CHOCH_MARKET">CHOCH market</MenuItem><MenuItem value="CHOCH_RETRACE">CHOCH retrace</MenuItem><MenuItem value="WAVE1_BREAK_RETRACE">P1 break + retrace</MenuItem>
+          </TextField>
+          <TextField fullWidth label="Retracement входа" type="number" value={settings.elliott.entryRetracement} onChange={(e) => updateElliottNumber("entryRetracement", e.target.value)} />
+        </Stack>
+        <Stack direction="row" spacing={1.5}>
+          <TextField fullWidth label="CHOCH displacement, ATR" type="number" value={settings.elliott.chochMinAtr} onChange={(e) => updateElliottNumber("chochMinAtr", e.target.value)} />
+          <TextField fullWidth label="Мин. тело свечи" type="number" value={settings.elliott.chochMinBodyRatio} onChange={(e) => updateElliottNumber("chochMinBodyRatio", e.target.value)} />
+        </Stack>
+        <Stack direction="row" spacing={1.5}>
+          <TextField fullWidth label="Буфер стопа, ATR" type="number" value={settings.elliott.stopBufferAtr} onChange={(e) => updateElliottNumber("stopBufferAtr", e.target.value)} />
+          <TextField fullWidth label="Минимальный RR" type="number" value={settings.elliott.minimumRr} onChange={(e) => updateElliottNumber("minimumRr", e.target.value)} />
+        </Stack>
+      </Stack>}
       <TextField label="Начальный капитал" value={settings.initialCapital} type="number"
         onChange={(event) => updateNumber("initialCapital", event.target.value)} />
       <TextField label="Размер позиции, %" value={settings.positionSizePercent} type="number"
@@ -71,8 +117,8 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
         <TextField fullWidth label="Доля Kelly" value={settings.kellyFraction} type="number"
           onChange={(event) => updateNumber("kellyFraction", event.target.value)} />
       </Stack>
-      <TextField fullWidth label="Порог confidence" value={settings.confidenceThreshold} type="number"
-        onChange={(event) => updateNumber("confidenceThreshold", event.target.value)} />
+      {settings.strategy === "SMC" && <TextField fullWidth label="Порог confidence" value={settings.confidenceThreshold} type="number"
+        onChange={(event) => updateNumber("confidenceThreshold", event.target.value)} />}
       <Typography variant="body2" color="text.secondary">
         Stop Loss рассчитывается за структурной границей OB, цели — по ликвидности и RR выбранного JSON-шаблона.
       </Typography>
@@ -116,4 +162,10 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
       </Typography>}
     </Stack>
   </Paper>;
+}
+
+function timeframeOptions(key: "macroTimeframe" | "structureTimeframe" | "entryTimeframe") {
+  if (key === "macroTimeframe") return ["H1", "H4", "D1"];
+  if (key === "structureTimeframe") return ["M15", "M30", "H1", "H4"];
+  return ["M1", "M5", "M15", "M30"];
 }

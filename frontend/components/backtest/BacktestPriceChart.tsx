@@ -1,17 +1,18 @@
 "use client";
 
 import { Box, Button, Chip, CircularProgress, FormControlLabel, MenuItem, Pagination, Paper, Stack, Switch, TextField, Typography } from "@mui/material";
-import { CandlestickSeries, ColorType, LineSeries, createChart, createSeriesMarkers, type IChartApi, type UTCTimestamp } from "lightweight-charts";
+import { BaselineSeries, CandlestickSeries, ColorType, LineSeries, createChart, createSeriesMarkers, type IChartApi, type UTCTimestamp } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { BacktestChartCandle, BacktestScenario, BacktestTrade } from "../../lib/backtest/types";
+import type { BacktestChartCandle, BacktestScenario, BacktestTrade, ElliottPattern } from "../../lib/backtest/types";
 
 const chartTime = (timestamp: number) => Math.floor(timestamp/1000) as UTCTimestamp;
 
-export function BacktestPriceChart({ candles, candlesByTimeframe, scenarios, trades }: {
+export function BacktestPriceChart({ candles, candlesByTimeframe, elliottPatterns, scenarios, trades }: {
   candles: BacktestChartCandle[];
   candlesByTimeframe: Record<string, BacktestChartCandle[]>;
   scenarios: BacktestScenario[];
   trades: BacktestTrade[];
+  elliottPatterns: ElliottPattern[];
 }) {
   const available = Object.keys(candlesByTimeframe);
   const [timeframe, setTimeframe] = useState(available[0] ?? "PRIMARY");
@@ -24,11 +25,13 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, scenarios, tra
   const [showStops, setShowStops] = useState(true);
   const [showTargets, setShowTargets] = useState(true);
   const [showTrades, setShowTrades] = useState(true);
+  const [showWaves, setShowWaves] = useState(true);
   const [isRendering, setIsRendering] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const fullscreenRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const fitRef = useRef<(scenario?: BacktestScenario) => void>(() => undefined);
+  const visibleRangeRef = useRef<ReturnType<IChartApi["timeScale"]>["getVisibleRange"] extends () => infer R ? R : never>(null);
   const selectedCandles = candlesByTimeframe[timeframe] ?? candles;
   const timeframeScenarios = useMemo(
     () => available.length ? scenarios.filter((item) => item.timeframe === timeframe) : scenarios,
@@ -77,6 +80,16 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, scenarios, tra
     candleSeries.setData(selectedCandles.map((item) => ({
       time: chartTime(item.timestamp), open: item.open, high: item.high, low: item.low, close: item.close,
     })));
+    if (showWaves) elliottPatterns.filter((pattern) => pattern.state !== "INVALID").forEach((pattern) => {
+      const order = ["P0", "P1", "P2", "P3", "P4", "P5", "A", "B", "C"];
+      const points = order.flatMap((label) => pattern.points[label] ? [{ label, ...pattern.points[label] }] : []);
+      if (points.length < 2) return;
+      const wave = activeChart.addSeries(LineSeries, {
+        color: pattern.direction === "LONG" ? "#42a5f5" : "#ab47bc", lineWidth: 2,
+        title: `Elliott ${pattern.structureTimeframe}`,
+      });
+      wave.setData(points.map((point) => ({ time: chartTime(nearestTimestamp(selectedCandles, point.timestamp)), value: point.price })));
+    });
     visibleScenarios.forEach((scenario) => {
       const color = scenario.direction === "LONG" ? "#26a69a" : "#ef5350";
       const end = Math.min(scenario.expiresAt, selectedCandles[selectedCandles.length-1].timestamp);
@@ -106,15 +119,53 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, scenarios, tra
         takeProfit.setData([{ time: chartTime(scenario.timestamp), value: target }, { time: chartTime(end), value: target }]);
       });
     });
-    const markers = showTrades ? trades.flatMap((trade) => [
+    if (showTrades) trades.forEach((trade) => {
+      const target = trade.takeProfitPrices?.[0];
+      const stop = trade.initialStop;
+      if (target !== undefined) {
+        const targetZone = activeChart.addSeries(BaselineSeries, {
+          baseValue: { type: "price", price: trade.entryPrice }, lineVisible: false,
+          topFillColor1: "rgba(0,200,83,.24)", topFillColor2: "rgba(0,200,83,.08)",
+          bottomFillColor1: "rgba(0,200,83,.24)", bottomFillColor2: "rgba(0,200,83,.08)",
+          priceLineVisible: false, lastValueVisible: false, title: `TP · ${trade.signalTimeframe ?? "—"}`,
+        });
+        targetZone.setData([
+          { time: chartTime(nearestTimestamp(selectedCandles, trade.entryTime)), value: target },
+          { time: chartTime(nearestTimestamp(selectedCandles, trade.exitTime)), value: target },
+        ]);
+      }
+      if (stop !== undefined) {
+        const stopZone = activeChart.addSeries(BaselineSeries, {
+          baseValue: { type: "price", price: trade.entryPrice }, lineVisible: false,
+          topFillColor1: "rgba(255,82,82,.24)", topFillColor2: "rgba(255,82,82,.08)",
+          bottomFillColor1: "rgba(255,82,82,.24)", bottomFillColor2: "rgba(255,82,82,.08)",
+          priceLineVisible: false, lastValueVisible: false, title: "SL",
+        });
+        stopZone.setData([
+          { time: chartTime(nearestTimestamp(selectedCandles, trade.entryTime)), value: stop },
+          { time: chartTime(nearestTimestamp(selectedCandles, trade.exitTime)), value: stop },
+        ]);
+      }
+    });
+    const tradeMarkers = showTrades ? trades.flatMap((trade) => [
       { time: chartTime(trade.entryTime), position: trade.direction === "LONG" ? "belowBar" as const : "aboveBar" as const,
         color: trade.direction === "LONG" ? "#00e676" : "#ff5252", shape: trade.direction === "LONG" ? "arrowUp" as const : "arrowDown" as const,
-        text: `${trade.direction} #${trade.id}` },
+        text: `${trade.direction} #${trade.id} · ${trade.signalTimeframe ?? "—"}` },
       { time: chartTime(trade.exitTime), position: "inBar" as const, color: trade.pnl >= 0 ? "#ffd54f" : "#ff9800",
         shape: "circle" as const, text: `Exit ${trade.pnl.toFixed(2)}` },
-    ]).sort((left,right) => Number(left.time)-Number(right.time)) : [];
+    ]) : [];
+    const waveMarkers = showWaves ? elliottPatterns.filter((pattern) => pattern.state !== "INVALID").flatMap((pattern) =>
+      Object.entries(pattern.points).map(([label, point]) => ({
+        time: chartTime(nearestTimestamp(selectedCandles, point.timestamp)),
+        position: point.kind === "LOW" ? "belowBar" as const : "aboveBar" as const,
+        color: pattern.direction === "LONG" ? "#42a5f5" : "#ab47bc", shape: "circle" as const,
+        text: `${label} · ${pattern.structureTimeframe}`,
+      }))) : [];
+    const markers = [...tradeMarkers, ...waveMarkers].sort((left,right) => Number(left.time)-Number(right.time));
     createSeriesMarkers(candleSeries, markers);
-    activeChart.timeScale().fitContent();
+    if (visibleRangeRef.current) activeChart.timeScale().setVisibleRange(visibleRangeRef.current);
+    else activeChart.timeScale().fitContent();
+    activeChart.timeScale().subscribeVisibleTimeRangeChange((range) => { if (range) visibleRangeRef.current = range; });
     fitRef.current = (scenario) => scenario
       ? activeChart.timeScale().setVisibleRange({ from: chartTime(scenario.timestamp), to: chartTime(scenario.expiresAt) })
       : activeChart.timeScale().fitContent();
@@ -128,7 +179,7 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, scenarios, tra
       observer?.disconnect();
       chart?.remove();
     };
-  }, [selectedCandles, selectedScenario, showEntryZones, showStops, showTargets, showTrades, trades, visibleScenarios]);
+  }, [elliottPatterns, selectedCandles, selectedScenario, showEntryZones, showStops, showTargets, showTrades, showWaves, trades, visibleScenarios]);
 
   const focusScenario = () => {
     const scenario = visibleScenarios.find((item) => item.id === selectedScenario);
@@ -155,7 +206,7 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, scenarios, tra
         </Typography></div>
       <Stack direction="row" useFlexGap sx={{ flexWrap: "wrap", gap: .75 }}>
         {available.length > 0 && <TextField select size="small" label="Таймфрейм" value={timeframe}
-          onChange={(event) => { setIsRendering(true); setTimeframe(event.target.value); setSelectedScenario("ALL"); }} sx={{ minWidth: 125 }}>
+          onChange={(event) => { visibleRangeRef.current = null; setIsRendering(true); setTimeframe(event.target.value); setSelectedScenario("ALL"); }} sx={{ minWidth: 125 }}>
           {available.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}
         </TextField>}
         <TextField select size="small" label="Зона" value={selectedScenario}
@@ -195,6 +246,7 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, scenarios, tra
         <FormControlLabel control={<Switch size="small" checked={showStops} onChange={(_,value) => setShowStops(value)} />} label="Stop Loss" />
         <FormControlLabel control={<Switch size="small" checked={showTargets} onChange={(_,value) => setShowTargets(value)} />} label="Take Profit" />
         <FormControlLabel control={<Switch size="small" checked={showTrades} onChange={(_,value) => setShowTrades(value)} />} label="Сделки" />
+        <FormControlLabel control={<Switch size="small" checked={showWaves} onChange={(_,value) => setShowWaves(value)} />} label="Волны Elliott" />
         <TextField select size="small" label="Зон на графике" value={zoneLimit} onChange={(event) => setZoneLimit(Number(event.target.value))} sx={{ width: 150 }}>
           {[25,50,100,200].map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}
         </TextField>
@@ -218,4 +270,17 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, scenarios, tra
       График создан с помощью <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">TradingView Lightweight Charts™</a>.
     </Typography>
   </Paper>;
+}
+
+function nearestTimestamp(candles: BacktestChartCandle[], timestamp: number) {
+  if (!candles.length) return timestamp;
+  let left = 0, right = candles.length - 1;
+  while (left < right) {
+    const middle = Math.floor((left + right) / 2);
+    if (candles[middle].timestamp < timestamp) left = middle + 1; else right = middle;
+  }
+  const previousIsNearer = left > 0
+    && Math.abs(candles[left - 1].timestamp - timestamp) < Math.abs(candles[left].timestamp - timestamp);
+  if (previousIsNearer) return candles[left - 1].timestamp;
+  return candles[left].timestamp;
 }

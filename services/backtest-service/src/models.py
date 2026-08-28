@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field, model_validator
 
 class StrategyType(StrEnum):
     SMC = "SMC"
+    ELLIOTT = "ELLIOTT"
     SMA_CROSS = "SMA_CROSS"
     RSI = "RSI"
     MACD = "MACD"
@@ -14,6 +15,77 @@ class DirectionMode(StrEnum):
     LONG = "LONG"
     SHORT = "SHORT"
     BOTH = "BOTH"
+
+
+class ElliottEntryModel(StrEnum):
+    CHOCH_MARKET = "CHOCH_MARKET"
+    CHOCH_RETRACE = "CHOCH_RETRACE"
+    WAVE1_BREAK_RETRACE = "WAVE1_BREAK_RETRACE"
+
+
+class ElliottMacroFilter(StrEnum):
+    OFF = "OFF"
+    STRUCTURE = "STRUCTURE"
+    EMA200 = "EMA200"
+    EMA_CROSS = "EMA_CROSS"
+
+
+class ElliottConfig(BaseModel):
+    macro_timeframe: str = "H4"
+    structure_timeframe: str = "H1"
+    entry_timeframe: str = "M15"
+    atr_period: int = Field(default=14, ge=2, le=200)
+    zigzag_reversal_atr: float = Field(default=1.5, ge=.25, le=10)
+    min_swing_atr: float = Field(default=1, ge=0, le=10)
+    min_swing_candles: int = Field(default=2, ge=1, le=100)
+    max_swing_candles: int | None = Field(default=80, ge=2, le=10000)
+    wave1_min_atr: float = Field(default=1.5, ge=0, le=20)
+    wave1_min_candles: int = Field(default=3, ge=1, le=1000)
+    wave1_max_candles: int | None = Field(default=50, ge=2, le=10000)
+    wave1_min_efficiency: float = Field(default=.45, ge=0, le=1)
+    require_bos: bool = True
+    bos_buffer_atr: float = Field(default=0, ge=0, le=5)
+    wave2_min_retracement: float = Field(default=.382, ge=0, lt=1)
+    wave2_max_retracement: float = Field(default=.786, gt=0, lt=1)
+    wave2_min_time_ratio: float = Field(default=.2, ge=0, le=20)
+    wave2_max_time_ratio: float = Field(default=3, gt=0, le=50)
+    entry_model: ElliottEntryModel = ElliottEntryModel.CHOCH_RETRACE
+    entry_retracement: float = Field(default=.5, ge=0, le=1)
+    choch_min_atr: float = Field(default=.5, ge=0, le=10)
+    choch_min_body_ratio: float = Field(default=.5, ge=0, le=1)
+    macro_filter: ElliottMacroFilter = ElliottMacroFilter.STRUCTURE
+    adx_period: int = Field(default=14, ge=2, le=200)
+    adx_min: float = Field(default=0, ge=0, le=100)
+    require_di_confirmation: bool = False
+    volume_sma_period: int = Field(default=20, ge=2, le=500)
+    min_volume_ratio: float = Field(default=0, ge=0, le=100)
+    stop_buffer_atr: float = Field(default=.2, ge=0, le=10)
+    take_profit_extensions: list[float] = Field(default_factory=lambda: [1.0, 1.618])
+    take_profit_allocations: list[float] = Field(default_factory=lambda: [.5, .5])
+    minimum_rr: float = Field(default=1.5, gt=0, le=100)
+    break_even_at_one_r: bool = False
+    mfe_mae_horizons: list[int] = Field(default_factory=lambda: [3, 6, 12, 24, 48, 96])
+
+    @model_validator(mode="after")
+    def validate_elliott(self):
+        supported = {"M1", "M5", "M15", "M30", "H1", "H4", "D1"}
+        timeframes = (self.macro_timeframe, self.structure_timeframe, self.entry_timeframe)
+        if any(item not in supported for item in timeframes):
+            raise ValueError("unsupported Elliott timeframe")
+        order = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
+        if not order[self.entry_timeframe] < order[self.structure_timeframe] < order[self.macro_timeframe]:
+            raise ValueError("Elliott timeframes must satisfy entry < structure < macro")
+        if self.wave2_min_retracement >= self.wave2_max_retracement:
+            raise ValueError("wave2 minimum retracement must be below maximum")
+        if self.wave2_min_time_ratio >= self.wave2_max_time_ratio:
+            raise ValueError("wave2 minimum time ratio must be below maximum")
+        if not self.take_profit_extensions or any(value <= 0 for value in self.take_profit_extensions):
+            raise ValueError("positive take-profit extensions are required")
+        if len(self.take_profit_extensions) != len(self.take_profit_allocations):
+            raise ValueError("take-profit extensions and allocations must have equal lengths")
+        if abs(sum(self.take_profit_allocations) - 1) > 1e-6 or any(value <= 0 for value in self.take_profit_allocations):
+            raise ValueError("take-profit allocations must be positive and sum to one")
+        return self
 
 
 class BacktestConfig(BaseModel):
@@ -51,6 +123,7 @@ class BacktestConfig(BaseModel):
     confidence_threshold: float = Field(default=.5, ge=0, le=1)
     template_ids: list[str] = Field(default_factory=list)
     local_retraining: bool = False
+    elliott: ElliottConfig = Field(default_factory=ElliottConfig)
 
     @model_validator(mode="after")
     def validate_periods(self):
@@ -86,6 +159,14 @@ class BacktestCreate(BaseModel):
         if self.config.strategy == StrategyType.SMC:
             order = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
             self.timeframe = min(self.timeframes, key=order.__getitem__)
+        elif self.config.strategy == StrategyType.ELLIOTT:
+            required = [
+                self.config.elliott.entry_timeframe,
+                self.config.elliott.structure_timeframe,
+                self.config.elliott.macro_timeframe,
+            ]
+            self.timeframes = list(dict.fromkeys([*self.timeframes, *required]))
+            self.timeframe = self.config.elliott.entry_timeframe
         elif self.timeframe not in self.timeframes:
             self.timeframes.append(self.timeframe)
         values = (self.train_from, self.train_to, self.test_from, self.test_to)

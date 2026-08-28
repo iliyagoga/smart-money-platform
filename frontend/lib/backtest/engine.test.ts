@@ -22,6 +22,13 @@ const settings: BacktestSettings = {
   confidenceThreshold: 0.6,
   templateIds: ["OB_FVG_REVERSAL"],
   localRetraining: false,
+  elliott: {
+    macroTimeframe: "H4", structureTimeframe: "H1", entryTimeframe: "M15", atrPeriod: 14,
+    zigzagReversalAtr: 1.5, minSwingAtr: 1, wave1MinAtr: 1.5, wave1MinEfficiency: 0.45,
+    wave2MinRetracement: 0.382, wave2MaxRetracement: 0.786, entryModel: "CHOCH_RETRACE",
+    entryRetracement: 0.5, chochMinAtr: 0.5, chochMinBodyRatio: 0.5,
+    macroFilter: "STRUCTURE", stopBufferAtr: 0.2, minimumRr: 1.5, breakEvenAtOneR: true,
+  },
 };
 
 const candles = (closes: number[]): Candle[] => closes.map((close, index) => ({

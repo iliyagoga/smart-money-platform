@@ -105,5 +105,6 @@ export function runBacktest({ candles, settings }: BacktestInput): BacktestResul
     chartCandlesByTimeframe: {},
     scenarios: [],
     patternDiagnostics: {},
+    elliottPatterns: [],
   };
 }

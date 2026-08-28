@@ -11,6 +11,7 @@ import httpx
 import boto3
 
 from .engine import run_backtest
+from .elliott import run_elliott_replay
 from .models import AssetCreate, BacktestCreate, StrategyType
 from .replay import FrozenModel, run_smc_replay, train_local_model
 from .settings import Settings
@@ -162,6 +163,14 @@ class BacktestService:
                 result["dataset"]["requested_test_to"] = request.test_to
                 if request.config.local_retraining:
                     result["model_training"]["artifact_path"] = artifact_path
+            elif request.config.strategy == StrategyType.ELLIOTT:
+                async with self.db.acquire() as connection:
+                    await connection.execute("UPDATE backtest_runs SET progress=80 WHERE id=$1", run_id)
+                result = await asyncio.to_thread(run_elliott_replay, test_candles, request.config)
+                result["dataset"]["timeframes"] = request.timeframes
+                result["dataset"]["execution_timeframe"] = request.config.elliott.entry_timeframe
+                result["dataset"]["structure_timeframe"] = request.config.elliott.structure_timeframe
+                result["dataset"]["macro_timeframe"] = request.config.elliott.macro_timeframe
             else:
                 result = await asyncio.to_thread(run_backtest, test_candles[request.timeframe], request.config)
             result["strategy_config"] = {
@@ -174,7 +183,8 @@ class BacktestService:
             result["request_config"] = request.model_dump(mode="json")
             result["execution_spec"] = execution_spec
             result["engine"] = {
-                "name": "SMC_CLOSE_TIME_REPLAY" if request.config.strategy == StrategyType.SMC else "INDICATOR_REPLAY",
+                "name": ({StrategyType.SMC: "SMC_CLOSE_TIME_REPLAY", StrategyType.ELLIOTT: "ELLIOTT_CLOSE_TIME_REPLAY"}
+                         .get(request.config.strategy, "INDICATOR_REPLAY")),
                 "version": 2,
                 "template_versions": {
                     path.stem: json.loads(path.read_text(encoding="utf-8")).get("version", 1)
