@@ -62,6 +62,7 @@ class ElliottConfig(BaseModel):
     stop_buffer_atr: float = Field(default=.2, ge=0, le=10)
     take_profit_extensions: list[float] = Field(default_factory=lambda: [1.0, 1.618])
     take_profit_allocations: list[float] = Field(default_factory=lambda: [.5, .5])
+    take_profit_rr: float = Field(default=2, gt=0, le=100)
     minimum_rr: float = Field(default=1.5, gt=0, le=100)
     break_even_at_one_r: bool = False
     mfe_mae_horizons: list[int] = Field(default_factory=lambda: [3, 6, 12, 24, 48, 96])

@@ -265,6 +265,12 @@ def _point(value: Pivot) -> dict:
             "price": value.price, "kind": value.kind, "atr": value.atr}
 
 
+def _fixed_rr_target(entry_price: float, stop: float, direction: str, take_profit_rr: float) -> float:
+    """Place the Elliott exit at a fixed multiple of the actual stop distance."""
+    side = 1 if direction == "LONG" else -1
+    return entry_price + side * abs(entry_price - stop) * take_profit_rr
+
+
 def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestConfig) -> dict:
     ec = config.elliott
     structure = sorted(candles_by_tf[ec.structure_timeframe], key=lambda item: item["timestamp"])
@@ -322,8 +328,9 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
                 stop = pattern.points["P2"].price - side * ec.stop_buffer_atr * pattern.points["P2"].atr
                 risk = abs(entry_price - stop)
                 wave1 = abs(pattern.points["P1"].price - pattern.points["P0"].price)
-                targets = [pattern.points["P2"].price + side * extension * wave1 for extension in ec.take_profit_extensions]
-                rr = side * (targets[0] - entry_price) / max(risk, 1e-12)
+                wave_targets = [pattern.points["P2"].price + side * extension * wave1 for extension in ec.take_profit_extensions]
+                rr = side * (wave_targets[0] - entry_price) / max(risk, 1e-12)
+                targets = [_fixed_rr_target(entry_price, stop, pattern.direction, ec.take_profit_rr)]
                 allowed = config.direction_mode == DirectionMode.BOTH or config.direction_mode.value == pattern.direction
                 # A structural stop must always be on the loss side of the entry.
                 # Reject malformed CHOCH retraces instead of producing a favorable

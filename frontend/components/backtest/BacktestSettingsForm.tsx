@@ -102,6 +102,8 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
         </Stack>
         <Stack direction="row" spacing={1.5}>
           <TextField fullWidth label="Буфер стопа, ATR" type="number" value={settings.elliott.stopBufferAtr} onChange={(e) => updateElliottNumber("stopBufferAtr", e.target.value)} />
+          <TextField fullWidth label="Тейк к стопу (RR)" type="number" value={settings.elliott.takeProfitRr}
+            slotProps={{ htmlInput: { min: 0.01, step: 0.1 } }} onChange={(e) => updateElliottNumber("takeProfitRr", e.target.value)} />
           <TextField fullWidth label="Минимальный RR" type="number" value={settings.elliott.minimumRr} onChange={(e) => updateElliottNumber("minimumRr", e.target.value)} />
         </Stack>
       </Stack>}

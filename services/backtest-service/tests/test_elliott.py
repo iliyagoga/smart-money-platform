@@ -1,6 +1,6 @@
 import pytest
 
-from src.elliott import Pivot, atr_zigzag, detect_patterns, run_elliott_replay
+from src.elliott import Pivot, _fixed_rr_target, atr_zigzag, detect_patterns, run_elliott_replay
 from src.models import BacktestConfig, ElliottConfig, StrategyType
 
 
@@ -29,6 +29,11 @@ def test_config_enforces_timeframe_hierarchy_and_tp_allocations():
         ElliottConfig(macro_timeframe="M15", structure_timeframe="H1", entry_timeframe="H4")
     with pytest.raises(ValueError):
         ElliottConfig(take_profit_extensions=[1, 1.618], take_profit_allocations=[1])
+
+
+def test_fixed_rr_target_uses_actual_stop_distance():
+    assert _fixed_rr_target(100, 98, "LONG", 2) == pytest.approx(104)
+    assert _fixed_rr_target(100, 103, "SHORT", 1.5) == pytest.approx(95.5)
 
 
 def test_atr_zigzag_confirmation_never_precedes_pivot():
