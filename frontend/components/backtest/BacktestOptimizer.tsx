@@ -1,20 +1,21 @@
 "use client";
 
 import {
-  Alert, Button, Checkbox, FormControlLabel, FormGroup, LinearProgress, MenuItem, Paper, Stack, Tab, Tabs,
-  TextField, Typography,
+  Alert, Button, Checkbox, FormControl, FormControlLabel, FormGroup, FormHelperText, InputLabel, LinearProgress,
+  ListItemText, MenuItem, Paper, Select, Stack, TextField, Typography,
 } from "@mui/material";
 import { useEffect, useMemo, useState } from "react";
 import type { BacktestResult, BacktestSettings, ElliottSettings } from "../../lib/backtest/types";
 
-type Mode = "ARCHITECTURE" | "CAPITAL";
 type Metric = "RETURN_DD" | "RETURN" | "PROFIT_FACTOR";
 type Period = { from: string; to: string };
 type Candidate = { settings: BacktestSettings; label: string };
 type Row = Candidate & { optimization: BacktestResult; validation?: BacktestResult; optimizationScore: number; score?: number; passed?: boolean };
 
 const values = (text: string) => [...new Set(text.split(",").map((value) => value.trim()).filter(Boolean))];
-const numbers = (text: string) => values(text).map(Number).filter((value) => Number.isFinite(value) && value > 0);
+const rangeNumbers = (text: string, minimum: number, maximum: number, minimumExclusive = false) => values(text)
+  .map(Number)
+  .filter((value) => Number.isFinite(value) && (minimumExclusive ? value > minimum : value >= minimum) && value <= maximum);
 const booleans = (text: string) => values(text).filter((value) => value === "true" || value === "false").map((value) => value === "true");
 const product = <T,>(groups: T[][]): T[][] => groups.reduce<T[][]>(
   (rows, group) => rows.flatMap((row) => group.map((item) => [...row, item])), [[]],
@@ -47,7 +48,6 @@ export function BacktestOptimizer({
   settings, assets, initialAsset, initialTimeframes, testFrom, testTo, onApply, runCandidate,
 }: Props) {
   const defaults = defaultPeriods(testFrom, testTo);
-  const [mode, setMode] = useState<Mode>("ARCHITECTURE");
   const [metric, setMetric] = useState<Metric>("RETURN_DD");
   const [asset, setAsset] = useState(initialAsset);
   const [timeframes, setTimeframes] = useState(initialTimeframes);
@@ -70,7 +70,7 @@ export function BacktestOptimizer({
     chochAtr: String(settings.elliott.chochMinAtr), minimumRr: String(settings.elliott.minimumRr),
   });
   const [capital, setCapital] = useState({
-    margin: String(settings.elliott.useMargin), leverage: String(settings.leverage),
+    initialCapital: String(settings.initialCapital), margin: String(settings.elliott.useMargin), leverage: String(settings.leverage),
     reinvest: String(settings.elliott.reinvestProfits), takeCount: String(settings.elliott.takeProfitCount),
     tp1: String(settings.elliott.takeProfitRr), tp2: String(settings.elliott.secondTakeProfitRr),
     actions: String(settings.elliott.firstTakeAction),
@@ -80,44 +80,43 @@ export function BacktestOptimizer({
   }, [asset, assets]);
 
   const candidates = useMemo<Candidate[]>(() => {
-    if (mode === "ARCHITECTURE") {
-      const models = values(architecture.entryModels).filter((item): item is ElliottSettings["entryModel"] =>
-        ["CHOCH_MARKET", "CHOCH_RETRACE", "WAVE1_BREAK_RETRACE"].includes(item));
-      return product<string | number>([
-        models, numbers(architecture.zigzag), numbers(architecture.minSwing), numbers(architecture.wave1Atr),
-        numbers(architecture.efficiency), numbers(architecture.retracement), numbers(architecture.chochAtr),
-        numbers(architecture.minimumRr),
-      ]).map(([entryModel, zigzag, minSwing, wave1Atr, efficiency, retracement, chochAtr, minimumRr]) => ({
-        settings: { ...settings, elliott: {
-          ...settings.elliott, entryModel: entryModel as ElliottSettings["entryModel"],
-          zigzagReversalAtr: Number(zigzag), minSwingAtr: Number(minSwing), wave1MinAtr: Number(wave1Atr),
-          wave1MinEfficiency: Number(efficiency), entryRetracement: Number(retracement),
-          chochMinAtr: Number(chochAtr), minimumRr: Number(minimumRr),
-        } },
-        label: `${entryModel} · ZZ ${zigzag} · swing ${minSwing} · W1 ${wave1Atr} · RR≥${minimumRr}`,
-      }));
-    }
-    const counts = numbers(capital.takeCount).filter((item): item is 1 | 2 => item === 1 || item === 2);
+    const models = values(architecture.entryModels).filter((item): item is ElliottSettings["entryModel"] =>
+      ["CHOCH_MARKET", "CHOCH_RETRACE", "WAVE1_BREAK_RETRACE"].includes(item));
+    const architectureCandidates = product<string | number>([
+      models, rangeNumbers(architecture.zigzag, 0.25, 10), rangeNumbers(architecture.minSwing, 0, 10),
+      rangeNumbers(architecture.wave1Atr, 0, 20), rangeNumbers(architecture.efficiency, 0, 1),
+      rangeNumbers(architecture.retracement, 0, 1), rangeNumbers(architecture.chochAtr, 0, 10),
+      rangeNumbers(architecture.minimumRr, 0, 100, true),
+    ]);
+    const counts = rangeNumbers(capital.takeCount, 1, 2).filter((item): item is 1 | 2 => item === 1 || item === 2);
     const actions = values(capital.actions).filter((item): item is ElliottSettings["firstTakeAction"] =>
       ["PARTIAL_CLOSE", "MOVE_TO_BREAK_EVEN"].includes(item));
-    const generated = product<string | number | boolean>([
-      booleans(capital.margin), numbers(capital.leverage), booleans(capital.reinvest), counts,
-      numbers(capital.tp1), numbers(capital.tp2), actions,
-    ]).flatMap(([useMargin, leverage, reinvest, takeCount, tp1, tp2, action]) => {
-      const count = Number(takeCount) as 1 | 2;
-      if (count === 2 && Number(tp2) <= Number(tp1)) return [];
-      const actualLeverage = useMargin ? Number(leverage) : 1;
-      return [{
-        settings: { ...settings, leverage: actualLeverage, elliott: {
-          ...settings.elliott, useMargin: Boolean(useMargin), reinvestProfits: Boolean(reinvest),
-          takeProfitCount: count, takeProfitRr: Number(tp1), secondTakeProfitRr: Number(tp2),
-          firstTakeAction: action as ElliottSettings["firstTakeAction"],
-        } },
-        label: `${useMargin ? `${actualLeverage}×` : "без маржи"} · TP ${tp1}${count === 2 ? `/${tp2}` : ""} · ${reinvest ? "реинвест" : "фикс. база"}`,
-      }];
-    });
+    const capitalCandidates = product<string | number | boolean>([
+      rangeNumbers(capital.initialCapital, 0, 1_000_000_000, true), booleans(capital.margin),
+      rangeNumbers(capital.leverage, 1, 100), booleans(capital.reinvest), counts,
+      rangeNumbers(capital.tp1, 0, 100, true), rangeNumbers(capital.tp2, 0, 100, true), actions,
+    ]);
+    const generated = architectureCandidates.flatMap(
+      ([entryModel, zigzag, minSwing, wave1Atr, efficiency, retracement, chochAtr, minimumRr]) =>
+        capitalCandidates.flatMap(([initialCapital, useMargin, leverage, reinvest, takeCount, tp1, tp2, action]) => {
+          const count = Number(takeCount) as 1 | 2;
+          if (count === 2 && Number(tp2) <= Number(tp1)) return [];
+          const actualLeverage = useMargin ? Number(leverage) : 1;
+          return [{
+            settings: { ...settings, initialCapital: Number(initialCapital), leverage: actualLeverage, elliott: {
+              ...settings.elliott, entryModel: entryModel as ElliottSettings["entryModel"],
+              zigzagReversalAtr: Number(zigzag), minSwingAtr: Number(minSwing), wave1MinAtr: Number(wave1Atr),
+              wave1MinEfficiency: Number(efficiency), entryRetracement: Number(retracement), chochMinAtr: Number(chochAtr),
+              minimumRr: Number(minimumRr), useMargin: Boolean(useMargin), reinvestProfits: Boolean(reinvest),
+              takeProfitCount: count, takeProfitRr: Number(tp1), secondTakeProfitRr: Number(tp2),
+              firstTakeAction: action as ElliottSettings["firstTakeAction"],
+            } },
+            label: `${entryModel} · ZZ ${zigzag} · W1 ${wave1Atr} · ${initialCapital} · ${useMargin ? `${actualLeverage}×` : "без маржи"} · TP ${tp1}${count === 2 ? `/${tp2}` : ""}`,
+          }];
+        }),
+    );
     return [...new Map(generated.map((item) => [JSON.stringify(item.settings), item])).values()];
-  }, [architecture, capital, mode, settings]);
+  }, [architecture, capital, settings]);
 
   const ranked = [...rows].sort((left, right) => {
     const validationRank = (row: Row) => row.passed === true ? 2 : row.passed === false ? 1 : 0;
@@ -130,7 +129,7 @@ export function BacktestOptimizer({
     && Date.parse(validationPeriod.from) <= Date.parse(validationPeriod.to);
 
   const run = async () => {
-    if (!candidates.length || candidates.length > 60 || !periodsValid) return;
+    if (!candidates.length || !periodsValid) return;
     setRunning(true); setRows([]); setError(""); setStage("Перебор"); setDone(0); setTotal(candidates.length);
     try {
       const completed: Row[] = [];
@@ -156,8 +155,38 @@ export function BacktestOptimizer({
     } finally { setRunning(false); }
   };
 
-  const field = (label: string, value: string, update: (value: string) => void) =>
-    <TextField fullWidth label={label} value={value} onChange={(event) => update(event.target.value)} />;
+  const numberListField = (
+    label: string, value: string, update: (value: string) => void, minimum: number, maximum: number, options: number[],
+  ) => {
+    const selected = rangeNumbers(value, minimum, maximum);
+    const allOptions = [...new Set([...options, ...selected])].sort((left, right) => left - right);
+    return <FormControl fullWidth>
+      <InputLabel>{label}</InputLabel>
+      <Select multiple label={label} value={selected} onChange={(event) => {
+        const next = typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value;
+        if (next.length) update(next.join(","));
+      }} renderValue={(items) => items.join(", ")}>
+        {allOptions.map((option) => <MenuItem key={option} value={option}>
+          <Checkbox checked={selected.includes(option)} /><ListItemText primary={option} />
+        </MenuItem>)}
+      </Select>
+      <FormHelperText>Допустимо: {minimum}–{maximum}</FormHelperText>
+    </FormControl>;
+  };
+  const optionGroup = (
+    title: string, selected: string, options: Array<{ value: string; label: string }>, update: (value: string) => void,
+  ) => {
+    const selectedValues = values(selected);
+    return <Paper variant="outlined" sx={{ p: 1.5 }}>
+      <Typography variant="subtitle2">{title}</Typography>
+      <FormGroup row>{options.map((option) => <FormControlLabel key={option.value} label={option.label}
+        control={<Checkbox checked={selectedValues.includes(option.value)}
+          disabled={selectedValues.length === 1 && selectedValues.includes(option.value)}
+          onChange={(event) => update(event.target.checked
+            ? [...selectedValues, option.value].join(",")
+            : selectedValues.filter((value) => value !== option.value).join(","))} />} />)}</FormGroup>
+    </Paper>;
+  };
   const dateField = (label: string, period: Period, key: keyof Period, update: (period: Period) => void) =>
     <TextField type="date" label={label} value={period[key]} onChange={(event) => update({ ...period, [key]: event.target.value })}
       slotProps={{ inputLabel: { shrink: true } }} />;
@@ -169,11 +198,11 @@ export function BacktestOptimizer({
         Все комбинации сначала оцениваются на периоде перебора. Лучшие затем проверяются на независимом периоде валидации.
         Итоговый балл берётся по худшему из двух периодов.
       </Alert>
-      <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} sx={{ mb: 1.5 }}>
+      <Paper variant="outlined" sx={{ p: 2, mb: 1.5 }}><Stack spacing={1.5}>
         <TextField select fullWidth label="Актив" value={asset} onChange={(event) => setAsset(event.target.value)}>
           {assets.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}
         </TextField>
-        <Stack sx={{ flex: 2 }}>
+        <Stack>
           <Typography variant="caption" color="text.secondary">Таймфреймы перебора</Typography>
           <FormGroup row>
             {availableTimeframes.map((item) => <FormControlLabel key={item} label={item} control={<Checkbox
@@ -185,7 +214,7 @@ export function BacktestOptimizer({
             />} />)}
           </FormGroup>
         </Stack>
-      </Stack>
+      </Stack></Paper>
       <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
         {dateField("Перебор: с", optimizationPeriod, "from", setOptimizationPeriod)}
         {dateField("Перебор: по", optimizationPeriod, "to", setOptimizationPeriod)}
@@ -193,31 +222,71 @@ export function BacktestOptimizer({
         {dateField("Валидация: по", validationPeriod, "to", setValidationPeriod)}
       </Stack>
       {!periodsValid && <Alert severity="error" sx={{ mt: 1.5 }}>Периоды должны идти последовательно и не пересекаться.</Alert>}
-      <Tabs value={mode} onChange={(_, value) => { setMode(value); setRows([]); }} sx={{ mt: 2 }}>
-        <Tab value="ARCHITECTURE" label="Архитектурные параметры" />
-        <Tab value="CAPITAL" label="Капитал и управление" />
-      </Tabs>
-      <Alert severity="info" sx={{ my: 2 }}>Значения вводятся через запятую. Максимум 60 комбинаций.</Alert>
-      {mode === "ARCHITECTURE" ? <Stack spacing={1.5}>
-        {field("Модели входа", architecture.entryModels, (value) => setArchitecture({ ...architecture, entryModels: value }))}
-        <Typography variant="caption">CHOCH_MARKET, CHOCH_RETRACE, WAVE1_BREAK_RETRACE</Typography>
-        {field("ZigZag ATR", architecture.zigzag, (value) => setArchitecture({ ...architecture, zigzag: value }))}
-        {field("Мин. swing ATR", architecture.minSwing, (value) => setArchitecture({ ...architecture, minSwing: value }))}
-        {field("Wave 1 мин. ATR", architecture.wave1Atr, (value) => setArchitecture({ ...architecture, wave1Atr: value }))}
-        {field("Wave 1 efficiency", architecture.efficiency, (value) => setArchitecture({ ...architecture, efficiency: value }))}
-        {field("Retracement входа", architecture.retracement, (value) => setArchitecture({ ...architecture, retracement: value }))}
-        {field("CHOCH ATR", architecture.chochAtr, (value) => setArchitecture({ ...architecture, chochAtr: value }))}
-        {field("Минимальный RR", architecture.minimumRr, (value) => setArchitecture({ ...architecture, minimumRr: value }))}
-      </Stack> : <Stack spacing={1.5}>
-        {field("Маржа: false,true", capital.margin, (value) => setCapital({ ...capital, margin: value }))}
-        {field("Плечо", capital.leverage, (value) => setCapital({ ...capital, leverage: value }))}
-        {field("Реинвестирование: false,true", capital.reinvest, (value) => setCapital({ ...capital, reinvest: value }))}
-        {field("Количество тейков: 1,2", capital.takeCount, (value) => setCapital({ ...capital, takeCount: value }))}
-        {field("TP1 RR", capital.tp1, (value) => setCapital({ ...capital, tp1: value }))}
-        {field("TP2 RR", capital.tp2, (value) => setCapital({ ...capital, tp2: value }))}
-        {field("Действия TP1", capital.actions, (value) => setCapital({ ...capital, actions: value }))}
-        <Typography variant="caption">PARTIAL_CLOSE, MOVE_TO_BREAK_EVEN</Typography>
-      </Stack>}
+      <Paper variant="outlined" sx={{ mt: 2, p: 2 }}><Stack spacing={2}>
+        <Typography variant="h6">Единый набор параметров</Typography>
+        <Typography variant="body2" color="text.secondary">
+          Архитектура и капитал объединяются во все возможные комбинации. Числовые значения выбираются чекбоксами.
+        </Typography>
+        <Typography variant="subtitle1">Архитектура Elliott</Typography>
+        {optionGroup("Модели входа", architecture.entryModels, [
+          { value: "CHOCH_MARKET", label: "CHOCH market" }, { value: "CHOCH_RETRACE", label: "CHOCH retrace" },
+          { value: "WAVE1_BREAK_RETRACE", label: "P1 break + retrace" },
+        ], (value) => setArchitecture({ ...architecture, entryModels: value }))}
+        <Paper variant="outlined" sx={{ p: 2 }}><Stack spacing={1.5}>
+          <Typography variant="subtitle2">ATR ZigZag и первая волна</Typography>
+          <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
+            {numberListField("Разворот ZigZag, ATR", architecture.zigzag,
+              (value) => setArchitecture({ ...architecture, zigzag: value }), 0.25, 10, [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 5, 10])}
+            {numberListField("Минимальный swing, ATR", architecture.minSwing,
+              (value) => setArchitecture({ ...architecture, minSwing: value }), 0, 10, [0, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 5, 10])}
+            {numberListField("Wave 1 минимум, ATR", architecture.wave1Atr,
+              (value) => setArchitecture({ ...architecture, wave1Atr: value }), 0, 20, [0, 0.5, 1, 1.5, 2, 3, 5, 10, 20])}
+          </Stack>
+          <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
+            {numberListField("Wave 1 efficiency", architecture.efficiency,
+              (value) => setArchitecture({ ...architecture, efficiency: value }), 0, 1, [0, 0.25, 0.35, 0.45, 0.5, 0.6, 0.75, 1])}
+            {numberListField("Retracement входа", architecture.retracement,
+              (value) => setArchitecture({ ...architecture, retracement: value }), 0, 1, [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1])}
+          </Stack>
+        </Stack></Paper>
+        <Paper variant="outlined" sx={{ p: 2 }}><Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
+          {numberListField("CHOCH displacement, ATR", architecture.chochAtr,
+            (value) => setArchitecture({ ...architecture, chochAtr: value }), 0, 10, [0, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 5, 10])}
+          {numberListField("Минимальный RR", architecture.minimumRr,
+            (value) => setArchitecture({ ...architecture, minimumRr: value }), 0.01, 100, [0.5, 1, 1.5, 2, 3, 4, 5, 8, 10, 20, 50, 100])}
+        </Stack></Paper>
+        <Typography variant="subtitle1">Капитал и управление</Typography>
+        <Paper variant="outlined" sx={{ p: 2 }}><Stack spacing={1.5}>
+          {numberListField("Начальный капитал", capital.initialCapital,
+            (value) => setCapital({ ...capital, initialCapital: value }), 0.01, 1_000_000_000,
+            [100, 500, 1_000, 5_000, 10_000, 25_000, 50_000, 100_000, 1_000_000])}
+          {optionGroup("Режим позиции", capital.margin, [
+            { value: "false", label: "Без маржи" }, { value: "true", label: "С маржой" },
+          ], (value) => setCapital({ ...capital, margin: value }))}
+          <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
+            {numberListField("Плечо", capital.leverage,
+              (value) => setCapital({ ...capital, leverage: value }), 1, 100, [1, 2, 3, 5, 10, 20, 50, 100])}
+            {optionGroup("Реинвестирование", capital.reinvest, [
+              { value: "true", label: "Включено" }, { value: "false", label: "Выключено" },
+            ], (value) => setCapital({ ...capital, reinvest: value }))}
+          </Stack>
+        </Stack></Paper>
+        <Paper variant="outlined" sx={{ p: 2 }}><Stack spacing={1.5}>
+          {optionGroup("Количество тейков", capital.takeCount, [
+            { value: "1", label: "1 тейк" }, { value: "2", label: "2 тейка" },
+          ], (value) => setCapital({ ...capital, takeCount: value }))}
+          <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
+            {numberListField("TP1, RR", capital.tp1, (value) => setCapital({ ...capital, tp1: value }),
+              0.01, 100, [0.5, 1, 1.5, 2, 3, 4, 5, 8, 10, 20, 50, 100])}
+            {numberListField("TP2, RR", capital.tp2, (value) => setCapital({ ...capital, tp2: value }),
+              0.01, 100, [0.5, 1, 1.5, 2, 3, 4, 5, 8, 10, 20, 50, 100])}
+          </Stack>
+          {optionGroup("Действие при TP1", capital.actions, [
+            { value: "PARTIAL_CLOSE", label: "Закрыть 50%" },
+            { value: "MOVE_TO_BREAK_EVEN", label: "Перенести стоп в безубыток" },
+          ], (value) => setCapital({ ...capital, actions: value }))}
+        </Stack></Paper>
+      </Stack></Paper>
       <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} sx={{ mt: 2 }}>
         <TextField select fullWidth label="Критерий результата" value={metric} onChange={(event) => setMetric(event.target.value as Metric)}>
           <MenuItem value="RETURN_DD">Доходность − просадка</MenuItem>
@@ -236,12 +305,11 @@ export function BacktestOptimizer({
           onChange={(event) => setMaximumDrawdown(Math.max(0, Number(event.target.value)))} />
       </Stack>
       <Button variant="contained"
-        disabled={running || !asset || !timeframes.length || !candidates.length || candidates.length > 60 || !periodsValid}
+        disabled={running || !asset || !timeframes.length || !candidates.length || !periodsValid}
         onClick={() => void run()} sx={{ mt: 2 }}>
         {running ? `${stage}: ${done} из ${total}` : `Запустить ${candidates.length} комбинаций`}
       </Button>
       {running && <LinearProgress variant="determinate" value={total ? done / total * 100 : 0} sx={{ mt: 1.5 }} />}
-      {candidates.length > 60 && <Alert severity="error" sx={{ mt: 1.5 }}>Слишком много комбинаций: {candidates.length}.</Alert>}
       {error && <Alert severity="error" sx={{ mt: 1.5 }}>{error}</Alert>}
     </Paper>
     {!!rows.length && <Paper variant="outlined" sx={{ p: 3 }}>
