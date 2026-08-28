@@ -16,6 +16,10 @@ TIMEFRAME_MILLISECONDS = {
     Timeframe.M30: 1_800_000, Timeframe.H1: 3_600_000,
     Timeframe.H4: 14_400_000, Timeframe.D1: 86_400_000,
 }
+TIMEFRAME_PRIORITY = {
+    Timeframe.M1: 1, Timeframe.M5: 2, Timeframe.M15: 3, Timeframe.M30: 4,
+    Timeframe.H1: 5, Timeframe.H4: 6, Timeframe.D1: 7,
+}
 
 
 class AlgorithmConfig(BaseModel):
@@ -138,22 +142,15 @@ class AlgorithmEngine:
 
     def generate(self, candle: Candle, pipeline, selected: set[str] | None = None) -> list[AlgorithmSignal]:
         key = (candle.symbol, candle.timeframe)
-        bars = pipeline.candles[key]
         result = []
         for config in self.store.enabled(selected):
             if candle.timeframe not in config.execution_timeframes:
                 continue
-            trend = pipeline.trends.get(key)
+            trend_key = (candle.symbol, Timeframe.M15)
+            trend = pipeline.trends.get(trend_key)
             if not trend or trend.direction == TrendDirection.SIDEWAYS:
-                self._reject(config.id, "NO_TREND"); continue
+                self._reject(config.id, "NO_M15_TREND"); continue
             direction = "LONG" if trend.direction == TrendDirection.UP else "SHORT"
-            if not config.avoid_countertrend_entries:
-                # When explicitly disabled, permit the newest eligible POI to
-                # define the side, including a counter-trend retest.
-                newest = max((item for item in pipeline.obs[key] if not item.is_broken),
-                             key=lambda item: item.created_at, default=None)
-                if newest is not None:
-                    direction = "LONG" if newest.type == Direction.BULLISH else "SHORT"
             side = Direction.BULLISH if direction == "LONG" else Direction.BEARISH
             if direction not in config.allowed_directions:
                 continue
@@ -161,15 +158,25 @@ class AlgorithmEngine:
                                                       or (direction == "SHORT" and trend.direction != TrendDirection.DOWN)):
                 self._reject(config.id, "COUNTERTREND_ENTRY_BLOCKED")
                 continue
-            blocks = [item for item in pipeline.obs[key] if item.type == side and not item.is_broken
+            blocks = [item for context_key,items in pipeline.obs.items()
+                      if context_key[0] == candle.symbol for item in items
+                      if item.type == side and not item.is_broken
                       and not (config.one_trade_per_zone and item.traded)
                       and item.strength_score >= config.minimum_ob_strength
                       and item.displacement_atr >= config.minimum_impulse_atr]
             if not blocks:
                 self._reject(config.id, "NO_ACTIVE_OB"); continue
-            block = max(blocks, key=lambda item: item.created_at)
+            # Distance is the primary selector. If two zones are equally close,
+            # the higher timeframe carries more structural weight.
+            block = min(blocks, key=lambda item: (
+                abs((item.zone_low+item.zone_high)/2-candle.close),
+                -TIMEFRAME_PRIORITY[item.timeframe], -item.created_at,
+            ))
+            source_key = (candle.symbol, block.timeframe)
+            bars = pipeline.candles[source_key]
+            source_candle = bars[-1]
             if config.require_ob_caused_bos:
-                source_break = next((item for item in pipeline.changes[key]
+                source_break = next((item for item in pipeline.changes[source_key]
                                      if item.id == block.source_break_id
                                      and (block.source_candle_timestamp is None or item.timestamp >= block.source_candle_timestamp)), None)
                 if not source_break or not source_break.broken_swing_id or block.source_candle_timestamp is None:
@@ -177,13 +184,13 @@ class AlgorithmEngine:
             if config.require_liquidity_sweep_before_ob:
                 required_pool = "SELL_STOP" if direction == "LONG" else "BUY_STOP"
                 sweep_deadline = block.source_candle_timestamp or block.created_at
-                sweep = next((item for item in reversed(pipeline.liquidity[key])
+                sweep = next((item for item in reversed(pipeline.liquidity[source_key])
                               if item.type == required_pool and item.swept
                               and item.swept_at is not None and item.swept_at <= sweep_deadline), None)
                 if not sweep:
                     self._reject(config.id, "NO_LIQUIDITY_SWEEP_BEFORE_OB"); continue
             if config.require_ob_in_ote_zone:
-                structural = [item for item in pipeline.swings[key] if item.timestamp <= block.created_at]
+                structural = [item for item in pipeline.swings[source_key] if item.timestamp <= block.created_at]
                 highs = [item.price for item in structural if item.type == SwingType.HIGH]
                 lows = [item.price for item in structural if item.type == SwingType.LOW]
                 if not highs or not lows:
@@ -198,7 +205,7 @@ class AlgorithmEngine:
                 ob_midpoint = (block.zone_low + block.zone_high) / 2
                 if not ote_low <= ob_midpoint <= ote_high:
                     self._reject(config.id, "OB_OUTSIDE_OTE_ZONE"); continue
-            gaps = [item for item in pipeline.fvgs[key] if item.type == side and not item.is_filled
+            gaps = [item for item in pipeline.fvgs[source_key] if item.type == side and not item.is_filled
                     and item.size_atr >= config.minimum_fvg_size_atr]
             overlap = next((item for item in gaps if item.zone_low <= block.zone_high
                             and item.zone_high >= block.zone_low), None)
@@ -207,7 +214,7 @@ class AlgorithmEngine:
             current_atr = atr(bars)
             recent = bars[-config.volume_period:]
             average_volume = sum(item.volume for item in recent) / max(len(recent), 1)
-            volume_ratio = candle.volume / max(average_volume, 1e-12)
+            volume_ratio = source_candle.volume / max(average_volume, 1e-12)
             if volume_ratio < config.minimum_volume_ratio:
                 self._reject(config.id, "LOW_VOLUME"); continue
             current_adx = adx(bars, config.adx_period)
@@ -236,7 +243,20 @@ class AlgorithmEngine:
             risk = abs(entry-stop)
             if risk <= 0:
                 self._reject(config.id, "INVALID_RISK"); continue
-            targets = [entry + risk*ratio*(1 if direction == "LONG" else -1) for ratio in config.risk_reward]
+            target_pool = "BUY_STOP" if direction == "LONG" else "SELL_STOP"
+            target_candidates = [item for context_key,items in pipeline.liquidity.items()
+                                 if context_key[0] == candle.symbol for item in items
+                                 if item.type == target_pool and not item.swept
+                                 and (item.price_level > entry if direction == "LONG" else item.price_level < entry)]
+            if not target_candidates:
+                self._reject(config.id, "NO_TARGET_LIQUIDITY"); continue
+            target_liquidity = min(target_candidates, key=lambda item: (
+                abs(item.price_level-entry), -TIMEFRAME_PRIORITY[item.timeframe], -item.created_at,
+            ))
+            target_rr = abs(target_liquidity.price_level-entry)/risk
+            if target_rr < config.minimum_rr:
+                self._reject(config.id, "TARGET_RR_TOO_LOW"); continue
+            targets = [target_liquidity.price_level]
             identity = f"{config.id}:{block.id}"
             if identity in self.emitted:
                 continue
@@ -245,12 +265,14 @@ class AlgorithmEngine:
                         + .15*min(50, current_adx)/50)
             signal_id = str(uuid5(NAMESPACE_URL, identity))
             result.append(AlgorithmSignal(
-                id=signal_id, config_id=config.id, symbol=candle.symbol, timeframe=candle.timeframe,
+                id=signal_id, config_id=config.id, symbol=candle.symbol, timeframe=block.timeframe,
                 direction=direction, entry_zone_low=low, entry_zone_high=high,
                 stop_loss_price=stop, take_profit_prices=targets, score=score,
                 reason_codes=["FIXED_BOS_OB_RETEST", "OB_CAUSED_BOS", "LIQUIDITY_SWEEP_BEFORE_OB",
-                              "OB_IN_OTE_ZONE", f"ADX:{current_adx:.2f}", f"VOLUME_RATIO:{volume_ratio:.2f}"],
-                object_ids=[block.id] + ([selected_gap.id] if selected_gap else []), zone_id=block.id,
+                              "OB_IN_OTE_ZONE", "TREND_M15", f"SOURCE_TF:{block.timeframe.value}",
+                              "TARGET_LIQUIDITY", f"TARGET_TF:{target_liquidity.timeframe.value}", f"TARGET_RR:{target_rr:.2f}",
+                              f"ADX:{current_adx:.2f}", f"VOLUME_RATIO:{volume_ratio:.2f}"],
+                object_ids=[block.id,target_liquidity.id] + ([selected_gap.id] if selected_gap else []), zone_id=block.id,
                 one_trade_per_zone=config.one_trade_per_zone,
                 target_allocations=config.target_allocations,
                 break_even_rule=config.break_even_rule,

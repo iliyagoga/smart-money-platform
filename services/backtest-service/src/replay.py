@@ -5,6 +5,7 @@ from math import ceil, floor, sqrt
 from statistics import mean, pstdev
 
 from smc_core.engines import AnalysisPipeline, atr
+from smc_core.external_smc import SmartMoneyConceptsAdapter, available as external_smc_available
 from smc_core.models import Candle, Timeframe
 from smc_core.algorithm import AlgorithmConfig, AlgorithmConfigStore, AlgorithmEngine, adx
 
@@ -59,6 +60,22 @@ def initialize_indicators(candles_by_timeframe: dict[str, list[dict]], adx_perio
             item["indicators"] = dict(candle.indicators)
 
 
+def precompute_external_patterns(candles_by_timeframe: dict[str, list[dict]], swing_length: int = 5) -> dict:
+    """Run the batch-only third-party detector once per timeframe.
+
+    Rows carry their confirmation timestamp, so replay releases them only when
+    the confirming candle has closed and remains look-ahead safe.
+    """
+    if not external_smc_available():
+        return {}
+    adapter = SmartMoneyConceptsAdapter(swing_length)
+    result = {}
+    for timeframe, values in candles_by_timeframe.items():
+        groups = adapter.detect([_candle(item) for item in values])
+        result[timeframe] = tuple(sorted(group, key=lambda row: row.get("available_at", row["timestamp"])) for group in groups)
+    return result
+
+
 def _chart_candles(candles: list[dict], maximum: int = 50_000) -> list[dict]:
     """Return real exchange candles, never synthetic bars mislabeled as a timeframe.
 
@@ -80,35 +97,28 @@ def _execution_plan(entry: float, scenario, minimum_stop_percent: float, tick_si
                     maximum_target_rr: float = 8) -> tuple[float, list[float]]:
     """Rebase the structural plan on the actual fill and enforce a usable stop distance."""
     side = 1 if scenario.direction == "LONG" else -1
-    planned_entry = (scenario.entry_zone_low + scenario.entry_zone_high) / 2
-    planned_risk = (planned_entry - scenario.stop_loss_price) * side
     structural_risk = (entry - scenario.stop_loss_price) * side
     minimum_risk = entry * minimum_stop_percent / 100
     risk = max(structural_risk, minimum_risk, tick_size)
 
-    # Preserve each scenario target's intended R multiple, but measure it from
-    # the actual fill and the corrected stop instead of the zone midpoint.
-    ratios = []
-    if planned_risk > 0:
-        ratios = [
-            (target - planned_entry) * side / planned_risk
-            for target in scenario.take_profit_prices
-            if (target - planned_entry) * side > 0
-        ]
-    ratios = [ratio for ratio in ratios if minimum_target_rr <= ratio <= maximum_target_rr]
-    fixed = [ratio for ratio in (fixed_ratios or [2]) if minimum_target_rr <= ratio <= maximum_target_rr]
-    # Every position has one final target. Prefer the structural objective and
-    # fall back to the template's deterministic R multiple.
-    ratios = ratios[:1] or fixed[:1]
-    if not ratios:
-        ratios = [minimum_target_rr]
-
     if side > 0:
         stop = floor((entry - risk) / tick_size) * tick_size
-        targets = [ceil((entry + risk * ratio) / tick_size) * tick_size for ratio in ratios]
     else:
         stop = ceil((entry + risk) / tick_size) * tick_size
-        targets = [floor((entry - risk * ratio) / tick_size) * tick_size for ratio in ratios]
+    actual_risk = abs(entry-stop)
+    targets = []
+    for target in scenario.take_profit_prices:
+        reward = (target-entry)*side
+        ratio = reward/max(actual_risk,1e-12)
+        if minimum_target_rr <= ratio <= maximum_target_rr:
+            # A take-profit limit must not be placed beyond the structural
+            # liquidity level due to tick-size rounding.
+            rounded = (floor(target/tick_size)*tick_size if side > 0
+                       else ceil(target/tick_size)*tick_size)
+            if (rounded-entry)*side > 0:
+                targets.append(rounded)
+        if targets:
+            break
     return stop, list(dict.fromkeys(targets))
 
 
@@ -138,12 +148,18 @@ def run_smc_replay(
     config: BacktestConfig,
     template_dir: str,
     model=None,
+    detailed: bool = True,
+    external_patterns: dict | None = None,
 ) -> dict:
     adx_periods = {14}
     for override in config.algorithm_overrides.values():
         adx_periods.add(override.adx_period)
     initialize_indicators(candles_by_tf, adx_periods)
-    pipeline = AnalysisPipeline()
+    if external_patterns is None:
+        external_patterns = precompute_external_patterns(candles_by_tf)
+    # Native detection handles candle-by-candle state while confirmed patterns
+    # from the external batch library are merged from the one-time precompute.
+    pipeline = AnalysisPipeline(use_external=False, external_patterns=external_patterns)
     store = AlgorithmConfigStore(template_dir)
     if config.algorithm_overrides:
         configured = {item.id: item for item in store.list()}
@@ -360,6 +376,9 @@ def run_smc_replay(
                     if template and not _template_stop_distance_allowed(entry, stop, template):
                         set_scenario_status(scenario.id, "REJECTED_STOP_DISTANCE")
                         rejected_ids.add(scenario.id)
+                    elif not targets:
+                        set_scenario_status(scenario.id, "REJECTED_TARGET_RR")
+                        rejected_ids.add(scenario.id)
                     else:
                         executable.append((candidate, entry, stop, targets))
                 if rejected_ids:
@@ -381,7 +400,7 @@ def run_smc_replay(
                         capital -= entry_fee
                         position = VirtualPosition(
                             scenario.direction, entry, available_at, quantity, stop,
-                            targets, scenario.id, scenario.setup_type, confidence, quantity,
+                            list(targets), scenario.id, scenario.setup_type, confidence, quantity,
                             target_allocations=_target_allocations(template, len(targets)),
                             break_even_rule=getattr(template, "break_even_rule", "ONE_R") if template else "ONE_R",
                             move_stop_to_break_even_after_target=(
@@ -397,7 +416,7 @@ def run_smc_replay(
                         report_scenario["entry_price"] = entry
                         report_scenario["entry_time"] = available_at
                         report_scenario["stop_loss_price"] = stop
-                        report_scenario["take_profit_prices"] = targets
+                        report_scenario["take_profit_prices"] = list(targets)
                     else:
                         set_scenario_status(scenario.id, "REJECTED_SIZE")
                     for item in pending:
@@ -429,6 +448,16 @@ def run_smc_replay(
         }
         for timeframe in candles_by_tf
     }
+    if not detailed:
+        # Optimization only consumes aggregate metrics. Keeping the complete
+        # candle/equity/scenario payload for every grid candidate multiplied
+        # memory usage by the number of candidates (often several GiB).
+        for key in (
+            "trades", "equity", "decisions", "scenarios", "algorithm_signals",
+            "chart_candles", "chart_candles_by_timeframe", "structure_overlays_by_timeframe",
+            "pattern_diagnostics",
+        ):
+            report.pop(key, None)
     return report
 
 

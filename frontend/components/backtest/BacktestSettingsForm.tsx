@@ -4,10 +4,10 @@ import { Button, Checkbox, FormControl, FormControlLabel, InputLabel, ListItemTe
 import type { BacktestSettings, DirectionMode } from "../../lib/backtest/types";
 
 interface Props { isRunning: boolean; onChange: (settings: BacktestSettings) => void; onRun: () => void; progress: number;
-  testsCompleted: number; testsTotal: number; progressStage?: string; settings: BacktestSettings; templates: Array<{ id: string; name: string }> }
+  testsCompleted: number; testsTotal: number; progressStage?: string; runStatus?: string; settings: BacktestSettings; templates: Array<{ id: string; name: string }> }
 type BoundKey = keyof BacktestSettings["optimizationBounds"];
 
-export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, progressStage, settings, templates, testsCompleted, testsTotal }: Props) {
+export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, progressStage, runStatus, settings, templates, testsCompleted, testsTotal }: Props) {
   const updateNumber = (key: keyof BacktestSettings, value: string) => onChange({ ...settings, [key]: Number(value) });
   const updateBound = (key: BoundKey, side: "minimum" | "maximum", value: string) => onChange({
     ...settings, optimizationBounds: { ...settings.optimizationBounds,
@@ -80,7 +80,7 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, pro
         <TextField fullWidth label="Доля объёма, %" value={settings.volumeParticipationPercent} type="number" onChange={(e) => updateNumber("volumeParticipationPercent",e.target.value)} />
       </Stack>
       <Button variant="contained" size="large" disabled={!isValid || isRunning} onClick={onRun}>
-        {isRunning ? (testsTotal ? `${progressStage === "VALIDATION" ? "Валидация" : "Оптимизация"}: ${testsCompleted} / ${testsTotal}`
+        {isRunning ? (runStatus === "QUEUED" ? "Ожидание в очереди…" : progressStage === "PREPARING_PATTERNS" ? "Определение SMC-паттернов…" : testsTotal ? `${progressStage === "VALIDATION" ? "Валидация" : "Оптимизация"}: ${testsCompleted} / ${testsTotal}`
           : `Подготовка данных… ${progress}%`) : settings.autoOptimize ? "Подобрать и проверить" : "Запустить бэктест"}
       </Button>
       {!isValid && <Typography variant="caption" color="error.main">Проверьте границы, риск и выбранный шаблон.</Typography>}

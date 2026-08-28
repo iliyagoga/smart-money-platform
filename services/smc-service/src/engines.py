@@ -1,5 +1,6 @@
 from __future__ import annotations
 from collections import defaultdict
+import heapq
 import os
 from .models import *
 from .external_smc import SmartMoneyConceptsAdapter, available as external_smc_available
@@ -145,12 +146,49 @@ class LiquidityEngine:
 
 
 class AnalysisPipeline:
-    def __init__(self,lookback=5):
+    def __init__(self,lookback=5,use_external:bool=True,external_patterns:dict|None=None):
         self.candles=defaultdict(list);self.swings=defaultdict(list);self.trends={};self.changes=defaultdict(list);self.seen=defaultdict(set)
         self.obs=defaultdict(list);self.fvgs=defaultdict(list);self.liquidity=defaultdict(list)
         self.swing_engine=SwingEngine(lookback);self.trend_engine=TrendEngine();self.structure_engine=StructureEngine();self.ob_engine=OrderBlockEngine();self.fvg_engine=FVGEngine();self.liquidity_engine=LiquidityEngine()
-        provider = os.getenv("SMC_PROVIDER", "smartmoneyconcepts").lower()
-        self.external = SmartMoneyConceptsAdapter(lookback) if provider in {"smartmoneyconcepts", "smc"} and external_smc_available() else None
+        # The external package is batch-oriented and becomes prohibitively slow
+        # when live restore feeds candles one by one. Keep it opt-in; the native
+        # pipeline is incremental and is the safe default for live and replay.
+        provider = os.getenv("SMC_PROVIDER", "native").lower()
+        self.external = (SmartMoneyConceptsAdapter(lookback)
+                         if use_external and provider in {"smartmoneyconcepts", "smc"} and external_smc_available()
+                         else None)
+        self.external_patterns=external_patterns or {};self.external_cursors=defaultdict(lambda:[0,0,0,0,0]);self.external_ends=defaultdict(list)
+
+    def _merge_external(self,key,candle,result):
+        patterns=self.external_patterns.get(candle.timeframe.value)
+        if not patterns:return result
+        collections=(self.swings[key],self.changes[key],self.obs[key],self.fvgs[key],self.liquidity[key])
+        created=[[],[],[],[],[]]; cursors=self.external_cursors[key]
+        for group_index,rows in enumerate(patterns):
+            while cursors[group_index]<len(rows) and rows[cursors[group_index]].get("available_at",0)<=candle.timestamp:
+                row=rows[cursors[group_index]];cursors[group_index]+=1
+                if group_index==0:
+                    item=Swing(symbol=candle.symbol,timeframe=candle.timeframe,timestamp=row["timestamp"],price=row["price"],type=SwingType(row["type"]),lookback=self.swing_engine.lookback,id=row["id"])
+                elif group_index==1:
+                    item=StructureChange(symbol=candle.symbol,timeframe=candle.timeframe,type=row["type"],direction=Direction(row["direction"]),break_level_price=row["price"],timestamp=row["timestamp"],id=row["id"],broken_swing_id=row.get("broken_swing_id"))
+                elif group_index==2:
+                    item=OrderBlock(symbol=candle.symbol,timeframe=candle.timeframe,type=Direction(row["direction"]),zone_low=row["low"],zone_high=row["high"],created_at=row["timestamp"],id=row["id"],strength_score=row.get("strength",.5),source_break_id=row.get("source_break_id"),source_candle_timestamp=row["timestamp"],displacement_atr=row.get("displacement_atr",0),body_low=row.get("body_low"),body_high=row.get("body_high"))
+                elif group_index==3:
+                    item=FVG(symbol=candle.symbol,timeframe=candle.timeframe,type=Direction(row["direction"]),zone_low=row["low"],zone_high=row["high"],created_at=row["timestamp"],id=row["id"],consequent_encroachment=row.get("ce"),size_atr=row.get("size_atr",0),displacement_atr=row.get("displacement_atr",0))
+                else:
+                    item=LiquidityZone(symbol=candle.symbol,timeframe=candle.timeframe,type=row["type"],price_level=row["price"],created_at=row["timestamp"],id=row["id"])
+                collections[group_index].append(item);created[group_index].append(item)
+                end_at=row.get("swept_at") if group_index==4 else row.get("end_at")
+                if end_at is not None:heapq.heappush(self.external_ends[key],(end_at,group_index,item.id,item))
+        changed_ob=[];changed_fvg=[];changed_liq=[]
+        endings=self.external_ends[key]
+        while endings and endings[0][0]<=candle.timestamp:
+            end_at,group_index,_,item=heapq.heappop(endings)
+            if group_index==2:item.is_broken=True;item.is_active=False;changed_ob.append(item)
+            elif group_index==3:item.is_filled=True;item.fill_percent=1;changed_fvg.append(item)
+            elif group_index==4:item.swept=True;item.swept_at=end_at;changed_liq.append(item)
+        if created[0]:self.trends[key]=self.trend_engine.calculate(self.swings[key],candle.timestamp)
+        return AnalysisResult(swings=result.swings+created[0],trend=self.trends[key],changes=result.changes+created[1],order_blocks=result.order_blocks+created[2]+changed_ob,fvgs=result.fvgs+created[3]+changed_fvg,liquidity_zones=result.liquidity_zones+created[4]+changed_liq)
     def process(self,candle:Candle)->AnalysisResult:
         key=(candle.symbol,candle.timeframe);bars=self.candles[key]
         if bars and candle.timestamp<=bars[-1].timestamp:
@@ -192,4 +230,5 @@ class AnalysisPipeline:
         active_liquidity=[item for item in self.liquidity[key] if not item.swept]
         swept_liquidity=[item for item in self.liquidity[key] if item.swept][-100:]
         self.liquidity[key][:]=(active_liquidity[-500:]+swept_liquidity)
-        return AnalysisResult(swings=new_swings,trend=trend,changes=changes,order_blocks=new_obs+changed_obs,fvgs=new_fvgs+changed_fvgs,liquidity_zones=new_liq+changed_liq)
+        result=AnalysisResult(swings=new_swings,trend=trend,changes=changes,order_blocks=new_obs+changed_obs,fvgs=new_fvgs+changed_fvgs,liquidity_zones=new_liq+changed_liq)
+        return self._merge_external(key,candle,result)

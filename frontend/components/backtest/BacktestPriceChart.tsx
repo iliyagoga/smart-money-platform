@@ -1,11 +1,14 @@
 "use client";
 
 import { Box, Button, Chip, CircularProgress, FormControlLabel, MenuItem, Pagination, Paper, Stack, Switch, TextField, Typography } from "@mui/material";
-import { BaselineSeries, CandlestickSeries, ColorType, HistogramSeries, LineSeries, LineType, createChart, createSeriesMarkers, type IChartApi, type UTCTimestamp } from "lightweight-charts";
+import { BaselineSeries, CandlestickSeries, ColorType, HistogramSeries, LineSeries, LineType, createChart, createSeriesMarkers, type IChartApi, type LogicalRange, type UTCTimestamp } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { BacktestChartCandle, BacktestScenario, BacktestStructureOverlay, BacktestTrade } from "../../lib/backtest/types";
 
 const chartTime = (timestamp: number) => Math.floor(timestamp/1000) as UTCTimestamp;
+const uniqueSortedPoints = <T extends { time: UTCTimestamp }>(points: T[]) =>
+  [...new Map(points.map((point) => [Number(point.time), point])).values()]
+    .sort((left, right) => Number(left.time)-Number(right.time));
 
 const candleTimeForMarker = (timestamp: number, candles: BacktestChartCandle[]) => {
   if (!candles.length || timestamp < candles[0].timestamp || timestamp > candles[candles.length-1].timestamp) return undefined;
@@ -31,7 +34,7 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, overlaysByTime
   const [selectedScenario, setSelectedScenario] = useState("ALL");
   const [direction, setDirection] = useState<"ALL" | "LONG" | "SHORT">("ALL");
   const [visibleTemplates, setVisibleTemplates] = useState<string[]>([]);
-  const [zoneLimit, setZoneLimit] = useState(100);
+  const [zoneLimit, setZoneLimit] = useState(25);
   const [zonePage, setZonePage] = useState(1);
   const [showEntryZones, setShowEntryZones] = useState(false);
   const [showFractals, setShowFractals] = useState(true);
@@ -49,6 +52,7 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, overlaysByTime
   const fullscreenRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const fitRef = useRef<(scenario?: BacktestScenario) => void>(() => undefined);
+  const viewportRef = useRef<{ context: string; range: LogicalRange } | undefined>(undefined);
   const selectedCandles = candlesByTimeframe[timeframe] ?? candles;
   const selectedOverlay = overlaysByTimeframe[timeframe];
   const timeframeScenarios = useMemo(
@@ -62,9 +66,12 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, overlaysByTime
   const scenariosById = useMemo(() => new Map(scenarios.map((item) => [item.id, item])), [scenarios]);
   const visibleTrades = useMemo(() => trades.filter((trade) => {
     if (selectedScenario !== "ALL" && trade.scenarioId !== selectedScenario) return false;
-    if (!available.length || !trade.scenarioId) return true;
-    return scenarioTimeframes.get(trade.scenarioId) === timeframe;
-  }), [available.length, scenarioTimeframes, selectedScenario, timeframe, trades]);
+    return true;
+  }), [selectedScenario, trades]);
+  const visibleTradeTimeframes = useMemo(() => [...new Set(visibleTrades.flatMap((trade) => {
+    const source = trade.scenarioId ? scenarioTimeframes.get(trade.scenarioId) : undefined;
+    return source ? [source] : [];
+  }))].sort(), [scenarioTimeframes, visibleTrades]);
   const templates = useMemo(() => [...new Set(timeframeScenarios.map((item) => item.templateId))].sort(), [timeframeScenarios]);
   const filteredScenarios = useMemo(() => timeframeScenarios.filter((item) =>
     (direction === "ALL" || item.direction === direction)
@@ -86,6 +93,8 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, overlaysByTime
   useEffect(() => {
     const container = containerRef.current;
     if (!container || !selectedCandles.length) return;
+    const viewportContext = `${timeframe}:${selectedScenario}`;
+    const preservedViewport = viewportRef.current?.context === viewportContext ? viewportRef.current.range : undefined;
     setIsRendering(true);
     let chart: IChartApi | undefined;
     let observer: ResizeObserver | undefined;
@@ -105,17 +114,17 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, overlaysByTime
       upColor: "#26a69a", downColor: "#ef5350", wickUpColor: "#26a69a", wickDownColor: "#ef5350",
       borderVisible: false,
     });
-    candleSeries.setData(selectedCandles.map((item) => ({
+    candleSeries.setData(uniqueSortedPoints(selectedCandles.map((item) => ({
       time: chartTime(item.timestamp), open: item.open, high: item.high, low: item.low, close: item.close,
-    })));
+    }))));
     if (selectedOverlay && showFractals && selectedOverlay.swings.length > 1) {
       const fractals = activeChart.addSeries(LineSeries, {
         color: "rgba(255,255,255,.72)", lineWidth: 1, lineStyle: 2, title: "Fractals",
         lastValueVisible: false, priceLineVisible: false,
       });
-      fractals.setData(selectedOverlay.swings
+      fractals.setData(uniqueSortedPoints(selectedOverlay.swings
         .filter((item) => item.timestamp >= selectedCandles[0].timestamp && item.timestamp <= selectedCandles[selectedCandles.length-1].timestamp)
-        .map((item) => ({ time: chartTime(item.timestamp), value: item.price })));
+        .map((item) => ({ time: chartTime(item.timestamp), value: item.price }))));
     }
     if (selectedOverlay && showBos) {
       (["BULLISH", "BEARISH"] as const).forEach((direction) => {
@@ -127,11 +136,11 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, overlaysByTime
           lineWidth: 1, lineType: LineType.WithSteps, title: `${direction === "BULLISH" ? "Long" : "Short"} BOS`,
           lastValueVisible: false, priceLineVisible: false,
         });
-        bos.setData(points.map((item) => ({ time: chartTime(item.timestamp), value: item.price })));
+        bos.setData(uniqueSortedPoints(points.map((item) => ({ time: chartTime(item.timestamp), value: item.price }))));
       });
     }
     const renderZones = (zones: Array<{ id: string; timestamp: number; low: number; high: number; direction: "BULLISH" | "BEARISH"; endAt?: number }>, kind: "OB" | "FVG") => {
-      zones.slice(-150).forEach((zone) => {
+      zones.slice(-50).forEach((zone) => {
         const start = Math.max(zone.timestamp, selectedCandles[0].timestamp);
         const end = Math.min(zone.endAt ?? selectedCandles[selectedCandles.length-1].timestamp, selectedCandles[selectedCandles.length-1].timestamp);
         if (start >= end) return;
@@ -155,42 +164,44 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, overlaysByTime
       const volumeSeries = activeChart.addSeries(HistogramSeries, {
         priceFormat: { type: "volume" }, priceScaleId: "volume", title: "Volume",
       }, indicatorPane++);
-      volumeSeries.setData(selectedCandles.map((item) => ({
+      volumeSeries.setData(uniqueSortedPoints(selectedCandles.map((item) => ({
         time: chartTime(item.timestamp), value: item.volume,
         color: item.close >= item.open ? "rgba(38,166,154,.55)" : "rgba(239,83,80,.55)",
-      })));
+      }))));
     }
     if (showAtr) {
       const atrSeries = activeChart.addSeries(LineSeries, { color: "#ffb74d", lineWidth: 2, title: "ATR(14)" }, indicatorPane++);
-      atrSeries.setData(selectedCandles.flatMap((item) => item.indicators?.["atr:14"] === undefined ? [] : [
+      atrSeries.setData(uniqueSortedPoints(selectedCandles.flatMap((item) => item.indicators?.["atr:14"] === undefined ? [] : [
         { time: chartTime(item.timestamp), value: item.indicators["atr:14"] },
-      ]));
+      ])));
     }
     if (showAdx) {
       const adxSeries = activeChart.addSeries(LineSeries, { color: "#ab47bc", lineWidth: 2, title: "ADX(14)" }, indicatorPane++);
-      adxSeries.setData(selectedCandles.flatMap((item) => item.indicators?.["adx:14"] === undefined ? [] : [
+      adxSeries.setData(uniqueSortedPoints(selectedCandles.flatMap((item) => item.indicators?.["adx:14"] === undefined ? [] : [
         { time: chartTime(item.timestamp), value: item.indicators["adx:14"] },
-      ]));
+      ])));
     }
     visibleScenarios.forEach((scenario) => {
       const color = scenario.direction === "LONG" ? "#26a69a" : "#ef5350";
+      const start = Math.max(scenario.timestamp, selectedCandles[0].timestamp);
       const end = Math.min(scenario.expiresAt, selectedCandles[selectedCandles.length-1].timestamp);
+      if (start >= end) return;
       if (showEntryZones) {
         const zoneHigh = activeChart.addSeries(LineSeries, { color, lineWidth: 2, title: `${scenario.templateId} zone` });
         const zoneLow = activeChart.addSeries(LineSeries, { color, lineWidth: 2, title: "" });
         zoneHigh.setData([
-          { time: chartTime(scenario.timestamp), value: scenario.entryZoneHigh },
+          { time: chartTime(start), value: scenario.entryZoneHigh },
           { time: chartTime(end), value: scenario.entryZoneHigh },
         ]);
         zoneLow.setData([
-          { time: chartTime(scenario.timestamp), value: scenario.entryZoneLow },
+          { time: chartTime(start), value: scenario.entryZoneLow },
           { time: chartTime(end), value: scenario.entryZoneLow },
         ]);
       }
       if (showStops) {
         const stop = activeChart.addSeries(LineSeries, { color: "#ff5252", lineWidth: 1, lineStyle: 2, title: "SL" });
         stop.setData([
-          { time: chartTime(scenario.timestamp), value: scenario.stopLossPrice },
+          { time: chartTime(start), value: scenario.stopLossPrice },
           { time: chartTime(end), value: scenario.stopLossPrice },
         ]);
       }
@@ -198,11 +209,12 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, overlaysByTime
         const takeProfit = activeChart.addSeries(LineSeries, {
           color: "#00c853", lineWidth: 1, lineStyle: 2, title: "TP",
         });
-        takeProfit.setData([{ time: chartTime(scenario.timestamp), value: target }, { time: chartTime(end), value: target }]);
+        takeProfit.setData([{ time: chartTime(start), value: target }, { time: chartTime(end), value: target }]);
       });
     });
     if (showTrades) visibleTrades.forEach((trade) => {
       const scenario = trade.scenarioId ? scenariosById.get(trade.scenarioId) : undefined;
+      const sourceTimeframe = scenario?.timeframe ?? "TF?";
       const target = scenario?.takeProfitPrices[0];
       const stop = scenario?.stopLossPrice;
       if (target === undefined || stop === undefined) return;
@@ -218,40 +230,43 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, overlaysByTime
         });
         zone.setData([{ time: chartTime(from), value: price }, { time: chartTime(to), value: price }]);
       };
-      addTradeZone(stop, "rgba(239, 83, 80, .28)", `${trade.direction} #${trade.id} SL`);
-      addTradeZone(target, "rgba(0, 200, 83, .24)", `${trade.direction} #${trade.id} TP`);
+      addTradeZone(stop, "rgba(239, 83, 80, .28)", `${trade.direction} ${sourceTimeframe} #${trade.id} SL`);
+      addTradeZone(target, "rgba(0, 200, 83, .24)", `${trade.direction} ${sourceTimeframe} #${trade.id} TP`);
     });
     const markers = showTrades ? visibleTrades.flatMap((trade) => {
       const entryTime = candleTimeForMarker(trade.entryTime, selectedCandles);
       const exitTime = candleTimeForMarker(trade.exitTime, selectedCandles);
+      const sourceTimeframe = trade.scenarioId ? scenarioTimeframes.get(trade.scenarioId) ?? "TF?" : "TF?";
       return [
         entryTime === undefined ? undefined : {
           time: entryTime, position: trade.direction === "LONG" ? "belowBar" as const : "aboveBar" as const,
           color: trade.direction === "LONG" ? "#00e676" : "#ff5252", shape: trade.direction === "LONG" ? "arrowUp" as const : "arrowDown" as const,
-          text: `${trade.direction} #${trade.id}`,
+          text: `${trade.direction} ${sourceTimeframe} #${trade.id}`,
         },
         exitTime === undefined ? undefined : {
           time: exitTime, position: "inBar" as const, color: trade.pnl >= 0 ? "#ffd54f" : "#ff9800",
-          shape: "circle" as const, text: `Exit ${trade.pnl.toFixed(2)}`,
+          shape: "circle" as const, text: `Exit ${sourceTimeframe} · ${trade.pnl.toFixed(2)}`,
         },
       ].filter((item) => item !== undefined);
     }).sort((left,right) => Number(left.time)-Number(right.time)) : [];
     createSeriesMarkers(candleSeries, markers);
-    activeChart.timeScale().fitContent();
     fitRef.current = (scenario) => scenario
       ? activeChart.timeScale().setVisibleRange({ from: chartTime(scenario.timestamp), to: chartTime(scenario.expiresAt) })
       : activeChart.timeScale().fitContent();
     observer = new ResizeObserver(() => chart?.applyOptions({ width: container.clientWidth }));
     observer.observe(container);
     setIsRendering(false);
-    fitRef.current(selectedScenario === "ALL" ? undefined : visibleScenarios.find((item) => item.id === selectedScenario));
+    if (preservedViewport) activeChart.timeScale().setVisibleLogicalRange(preservedViewport);
+    else fitRef.current(selectedScenario === "ALL" ? undefined : visibleScenarios.find((item) => item.id === selectedScenario));
     });
     return () => {
       cancelAnimationFrame(frame);
+      const range = chart?.timeScale().getVisibleLogicalRange();
+      if (range) viewportRef.current = { context: viewportContext, range };
       observer?.disconnect();
       chart?.remove();
     };
-  }, [scenariosById, selectedCandles, selectedOverlay, selectedScenario, showAdx, showAtr, showBos, showEntryZones, showFractals, showFvgs, showOrderBlocks, showStops, showTargets, showTrades, showVolume, visibleScenarios, visibleTrades]);
+  }, [scenarioTimeframes, scenariosById, selectedCandles, selectedOverlay, selectedScenario, showAdx, showAtr, showBos, showEntryZones, showFractals, showFvgs, showOrderBlocks, showStops, showTargets, showTrades, showVolume, timeframe, visibleScenarios, visibleTrades]);
 
   const focusScenario = () => {
     const scenario = visibleScenarios.find((item) => item.id === selectedScenario);
@@ -275,7 +290,11 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, overlaysByTime
       <div><Typography variant="h6">TradingView Lightweight Charts</Typography>
         <Typography variant="caption" color="text.secondary">
           Колесо мыши — масштаб, перетаскивание — навигация, шкала цены — вертикальное увеличение.
-        </Typography></div>
+        </Typography>
+        {showTrades && visibleTradeTimeframes.length > 0 && <Typography variant="caption" sx={{ display: "block", color: "primary.main", mt: .25 }}>
+          Сделки на графике: все ТФ · источник {visibleTradeTimeframes.join(", ")}
+        </Typography>}
+      </div>
       <Stack direction="row" useFlexGap sx={{ flexWrap: "wrap", gap: .75 }}>
         {available.length > 0 && <TextField select size="small" label="Таймфрейм" value={timeframe}
           onChange={(event) => { setIsRendering(true); setTimeframe(event.target.value); setSelectedScenario("ALL"); }} sx={{ minWidth: 125 }}>

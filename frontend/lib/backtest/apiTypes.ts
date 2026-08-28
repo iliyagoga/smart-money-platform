@@ -8,7 +8,7 @@ export interface BacktestRunSummary {
   progress: number;
   tests_completed: number;
   tests_total: number;
-  progress_stage?: "OPTIMIZATION" | "VALIDATION";
+  progress_stage?: "PREPARING_PATTERNS" | "OPTIMIZATION" | "VALIDATION";
   error?: string;
   created_at: string;
   completed_at?: string;

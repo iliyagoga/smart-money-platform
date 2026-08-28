@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from src.models import BacktestConfig, BacktestCreate
 from src.replay import (_chart_candles, _execution_plan, _target_allocations,
                         _template_stop_distance_allowed, initialize_indicators)
+from smc_core.engines import AnalysisPipeline
 
 
 def test_train_and_test_periods_cannot_overlap():
@@ -19,10 +20,17 @@ def test_smc_execution_timeframe_is_selected_automatically():
 
 def test_execution_plan_is_structural_and_deterministic():
     setup=SimpleNamespace(direction="LONG",entry_zone_low=99.9,entry_zone_high=100.1,
-                          stop_loss_price=99.95,take_profit_prices=[100.1,100.15])
+                          stop_loss_price=99.95,take_profit_prices=[101.0])
     stop,targets=_execution_plan(100.1,setup,.3,.01)
     assert stop==pytest.approx(99.79)
-    assert targets==pytest.approx([100.71])
+    assert targets==pytest.approx([101.0])
+
+
+def test_execution_plan_rejects_liquidity_target_below_minimum_rr():
+    setup=SimpleNamespace(direction="LONG",entry_zone_low=99.9,entry_zone_high=100.1,
+                          stop_loss_price=99.95,take_profit_prices=[100.4])
+    _,targets=_execution_plan(100.1,setup,.3,.01)
+    assert targets==[]
 
 
 def test_configured_target_allocations_require_matching_target_count():
@@ -86,3 +94,7 @@ def test_atr_and_adx_are_initialized_on_candles():
     assert "atr:14" in values[-1]["indicators"]
     assert "adx:14" in values[-1]["indicators"]
     assert "adx:20" in values[-1]["indicators"]
+
+
+def test_replay_pipeline_can_disable_batch_external_provider():
+    assert AnalysisPipeline(use_external=False).external is None

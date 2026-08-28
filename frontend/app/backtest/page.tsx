@@ -85,6 +85,7 @@ export default function BacktestPage() {
   const [testsCompleted, setTestsCompleted] = useState(0);
   const [testsTotal, setTestsTotal] = useState(0);
   const [progressStage, setProgressStage] = useState<string>();
+  const [runStatus, setRunStatus] = useState<string>();
   const [workspaceTab, setWorkspaceTab] = useState(0);
   const runsResource = useApiResource<BacktestRunsResponse>("/api/v1/backtest/backtests");
   const templatesResource = useApiResource<ScenarioTemplatesResponse>("/api/v1/smc/scenario-templates");
@@ -113,6 +114,7 @@ export default function BacktestPage() {
     setError("");
     try {
       setProgress(0);
+      setRunStatus("QUEUED");
       setTestsCompleted(0); setTestsTotal(0); setProgressStage(undefined);
       const created = await api<BacktestCreateResponse>("/api/v1/backtest/backtests", {
         method: "POST",
@@ -180,6 +182,7 @@ export default function BacktestPage() {
         setTestsCompleted(current.tests_completed ?? 0);
         setTestsTotal(current.tests_total ?? 0);
         setProgressStage(current.progress_stage);
+        setRunStatus(current.status);
         if (current.status === "FAILED") throw new Error(current.error ?? "Бэктест завершился с ошибкой");
         if (current.status === "COMPLETED") {
           completed = current;
@@ -310,6 +313,7 @@ export default function BacktestPage() {
           testsCompleted={testsCompleted}
           testsTotal={testsTotal}
           progressStage={progressStage}
+          runStatus={runStatus}
           templates={templates}
         />
       </Grid>
@@ -320,7 +324,11 @@ export default function BacktestPage() {
             {selectedAsset} · {selectedTimeframes.join(", ")} · тест {testFrom} — {testTo}
           </Typography>
           <Alert severity={isRunning ? "warning" : "info"} sx={{ mt: 2 }}>
-            {isRunning ? (testsTotal
+            {isRunning ? (runStatus === "QUEUED"
+              ? "Запуск ожидает свободный слот в очереди."
+              : progressStage === "PREPARING_PATTERNS"
+              ? "Внешняя библиотека определяет SMC-паттерны на исторических данных."
+              : testsTotal
               ? `${progressStage === "VALIDATION" ? "Валидация" : "Оптимизация"}: выполнено ${testsCompleted} из ${testsTotal} тестов (${progress}%)`
               : `Подготовка исторических данных: ${progress}%`)
               : "После завершения система автоматически откроет вкладку результатов."}
