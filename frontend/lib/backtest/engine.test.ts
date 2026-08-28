@@ -31,7 +31,7 @@ const settings: BacktestSettings = {
     macroTimeframe: "H4", structureTimeframe: "H1", entryTimeframe: "M15", atrPeriod: 14,
     zigzagReversalAtr: 1.5, minSwingAtr: 1, wave1MinAtr: 1.5, wave1MinEfficiency: 0.45,
     wave2MinRetracement: 0.382, wave2MaxRetracement: 0.786, entryModel: "CHOCH_RETRACE",
-    entryRetracement: 0.5, chochMinAtr: 0.5, chochMinBodyRatio: 0.5,
+    entryRetracement: 0.5, entryExpiryBars: 4, chochMinAtr: 0.5, chochMinBodyRatio: 0.5,
     macroFilter: "STRUCTURE", stopBufferAtr: 0.2, takeProfitCount: 2, takeProfitRr: 2, secondTakeProfitRr: 3,
     minimumRr: 1.5, breakEvenAtOneR: false, firstTakeAction: "PARTIAL_CLOSE",
   },

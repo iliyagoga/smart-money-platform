@@ -58,6 +58,7 @@ class ElliottConfig(BaseModel):
     wave2_max_time_ratio: float = Field(default=3, gt=0, le=50)
     entry_model: ElliottEntryModel = ElliottEntryModel.CHOCH_RETRACE
     entry_retracement: float = Field(default=.5, ge=0, le=1)
+    entry_expiry_bars: int = Field(default=4, ge=1, le=1000)
     choch_min_atr: float = Field(default=.5, ge=0, le=10)
     choch_min_body_ratio: float = Field(default=.5, ge=0, le=1)
     macro_filter: ElliottMacroFilter = ElliottMacroFilter.STRUCTURE

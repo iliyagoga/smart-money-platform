@@ -12,7 +12,7 @@ export interface ElliottSettings {
   wave1MinAtr: number; wave1MinEfficiency: number;
   wave2MinRetracement: number; wave2MaxRetracement: number;
   entryModel: "CHOCH_MARKET" | "CHOCH_RETRACE" | "WAVE1_BREAK_RETRACE";
-  entryRetracement: number; chochMinAtr: number; chochMinBodyRatio: number;
+  entryRetracement: number; entryExpiryBars: number; chochMinAtr: number; chochMinBodyRatio: number;
   macroFilter: "OFF" | "STRUCTURE" | "EMA200" | "EMA_CROSS";
   stopBufferAtr: number; takeProfitCount: 1 | 2; takeProfitRr: number; secondTakeProfitRr: number;
   minimumRr: number; breakEvenAtOneR: boolean;

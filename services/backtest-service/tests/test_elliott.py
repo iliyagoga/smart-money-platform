@@ -1,7 +1,8 @@
 import pytest
 
 from src.elliott import (
-    Pivot, _elliott_position_quantity, _fee_adjusted_break_even_stop, _fixed_rr_target,
+    Pattern, Pivot, _elliott_position_quantity, _fee_adjusted_break_even_stop,
+    _fixed_rr_target, _round_trade_prices,
     atr_zigzag, detect_patterns, run_elliott_replay,
 )
 from src.models import BacktestConfig, ElliottConfig, StrategyType
@@ -43,10 +44,18 @@ def test_fixed_rr_target_uses_actual_stop_distance():
 
 
 def test_margin_uses_the_whole_asset_capital_and_reinvestment_is_optional():
-    assert _elliott_position_quantity(100, 100, 10, True, 5, True) == pytest.approx(50)
-    assert _elliott_position_quantity(150, 100, 10, True, 5, False) == pytest.approx(50)
-    assert _elliott_position_quantity(80, 100, 10, True, 5, False) == pytest.approx(40)
-    assert _elliott_position_quantity(100, 100, 10, False, 5, True) == pytest.approx(10)
+    assert _elliott_position_quantity(100, 100, 10, True, 5, True, .01) == pytest.approx(50)
+    assert _elliott_position_quantity(150, 100, 10, True, 5, False, .01) == pytest.approx(50)
+    assert _elliott_position_quantity(80, 100, 10, True, 5, False, .01) == pytest.approx(40)
+    assert _elliott_position_quantity(100, 100, 10, False, 5, True, .01) == pytest.approx(10)
+
+
+def test_prices_and_quantity_follow_exchange_steps():
+    entry, stop, targets = _round_trade_prices(100.04, 98.06, [103.01, 104.09], "LONG", .1)
+    assert entry == pytest.approx(100)
+    assert stop == pytest.approx(98)
+    assert targets == pytest.approx([103.1, 104.1])
+    assert _elliott_position_quantity(100, 100, 3, False, 1, True, .1) == pytest.approx(33.3)
 
 
 @pytest.mark.parametrize("direction", ["LONG", "SHORT"])
@@ -59,6 +68,67 @@ def test_break_even_stop_covers_fees_and_slippage(direction):
 
     assert net >= -1e-12
     assert net < .02
+
+
+def test_retrace_waits_for_a_real_touch_and_expires(monkeypatch):
+    pattern = Pattern(
+        "signal", "LONG",
+        {"P0": Pivot(0, 0, 0, 90, "LOW", 1), "P1": Pivot(1, 0, 0, 110, "HIGH", 1),
+         "P2": Pivot(2, 0, 0, 100, "LOW", 1)},
+        "WAVE3_POTENTIAL", {"choch_level": 100, "choch_close": 110}, signal_time=1,
+    )
+    monkeypatch.setattr("src.elliott.detect_patterns", lambda *args: ([pattern], [], []))
+    entry = [
+        {"timestamp": 0, "open": 108, "high": 110, "low": 107, "close": 109, "volume": 10},
+        {"timestamp": 900_000, "open": 107, "high": 108, "low": 106, "close": 107, "volume": 10},
+        {"timestamp": 1_800_000, "open": 106, "high": 106, "low": 104, "close": 105, "volume": 10},
+        {"timestamp": 2_700_000, "open": 105, "high": 116, "low": 104, "close": 115, "volume": 10},
+    ]
+    data = {"H4": entry, "H1": entry, "M15": entry}
+    config = BacktestConfig(
+        strategy="ELLIOTT", tick_size=.1, lot_size=.01, minimum_order_size=.01,
+        maker_fee_percent=.02, taker_fee_percent=.05, slippage_percent=0,
+        elliott=loose_config().model_copy(update={
+            "entry_expiry_bars": 4, "take_profit_count": 1, "take_profit_rr": 2,
+        }),
+    )
+
+    result = run_elliott_replay(data, config)
+
+    assert result["trades"][0]["entry_time"] == 1_800_000
+    assert result["trades"][0]["entry_price"] == 105
+    trade = result["trades"][0]
+    expected_maker_fees = (trade["entry_price"] + trade["exit_price"]) * trade["quantity"] * .0002
+    assert trade["fees"] == pytest.approx(expected_maker_fees)
+    expired = run_elliott_replay(
+        data, config.model_copy(update={"elliott": config.elliott.model_copy(update={"entry_expiry_bars": 1})}),
+    )
+    assert expired["trades"] == []
+    assert expired["elliott_diagnostics"]["expired_signals"] == 1
+
+
+def test_margin_position_is_liquidated_before_a_distant_structural_stop(monkeypatch):
+    pattern = Pattern(
+        "signal", "LONG",
+        {"P0": Pivot(0, 0, 0, 50, "LOW", 1), "P1": Pivot(1, 0, 0, 120, "HIGH", 1),
+         "P2": Pivot(2, 0, 0, 50, "LOW", 1)},
+        "WAVE3_POTENTIAL", {"choch_level": 90, "choch_close": 100}, signal_time=1,
+    )
+    monkeypatch.setattr("src.elliott.detect_patterns", lambda *args: ([pattern], [], []))
+    entry = [
+        {"timestamp": 0, "open": 100, "high": 101, "low": 99, "close": 100, "volume": 10},
+        {"timestamp": 900_000, "open": 100, "high": 101, "low": 99, "close": 100, "volume": 10},
+        {"timestamp": 1_800_000, "open": 100, "high": 100, "low": 75, "close": 80, "volume": 10},
+    ]
+    config = BacktestConfig(
+        strategy="ELLIOTT", leverage=5, tick_size=.1, lot_size=.01, minimum_order_size=.01,
+        fee_percent=0, slippage_percent=0,
+        elliott=loose_config().model_copy(update={"entry_model": "CHOCH_MARKET", "use_margin": True}),
+    )
+
+    result = run_elliott_replay({"H4": entry, "H1": entry, "M15": entry}, config)
+
+    assert result["trades"][0]["reason"] == "LIQUIDATION"
 
 
 def test_atr_zigzag_confirmation_never_precedes_pivot():

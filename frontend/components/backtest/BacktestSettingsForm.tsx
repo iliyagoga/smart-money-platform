@@ -97,6 +97,8 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
             <MenuItem value="CHOCH_MARKET">CHOCH market</MenuItem><MenuItem value="CHOCH_RETRACE">CHOCH retrace</MenuItem><MenuItem value="WAVE1_BREAK_RETRACE">P1 break + retrace</MenuItem>
           </TextField>
           <TextField fullWidth label="Retracement входа" type="number" value={settings.elliott.entryRetracement} onChange={(e) => updateElliottNumber("entryRetracement", e.target.value)} />
+          <TextField fullWidth label="Ждать вход, свечей" type="number" value={settings.elliott.entryExpiryBars}
+            slotProps={{ htmlInput: { min: 1, step: 1 } }} onChange={(e) => updateElliottNumber("entryExpiryBars", e.target.value)} />
         </Stack>
         <Stack direction="row" spacing={1.5}>
           <TextField fullWidth label="CHOCH displacement, ATR" type="number" value={settings.elliott.chochMinAtr} onChange={(e) => updateElliottNumber("chochMinAtr", e.target.value)} />
