@@ -70,7 +70,8 @@ def run_backtest(candles: list[dict], config: BacktestConfig) -> dict:
     if len(ordered) <= config.slow_period + 2:
         raise ValueError("not enough candles for selected periods")
     closes = [float(item["close"]) for item in ordered]
-    fee_rate = config.fee_percent / 100
+    maker_rate = (config.maker_fee_percent if config.maker_fee_percent is not None else config.fee_percent) / 100
+    taker_rate = (config.taker_fee_percent if config.taker_fee_percent is not None else config.fee_percent) / 100
     slippage_rate = config.slippage_percent / 100
     funding_rate = config.funding_percent_per_day / 100
     capital = config.initial_capital
@@ -85,7 +86,7 @@ def run_backtest(candles: list[dict], config: BacktestConfig) -> dict:
         exit_price = raw_price * (1 - slippage_rate if position.direction == "LONG" else 1 + slippage_rate)
         multiplier = 1 if position.direction == "LONG" else -1
         gross = (exit_price - position.entry_price) * position.quantity * multiplier
-        fees = (position.entry_price + exit_price) * position.quantity * fee_rate
+        fees = position.entry_price * position.quantity * maker_rate + exit_price * position.quantity * taker_rate
         days = max(0, timestamp - position.entry_time) / 86_400_000
         funding = position.entry_price * position.quantity * funding_rate * days * multiplier
         pnl = gross - fees - funding

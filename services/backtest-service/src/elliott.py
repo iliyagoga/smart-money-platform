@@ -272,7 +272,9 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
     macro = sorted(candles_by_tf[ec.macro_timeframe], key=lambda item: item["timestamp"])
     patterns, structure_pivots, entry_pivots = detect_patterns(structure, entry, macro, ec)
     signals = sorted([item for item in patterns if item.signal_time], key=lambda item: item.signal_time)
-    fee, slip = config.fee_percent / 100, config.slippage_percent / 100
+    maker_fee = (config.maker_fee_percent if config.maker_fee_percent is not None else config.fee_percent) / 100
+    taker_fee = (config.taker_fee_percent if config.taker_fee_percent is not None else config.fee_percent) / 100
+    slip = config.slippage_percent / 100
     capital, trades, equity = config.initial_capital, [], []
     used: set[str] = set()
     position = None
@@ -282,11 +284,14 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
         side = 1 if position["direction"] == "LONG" else -1
         exit_price = raw_price * (1 - slip * side)
         gross = (exit_price - position["entry_price"]) * position["quantity"] * side
-        fees = (position["entry_price"] + exit_price) * position["quantity"] * fee
+        fees = position["entry_price"] * position["quantity"] * maker_fee + exit_price * position["quantity"] * taker_fee
         pnl = gross - fees
         capital += pnl
         trades.append({**position, "id": len(trades) + 1, "exit_time": timestamp, "exit_price": exit_price,
-                       "pnl": pnl, "pnl_percent": pnl / max(position["risk_capital"], 1e-12) * 100,
+                       # Report return on position margin, consistently with
+                       # indicator and SMC replays (not return on risk budget).
+                       "pnl": pnl,
+                       "pnl_percent": pnl / max(position["entry_price"] * position["quantity"] / config.leverage, 1e-12) * 100,
                        "fees": fees, "funding": 0, "reason": reason})
         for key in ("stop", "targets", "risk_capital", "remaining"):
             trades[-1].pop(key, None)

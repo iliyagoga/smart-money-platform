@@ -288,7 +288,10 @@ def run_smc_replay(
         side = 1 if position.direction == "LONG" else -1
         gross = (price - position.entry_price) * quantity * side
         exit_rate = maker_rate if reason == "TAKE_PROFIT" else taker_rate
-        fees = price * quantity * exit_rate
+        # Keep all costs on the trade close: entry commission is allocated to
+        # the quantity closed in this fill, then added to the exit commission.
+        entry_fee = position.entry_price * quantity * maker_rate
+        fees = entry_fee + price * quantity * exit_rate
         liquidation_fee = price * quantity * config.liquidation_fee_percent / 100 if reason == "LIQUIDATION" else 0
         pnl = gross - fees - liquidation_fee
         capital += pnl
@@ -443,8 +446,6 @@ def run_smc_replay(
                     )
                     quantity = floor(quantity / config.lot_size) * config.lot_size
                     if quantity >= config.minimum_order_size:
-                        entry_fee = entry * quantity * maker_rate
-                        capital -= entry_fee
                         position = VirtualPosition(
                             scenario.direction, entry, available_at, quantity, stop,
                             targets, scenario.id, scenario.setup_type, confidence, quantity,
@@ -453,7 +454,7 @@ def run_smc_replay(
                             move_stop_to_break_even_after_target=(
                                 getattr(template, "move_stop_to_break_even_after_target", 1) if template else 1
                             ),
-                            realized=-entry_fee, fees=entry_fee, last_funding_time=available_at,
+                            realized=0, fees=0, last_funding_time=available_at,
                         )
                         zone_key = _scenario_zone_key(scenario)
                         if template and getattr(template, "one_trade_per_zone", False) and zone_key:
