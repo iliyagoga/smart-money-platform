@@ -30,7 +30,14 @@ class ElliottMacroFilter(StrEnum):
     EMA_CROSS = "EMA_CROSS"
 
 
+class ElliottFirstTakeAction(StrEnum):
+    PARTIAL_CLOSE = "PARTIAL_CLOSE"
+    MOVE_TO_BREAK_EVEN = "MOVE_TO_BREAK_EVEN"
+
+
 class ElliottConfig(BaseModel):
+    use_margin: bool = False
+    reinvest_profits: bool = True
     macro_timeframe: str = "H4"
     structure_timeframe: str = "H1"
     entry_timeframe: str = "M15"
@@ -63,6 +70,9 @@ class ElliottConfig(BaseModel):
     take_profit_extensions: list[float] = Field(default_factory=lambda: [1.0, 1.618])
     take_profit_allocations: list[float] = Field(default_factory=lambda: [.5, .5])
     take_profit_rr: float = Field(default=2, gt=0, le=100)
+    take_profit_count: int = Field(default=2, ge=1, le=2)
+    second_take_profit_rr: float = Field(default=3, gt=0, le=100)
+    first_take_action: ElliottFirstTakeAction = ElliottFirstTakeAction.PARTIAL_CLOSE
     minimum_rr: float = Field(default=1.5, gt=0, le=100)
     break_even_at_one_r: bool = False
     mfe_mae_horizons: list[int] = Field(default_factory=lambda: [3, 6, 12, 24, 48, 96])
@@ -86,6 +96,8 @@ class ElliottConfig(BaseModel):
             raise ValueError("take-profit extensions and allocations must have equal lengths")
         if abs(sum(self.take_profit_allocations) - 1) > 1e-6 or any(value <= 0 for value in self.take_profit_allocations):
             raise ValueError("take-profit allocations must be positive and sum to one")
+        if self.take_profit_count == 2 and self.second_take_profit_rr <= self.take_profit_rr:
+            raise ValueError("second take-profit RR must be greater than the first")
         return self
 
 

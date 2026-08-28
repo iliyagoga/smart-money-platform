@@ -174,7 +174,7 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
         <TableHead><TableRow><TableCell>#</TableCell><TableCell>Вход</TableCell><TableCell>Выход</TableCell><TableCell>Сторона</TableCell>
           <TableCell>Цена входа</TableCell><TableCell>Цена выхода</TableCell><TableCell>Количество</TableCell><TableCell>Общая цена лота</TableCell>
           <TableCell>Маржа</TableCell><TableCell>Тейк, %</TableCell><TableCell>Стоп, %</TableCell>
-          <TableCell>PnL</TableCell><TableCell>Прибыль, %</TableCell><TableCell>Причина</TableCell>
+          <TableCell>Исполнение</TableCell><TableCell>PnL</TableCell><TableCell>Прибыль, %</TableCell><TableCell>Причина</TableCell>
         </TableRow></TableHead>
         <TableBody>{visibleTrades.map((trade) => {
           const scenario = trade.scenarioId ? scenariosById.get(trade.scenarioId) : undefined;
@@ -197,6 +197,9 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
             ? takePercents.map((value) => `${value.toFixed(2)}%`).join(" / ")
             : fallbackTake === undefined ? "—" : `${fallbackTake.toFixed(2)}%`}</TableCell>
           <TableCell>{stopPercent === undefined ? "—" : `${stopPercent.toFixed(2)}%`}</TableCell>
+          <TableCell>{trade.exits?.length
+            ? trade.exits.map((exit, index) => `${index + 1}. ${exit.reason} · ${exit.quantity.toFixed(2)} @ ${exit.price.toFixed(4)} · ${exit.pnl >= 0 ? "+" : ""}${exit.pnl.toFixed(2)}`).join(" / ")
+            : "—"}</TableCell>
           <TableCell sx={{ color: trade.pnl >= 0 ? "success.main" : "error.main", fontWeight: 700 }}>{trade.pnl.toFixed(2)}</TableCell>
           <TableCell sx={{ color: trade.pnlPercent >= 0 ? "success.main" : "error.main", fontWeight: 700 }}>
             {trade.pnlPercent.toFixed(2)}%

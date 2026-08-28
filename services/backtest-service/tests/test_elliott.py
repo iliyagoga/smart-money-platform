@@ -1,6 +1,9 @@
 import pytest
 
-from src.elliott import Pivot, _fixed_rr_target, atr_zigzag, detect_patterns, run_elliott_replay
+from src.elliott import (
+    Pivot, _elliott_position_quantity, _fee_adjusted_break_even_stop, _fixed_rr_target,
+    atr_zigzag, detect_patterns, run_elliott_replay,
+)
 from src.models import BacktestConfig, ElliottConfig, StrategyType
 
 
@@ -29,11 +32,33 @@ def test_config_enforces_timeframe_hierarchy_and_tp_allocations():
         ElliottConfig(macro_timeframe="M15", structure_timeframe="H1", entry_timeframe="H4")
     with pytest.raises(ValueError):
         ElliottConfig(take_profit_extensions=[1, 1.618], take_profit_allocations=[1])
+    with pytest.raises(ValueError):
+        ElliottConfig(take_profit_count=2, take_profit_rr=2, second_take_profit_rr=1)
+    assert ElliottConfig(take_profit_count=1, take_profit_rr=2, second_take_profit_rr=1).take_profit_count == 1
 
 
 def test_fixed_rr_target_uses_actual_stop_distance():
     assert _fixed_rr_target(100, 98, "LONG", 2) == pytest.approx(104)
     assert _fixed_rr_target(100, 103, "SHORT", 1.5) == pytest.approx(95.5)
+
+
+def test_margin_uses_the_whole_asset_capital_and_reinvestment_is_optional():
+    assert _elliott_position_quantity(100, 100, 10, True, 5, True) == pytest.approx(50)
+    assert _elliott_position_quantity(150, 100, 10, True, 5, False) == pytest.approx(50)
+    assert _elliott_position_quantity(80, 100, 10, True, 5, False) == pytest.approx(40)
+    assert _elliott_position_quantity(100, 100, 10, False, 5, True) == pytest.approx(10)
+
+
+@pytest.mark.parametrize("direction", ["LONG", "SHORT"])
+def test_break_even_stop_covers_fees_and_slippage(direction):
+    entry, maker, taker, slip = 100.0, .0002, .0005, .0002
+    stop = _fee_adjusted_break_even_stop(entry, direction, maker, taker, slip, .01)
+    side = 1 if direction == "LONG" else -1
+    exit_price = stop * (1 - slip * side)
+    net = (exit_price - entry) * side - entry * maker - exit_price * taker
+
+    assert net >= -1e-12
+    assert net < .02
 
 
 def test_atr_zigzag_confirmation_never_precedes_pivot():
@@ -86,6 +111,9 @@ def test_replay_returns_serializable_wave_contract():
     assert set(result["chart_candles_by_timeframe"]) == {"H4", "H1", "M15"}
     assert result["final_capital"] == pytest.approx(config.initial_capital + result["net_profit"])
     for trade in result["trades"]:
+        assert len(trade["take_profit_prices"]) == 2
+        assert trade["exits"]
+        assert sum(exit_fill["pnl"] for exit_fill in trade["exits"]) == pytest.approx(trade["pnl"])
         if trade["direction"] == "LONG":
             assert trade["initial_stop"] < trade["entry_price"]
         else:

@@ -5,6 +5,8 @@ export type DirectionMode = "LONG" | "SHORT" | "BOTH";
 export type StrategyType = "SMC" | "ELLIOTT" | "SMA_CROSS" | "RSI" | "MACD" | "BOLLINGER";
 
 export interface ElliottSettings {
+  useMargin: boolean;
+  reinvestProfits: boolean;
   macroTimeframe: string; structureTimeframe: string; entryTimeframe: string;
   atrPeriod: number; zigzagReversalAtr: number; minSwingAtr: number;
   wave1MinAtr: number; wave1MinEfficiency: number;
@@ -12,7 +14,9 @@ export interface ElliottSettings {
   entryModel: "CHOCH_MARKET" | "CHOCH_RETRACE" | "WAVE1_BREAK_RETRACE";
   entryRetracement: number; chochMinAtr: number; chochMinBodyRatio: number;
   macroFilter: "OFF" | "STRUCTURE" | "EMA200" | "EMA_CROSS";
-  stopBufferAtr: number; takeProfitRr: number; minimumRr: number; breakEvenAtOneR: boolean;
+  stopBufferAtr: number; takeProfitCount: 1 | 2; takeProfitRr: number; secondTakeProfitRr: number;
+  minimumRr: number; breakEvenAtOneR: boolean;
+  firstTakeAction: "PARTIAL_CLOSE" | "MOVE_TO_BREAK_EVEN";
 }
 
 export interface BacktestSettings {
@@ -28,7 +32,6 @@ export interface BacktestSettings {
   takeProfitPercent: number;
   positionSizePercent: number;
   leverage: number;
-  maintenanceMarginPercent: number;
   fundingPercentPerDay: number;
   fundingIntervalHours?: number;
   executionLatencyMs?: number;
@@ -65,6 +68,7 @@ export interface BacktestTrade {
   templateId?: string;
   initialStop?: number;
   takeProfitPrices?: number[];
+  exits?: Array<{ timestamp: number; price: number; quantity: number; pnl: number; fees: number; reason: string }>;
   signalTimeframe?: string;
   structureTimeframe?: string;
   fees?: number;
@@ -112,6 +116,8 @@ export interface BacktestResult {
   strategyConfig?: {
     leverage: number;
     positionSizePercent: number;
+    useMargin?: boolean;
+    reinvestProfits?: boolean;
     stopLossPercent?: number;
     takeProfitPercent?: number;
   };

@@ -15,9 +15,11 @@ interface BacktestSettingsFormProps {
 export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, settings, templates }: BacktestSettingsFormProps) {
   const updateNumber = (key: keyof BacktestSettings, value: string) => onChange({ ...settings, [key]: Number(value) });
   const isValid = settings.initialCapital > 0
-    && settings.positionSizePercent > 0
-    && settings.positionSizePercent <= 100
+    && (settings.strategy === "ELLIOTT"
+      || (settings.positionSizePercent > 0 && settings.positionSizePercent <= 100))
     && settings.riskPerTradePercent > 0
+    && (settings.strategy !== "ELLIOTT" || (settings.elliott.takeProfitRr > 0
+      && (settings.elliott.takeProfitCount === 1 || settings.elliott.secondTakeProfitRr > settings.elliott.takeProfitRr)))
     && (settings.strategy !== "SMC" || (settings.smcMinTargetRr > 0 && settings.smcMaxTargetRr > settings.smcMinTargetRr
       && (settings.smcTargetMode === "TEMPLATE" || settings.smcTargetRr > 0)))
     && (settings.strategy !== "SMC" || settings.templateIds.length > 0);
@@ -102,25 +104,80 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
         </Stack>
         <Stack direction="row" spacing={1.5}>
           <TextField fullWidth label="Буфер стопа, ATR" type="number" value={settings.elliott.stopBufferAtr} onChange={(e) => updateElliottNumber("stopBufferAtr", e.target.value)} />
-          <TextField fullWidth label="Тейк к стопу (RR)" type="number" value={settings.elliott.takeProfitRr}
-            slotProps={{ htmlInput: { min: 0.01, step: 0.1 } }} onChange={(e) => updateElliottNumber("takeProfitRr", e.target.value)} />
           <TextField fullWidth label="Минимальный RR" type="number" value={settings.elliott.minimumRr} onChange={(e) => updateElliottNumber("minimumRr", e.target.value)} />
         </Stack>
+        <Paper variant="outlined" sx={{ p: 2 }}>
+          <Stack spacing={1.5}>
+            <Typography variant="subtitle2">Тейки и управление позицией</Typography>
+            <Typography variant="body2" color="text.secondary">
+              RR задаёт расстояние от входа до тейка в долях расстояния до структурного стопа.
+            </Typography>
+            <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
+              <TextField fullWidth select label="Количество тейков" value={settings.elliott.takeProfitCount}
+                onChange={(e) => onChange({ ...settings, elliott: { ...settings.elliott, takeProfitCount: Number(e.target.value) as 1 | 2 } })}>
+                <MenuItem value={1}>1 тейк — закрыть всю позицию</MenuItem>
+                <MenuItem value={2}>2 тейка — управление на TP1</MenuItem>
+              </TextField>
+              <TextField fullWidth label="TP1, RR" type="number" value={settings.elliott.takeProfitRr}
+                slotProps={{ htmlInput: { min: 0.01, step: 0.1 } }} onChange={(e) => updateElliottNumber("takeProfitRr", e.target.value)} />
+              {settings.elliott.takeProfitCount === 2 && <TextField fullWidth label="TP2, RR" type="number" value={settings.elliott.secondTakeProfitRr}
+                slotProps={{ htmlInput: { min: 0.01, step: 0.1 } }} onChange={(e) => updateElliottNumber("secondTakeProfitRr", e.target.value)} />}
+            </Stack>
+            {settings.elliott.takeProfitCount === 2 && <TextField fullWidth select label="Что делать при достижении TP1"
+              value={settings.elliott.firstTakeAction} onChange={(e) => onChange({ ...settings, elliott: {
+                ...settings.elliott,
+                firstTakeAction: e.target.value as BacktestSettings["elliott"]["firstTakeAction"],
+              } })}>
+              <MenuItem value="PARTIAL_CLOSE">Закрыть 50%, остаток держать до TP2</MenuItem>
+              <MenuItem value="MOVE_TO_BREAK_EVEN">Не закрывать, перенести стоп всей позиции в безубыток</MenuItem>
+            </TextField>}
+            {settings.elliott.takeProfitCount === 2 && <Typography variant="caption" color="text.secondary">
+              Безубыток учитывает комиссии входа и выхода, проскальзывание и биржевой шаг цены.
+            </Typography>}
+          </Stack>
+        </Paper>
       </Stack>}
       <TextField label="Начальный капитал" value={settings.initialCapital} type="number"
         onChange={(event) => updateNumber("initialCapital", event.target.value)} />
-      <TextField label="Размер позиции, %" value={settings.positionSizePercent} type="number"
-        onChange={(event) => updateNumber("positionSizePercent", event.target.value)} />
-      <TextField label="Плечо" value={settings.leverage} type="number"
-        onChange={(event) => updateNumber("leverage", event.target.value)} />
-      <TextField label="Поддерживающая маржа, %" value={settings.maintenanceMarginPercent} type="number"
-        onChange={(event) => updateNumber("maintenanceMarginPercent", event.target.value)} />
-      <Stack direction="row" spacing={1.5}>
+      {settings.strategy === "ELLIOTT" && <Paper variant="outlined" sx={{ p: 2 }}>
+        <Stack spacing={1.5}>
+          <Typography variant="subtitle2">Капитал, риск и маржа</Typography>
+          <TextField fullWidth select label="Режим позиции" value={settings.elliott.useMargin ? "MARGIN" : "CASH"}
+            onChange={(event) => onChange({ ...settings, elliott: {
+              ...settings.elliott, useMargin: event.target.value === "MARGIN",
+            } })}>
+            <MenuItem value="CASH">Без маржи — только доступный капитал</MenuItem>
+            <MenuItem value="MARGIN">Использовать маржу и плечо</MenuItem>
+          </TextField>
+          <TextField fullWidth select label="Реинвестирование прибыли" value={settings.elliott.reinvestProfits ? "ON" : "OFF"}
+            onChange={(event) => onChange({ ...settings, elliott: {
+              ...settings.elliott, reinvestProfits: event.target.value === "ON",
+            } })}>
+            <MenuItem value="ON">Включено — увеличивать следующие позиции</MenuItem>
+            <MenuItem value="OFF">Выключено — не превышать начальный капитал</MenuItem>
+          </TextField>
+          {settings.elliott.useMargin && <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
+            <TextField fullWidth label="Плечо" value={settings.leverage} type="number"
+              onChange={(event) => updateNumber("leverage", event.target.value)} />
+          </Stack>}
+          <Typography variant="caption" color="text.secondary">
+            Весь капитал выделен этому активу. Без маржи номинал равен капиталу;
+            с маржой номинал равен капиталу × плечо. Комиссии считаются со всего номинала.
+          </Typography>
+        </Stack>
+      </Paper>}
+      {settings.strategy !== "ELLIOTT" && <>
+        <TextField label="Размер позиции, %" value={settings.positionSizePercent} type="number"
+          onChange={(event) => updateNumber("positionSizePercent", event.target.value)} />
+        <TextField label="Плечо" value={settings.leverage} type="number"
+          onChange={(event) => updateNumber("leverage", event.target.value)} />
+      </>}
+      {settings.strategy !== "ELLIOTT" && <Stack direction="row" spacing={1.5}>
         <TextField fullWidth label="Риск на сделку, %" value={settings.riskPerTradePercent} type="number"
           onChange={(event) => updateNumber("riskPerTradePercent", event.target.value)} />
         <TextField fullWidth label="Доля Kelly" value={settings.kellyFraction} type="number"
           onChange={(event) => updateNumber("kellyFraction", event.target.value)} />
-      </Stack>
+      </Stack>}
       {settings.strategy === "SMC" && <TextField fullWidth label="Порог confidence" value={settings.confidenceThreshold} type="number"
         onChange={(event) => updateNumber("confidenceThreshold", event.target.value)} />}
       {settings.strategy === "SMC" && <TextField fullWidth select label="Управление Risk/Reward" value={settings.smcTargetMode}

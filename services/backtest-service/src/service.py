@@ -182,8 +182,14 @@ class BacktestService:
             if request.test_to is not None:
                 result["dataset"]["test_to"] = request.test_to
             result["strategy_config"] = {
-                "leverage": request.config.leverage,
-                "position_size_percent": request.config.position_size_percent,
+                "leverage": (request.config.leverage if request.config.strategy != StrategyType.ELLIOTT
+                             or request.config.elliott.use_margin else 1),
+                "position_size_percent": (request.config.position_size_percent
+                                          if request.config.strategy != StrategyType.ELLIOTT else 100),
+                "use_margin": (request.config.elliott.use_margin
+                               if request.config.strategy == StrategyType.ELLIOTT else True),
+                "reinvest_profits": (request.config.elliott.reinvest_profits
+                                     if request.config.strategy == StrategyType.ELLIOTT else True),
                 "stop_loss_percent": request.config.stop_loss_percent,
                 "smc_min_stop_percent": request.config.smc_min_stop_percent,
                 "take_profit_percent": request.config.take_profit_percent,

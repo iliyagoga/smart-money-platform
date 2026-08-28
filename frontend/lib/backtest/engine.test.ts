@@ -14,7 +14,6 @@ const settings: BacktestSettings = {
   takeProfitPercent: 20,
   positionSizePercent: 100,
   leverage: 1,
-  maintenanceMarginPercent: 0.5,
   fundingPercentPerDay: 0,
   directionMode: "BOTH",
   riskPerTradePercent: 1,
@@ -27,11 +26,14 @@ const settings: BacktestSettings = {
   templateIds: ["OB_FVG_REVERSAL"],
   localRetraining: false,
   elliott: {
+    useMargin: false,
+    reinvestProfits: true,
     macroTimeframe: "H4", structureTimeframe: "H1", entryTimeframe: "M15", atrPeriod: 14,
     zigzagReversalAtr: 1.5, minSwingAtr: 1, wave1MinAtr: 1.5, wave1MinEfficiency: 0.45,
     wave2MinRetracement: 0.382, wave2MaxRetracement: 0.786, entryModel: "CHOCH_RETRACE",
     entryRetracement: 0.5, chochMinAtr: 0.5, chochMinBodyRatio: 0.5,
-    macroFilter: "STRUCTURE", stopBufferAtr: 0.2, takeProfitRr: 2, minimumRr: 1.5, breakEvenAtOneR: true,
+    macroFilter: "STRUCTURE", stopBufferAtr: 0.2, takeProfitCount: 2, takeProfitRr: 2, secondTakeProfitRr: 3,
+    minimumRr: 1.5, breakEvenAtOneR: false, firstTakeAction: "PARTIAL_CLOSE",
   },
 };
 

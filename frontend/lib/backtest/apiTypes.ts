@@ -32,6 +32,7 @@ interface BackendTrade {
   template_id?: string;
   initial_stop?: number;
   take_profit_prices?: number[];
+  exits?: Array<{ timestamp: number; price: number; quantity: number; pnl: number; fees: number; reason: string }>;
   signal_timeframe?: string;
   structure_timeframe?: string;
   fees?: number;
@@ -93,6 +94,8 @@ export interface BackendBacktestResult {
   strategy_config?: {
     leverage: number;
     position_size_percent: number;
+    use_margin?: boolean;
+    reinvest_profits?: boolean;
     stop_loss_percent?: number;
     take_profit_percent?: number;
   };
@@ -113,6 +116,7 @@ export function mapBacktestResult(result: BackendBacktestResult): BacktestResult
     templateId: trade.template_id,
     initialStop: trade.initial_stop,
     takeProfitPrices: trade.take_profit_prices,
+    exits: trade.exits,
     signalTimeframe: trade.signal_timeframe,
     structureTimeframe: trade.structure_timeframe,
     fees: trade.fees,
@@ -168,6 +172,8 @@ export function mapBacktestResult(result: BackendBacktestResult): BacktestResult
     strategyConfig: result.strategy_config ? {
       leverage: result.strategy_config.leverage,
       positionSizePercent: result.strategy_config.position_size_percent,
+      useMargin: result.strategy_config.use_margin,
+      reinvestProfits: result.strategy_config.reinvest_profits,
       stopLossPercent: result.strategy_config.stop_loss_percent,
       takeProfitPercent: result.strategy_config.take_profit_percent,
     } : undefined,
