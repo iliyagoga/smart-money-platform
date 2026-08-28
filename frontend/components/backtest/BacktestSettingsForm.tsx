@@ -19,12 +19,31 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
       || (settings.positionSizePercent > 0 && settings.positionSizePercent <= 100))
     && settings.riskPerTradePercent > 0
     && (settings.strategy !== "ELLIOTT" || (settings.elliott.takeProfitRr > 0
+      && settings.elliott.wave2MinRetracement < settings.elliott.wave2MaxRetracement
       && (settings.elliott.takeProfitCount === 1 || settings.elliott.secondTakeProfitRr > settings.elliott.takeProfitRr)))
     && (settings.strategy !== "SMC" || (settings.smcMinTargetRr > 0 && settings.smcMaxTargetRr > settings.smcMinTargetRr
       && (settings.smcTargetMode === "TEMPLATE" || settings.smcTargetRr > 0)))
     && (settings.strategy !== "SMC" || settings.templateIds.length > 0);
   const updateElliottNumber = (key: keyof BacktestSettings["elliott"], value: string) =>
     onChange({ ...settings, elliott: { ...settings.elliott, [key]: Number(value) } });
+  const checkedValue = (value: unknown, display = String(value)) =>
+    <Stack direction="row" spacing={1} sx={{ width: "100%", alignItems: "center" }}>
+      <Checkbox checked size="small" tabIndex={-1} sx={{ p: 0, pointerEvents: "none" }} />
+      <Typography component="span">{display}</Typography>
+    </Stack>;
+  const elliottChoice = (label: string, key: keyof BacktestSettings["elliott"], options: number[]) =>
+    <FormControl fullWidth><InputLabel>{label}</InputLabel>
+      <Select label={label} value={settings.elliott[key] as number}
+        renderValue={(selected) => <Stack direction="row" spacing={1} sx={{ width: "100%", alignItems: "center" }}>
+          <Checkbox checked size="small" tabIndex={-1} sx={{ p: 0, pointerEvents: "none" }} />
+          <Typography component="span">{String(selected)}</Typography>
+        </Stack>}
+        onChange={(event) => updateElliottNumber(key, String(event.target.value))}>
+        {options.map((option) => <MenuItem key={option} value={option}>
+          <Checkbox checked={settings.elliott[key] === option} /><ListItemText primary={option} />
+        </MenuItem>)}
+      </Select>
+    </FormControl>;
 
   return <Paper variant="outlined" sx={{ p: 3 }}>
     <Typography variant="h6">Параметры стратегии</Typography>
@@ -72,40 +91,48 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
           {(["macroTimeframe", "structureTimeframe", "entryTimeframe"] as const).map((key) =>
             <TextField key={key} fullWidth select label={{ macroTimeframe: "Macro TF", structureTimeframe: "Structure TF", entryTimeframe: "Entry TF" }[key]}
               value={settings.elliott[key]}
+              slotProps={{ select: { renderValue: (selected) => checkedValue(selected) } }}
               onChange={(event) => onChange({ ...settings, elliott: { ...settings.elliott, [key]: event.target.value } })}>
-              {timeframeOptions(key).map((tf) => <MenuItem key={tf} value={tf}>{tf}</MenuItem>)}
+              {timeframeOptions(key).map((tf) => <MenuItem key={tf} value={tf}>
+                <Checkbox checked={settings.elliott[key] === tf} /><ListItemText primary={tf} />
+              </MenuItem>)}
             </TextField>)}
         </Stack>
         <Stack direction="row" spacing={1.5}>
-          <TextField fullWidth label="ATR период" type="number" value={settings.elliott.atrPeriod} onChange={(e) => updateElliottNumber("atrPeriod", e.target.value)} />
-          <TextField fullWidth label="Разворот ZigZag, ATR" type="number" value={settings.elliott.zigzagReversalAtr} onChange={(e) => updateElliottNumber("zigzagReversalAtr", e.target.value)} />
-          <TextField fullWidth label="Мин. swing, ATR" type="number" value={settings.elliott.minSwingAtr} onChange={(e) => updateElliottNumber("minSwingAtr", e.target.value)} />
+          {elliottChoice("ATR период", "atrPeriod", [7, 10, 14, 20, 21, 28, 50, 100, 200])}
+          {elliottChoice("Разворот ZigZag, ATR", "zigzagReversalAtr", [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 5, 10])}
+          {elliottChoice("Мин. swing, ATR", "minSwingAtr", [0, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 5, 10])}
         </Stack>
         <Stack direction="row" spacing={1.5}>
-          <TextField fullWidth label="Wave 1 мин., ATR" type="number" value={settings.elliott.wave1MinAtr} onChange={(e) => updateElliottNumber("wave1MinAtr", e.target.value)} />
-          <TextField fullWidth label="Wave 1 efficiency" type="number" value={settings.elliott.wave1MinEfficiency} onChange={(e) => updateElliottNumber("wave1MinEfficiency", e.target.value)} />
+          {elliottChoice("Wave 1 мин., ATR", "wave1MinAtr", [0, 0.5, 1, 1.5, 2, 3, 5, 10, 20])}
+          {elliottChoice("Wave 1 efficiency", "wave1MinEfficiency", [0, 0.25, 0.35, 0.45, 0.5, 0.6, 0.75, 1])}
         </Stack>
         <Stack direction="row" spacing={1.5}>
-          <TextField fullWidth label="Wave 2 retracement от" type="number" value={settings.elliott.wave2MinRetracement} onChange={(e) => updateElliottNumber("wave2MinRetracement", e.target.value)} />
-          <TextField fullWidth label="Wave 2 retracement до" type="number" value={settings.elliott.wave2MaxRetracement} onChange={(e) => updateElliottNumber("wave2MaxRetracement", e.target.value)} />
+          {elliottChoice("Wave 2 retracement от", "wave2MinRetracement", [0, 0.236, 0.382, 0.5, 0.618, 0.786])}
+          {elliottChoice("Wave 2 retracement до", "wave2MaxRetracement", [0.236, 0.382, 0.5, 0.618, 0.786, 0.9, 0.99])}
         </Stack>
         <Stack direction="row" spacing={1.5}>
           <TextField fullWidth select label="Модель входа" value={settings.elliott.entryModel}
+            slotProps={{ select: { renderValue: (selected) => checkedValue(selected, {
+              CHOCH_MARKET: "CHOCH market", CHOCH_RETRACE: "CHOCH retrace",
+              WAVE1_BREAK_RETRACE: "P1 break + retrace",
+            }[String(selected)] ?? String(selected)) } }}
             onChange={(e) => onChange({ ...settings, elliott: {
               ...settings.elliott, entryModel: e.target.value as typeof settings.elliott.entryModel,
             } })}>
-            <MenuItem value="CHOCH_MARKET">CHOCH market</MenuItem><MenuItem value="CHOCH_RETRACE">CHOCH retrace</MenuItem><MenuItem value="WAVE1_BREAK_RETRACE">P1 break + retrace</MenuItem>
+            <MenuItem value="CHOCH_MARKET"><Checkbox checked={settings.elliott.entryModel === "CHOCH_MARKET"} /><ListItemText primary="CHOCH market" /></MenuItem>
+            <MenuItem value="CHOCH_RETRACE"><Checkbox checked={settings.elliott.entryModel === "CHOCH_RETRACE"} /><ListItemText primary="CHOCH retrace" /></MenuItem>
+            <MenuItem value="WAVE1_BREAK_RETRACE"><Checkbox checked={settings.elliott.entryModel === "WAVE1_BREAK_RETRACE"} /><ListItemText primary="P1 break + retrace" /></MenuItem>
           </TextField>
-          <TextField fullWidth label="Retracement входа" type="number" value={settings.elliott.entryRetracement} onChange={(e) => updateElliottNumber("entryRetracement", e.target.value)} />
-          <TextField fullWidth label="Ждать вход, свечей" type="number" value={settings.elliott.entryExpiryBars}
-            slotProps={{ htmlInput: { min: 1, step: 1 } }} onChange={(e) => updateElliottNumber("entryExpiryBars", e.target.value)} />
+          {elliottChoice("Retracement входа", "entryRetracement", [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1])}
+          {elliottChoice("Ждать вход, свечей", "entryExpiryBars", [1, 2, 3, 4, 5, 8, 10, 15, 20, 50, 100])}
         </Stack>
         <Stack direction="row" spacing={1.5}>
-          <TextField fullWidth label="CHOCH displacement, ATR" type="number" value={settings.elliott.chochMinAtr} onChange={(e) => updateElliottNumber("chochMinAtr", e.target.value)} />
-          <TextField fullWidth label="Мин. тело свечи" type="number" value={settings.elliott.chochMinBodyRatio} onChange={(e) => updateElliottNumber("chochMinBodyRatio", e.target.value)} />
+          {elliottChoice("CHOCH displacement, ATR", "chochMinAtr", [0, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 5, 10])}
+          {elliottChoice("Мин. тело свечи", "chochMinBodyRatio", [0, 0.25, 0.35, 0.5, 0.6, 0.75, 1])}
         </Stack>
         <Stack direction="row" spacing={1.5}>
-          <TextField fullWidth label="Буфер стопа, ATR" type="number" value={settings.elliott.stopBufferAtr} onChange={(e) => updateElliottNumber("stopBufferAtr", e.target.value)} />
+          {elliottChoice("Буфер стопа, ATR", "stopBufferAtr", [0, 0.1, 0.2, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 5, 10])}
           <TextField fullWidth label="Минимальный RR" type="number" value={settings.elliott.minimumRr} onChange={(e) => updateElliottNumber("minimumRr", e.target.value)} />
         </Stack>
         <Paper variant="outlined" sx={{ p: 2 }}>

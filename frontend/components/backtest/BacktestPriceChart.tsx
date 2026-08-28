@@ -88,7 +88,9 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, elliottPattern
         color: pattern.direction === "LONG" ? "#42a5f5" : "#ab47bc", lineWidth: 2,
         title: `Elliott ${pattern.structureTimeframe}`,
       });
-      wave.setData(points.map((point) => ({ time: chartTime(nearestTimestamp(selectedCandles, point.timestamp)), value: point.price })));
+      wave.setData(points.map((point) => ({
+        time: chartTime(nearestTimestamp(selectedCandles, point.confirmedAt)), value: point.price,
+      })));
     });
     visibleScenarios.forEach((scenario) => {
       const color = scenario.direction === "LONG" ? "#26a69a" : "#ef5350";
@@ -168,10 +170,10 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, elliottPattern
     ]) : [];
     const waveMarkers = showWaves ? elliottPatterns.filter((pattern) => pattern.state !== "INVALID").flatMap((pattern) =>
       Object.entries(pattern.points).map(([label, point]) => ({
-        time: chartTime(nearestTimestamp(selectedCandles, point.timestamp)),
+        time: chartTime(nearestTimestamp(selectedCandles, point.confirmedAt)),
         position: point.kind === "LOW" ? "belowBar" as const : "aboveBar" as const,
         color: pattern.direction === "LONG" ? "#42a5f5" : "#ab47bc", shape: "circle" as const,
-        text: `${label} · ${pattern.structureTimeframe}`,
+        text: `${label} подтвержд. · ${pattern.structureTimeframe}`,
       }))) : [];
     const markers = [...tradeMarkers, ...waveMarkers].sort((left,right) => Number(left.time)-Number(right.time));
     createSeriesMarkers(candleSeries, markers);

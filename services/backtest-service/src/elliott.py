@@ -80,7 +80,7 @@ def _adx(candles: list[dict], period: int) -> tuple[list[float], list[float], li
     return _rolling(dx, period), plus_di, minus_di
 
 
-def atr_zigzag(candles: list[dict], config) -> list[Pivot]:
+def atr_zigzag(candles: list[dict], config, timeframe: str | None = None) -> list[Pivot]:
     """ATR ZigZag whose pivot timestamp is separate from its later confirmation time."""
     if len(candles) < 3:
         return []
@@ -88,6 +88,7 @@ def atr_zigzag(candles: list[dict], config) -> list[Pivot]:
     direction = 0
     high_index = low_index = 0
     pivots: list[Pivot] = []
+    candle_duration = TIMEFRAME_MILLISECONDS[timeframe or config.structure_timeframe]
 
     def append(index: int, confirmed: int, kind: str):
         price = float(candles[index]["high" if kind == "HIGH" else "low"])
@@ -95,7 +96,10 @@ def atr_zigzag(candles: list[dict], config) -> list[Pivot]:
             if pivots and pivots[-1].kind == kind:
                 better = price > pivots[-1].price if kind == "HIGH" else price < pivots[-1].price
                 if better:
-                    pivots[-1] = Pivot(index, int(candles[index]["timestamp"]), int(candles[confirmed]["timestamp"]), price, kind, atrs[index])
+                    pivots[-1] = Pivot(
+                        index, int(candles[index]["timestamp"]),
+                        int(candles[confirmed]["timestamp"]) + candle_duration, price, kind, atrs[index],
+                    )
             return
         if pivots:
             distance = abs(price - pivots[-1].price)
@@ -103,7 +107,10 @@ def atr_zigzag(candles: list[dict], config) -> list[Pivot]:
                 return
             if config.max_swing_candles and index - pivots[-1].index > config.max_swing_candles:
                 return
-        pivots.append(Pivot(index, int(candles[index]["timestamp"]), int(candles[confirmed]["timestamp"]), price, kind, atrs[index]))
+        pivots.append(Pivot(
+            index, int(candles[index]["timestamp"]),
+            int(candles[confirmed]["timestamp"]) + candle_duration, price, kind, atrs[index],
+        ))
 
     for index in range(1, len(candles)):
         if float(candles[index]["high"]) >= float(candles[high_index]["high"]):
@@ -135,8 +142,9 @@ def _efficiency(candles: list[dict], left: int, right: int) -> float:
     return abs(closes[-1] - closes[0]) / path if path else 0
 
 
-def _macro_direction(candles: list[dict], timestamp: int, mode: ElliottMacroFilter) -> str:
-    available = [item for item in candles if int(item["timestamp"]) <= timestamp]
+def _macro_direction(candles: list[dict], timestamp: int, mode: ElliottMacroFilter, timeframe: str) -> str:
+    duration = TIMEFRAME_MILLISECONDS[timeframe]
+    available = [item for item in candles if int(item["timestamp"]) + duration <= timestamp]
     if mode == ElliottMacroFilter.OFF or len(available) < 3:
         return "BOTH"
     closes = [float(item["close"]) for item in available]
@@ -148,8 +156,8 @@ def _macro_direction(candles: list[dict], timestamp: int, mode: ElliottMacroFilt
 
 
 def detect_patterns(structure: list[dict], entry: list[dict], macro: list[dict], config) -> tuple[list[Pattern], list[Pivot], list[Pivot]]:
-    pivots = atr_zigzag(structure, config)
-    entry_pivots = atr_zigzag(entry, config)
+    pivots = atr_zigzag(structure, config, config.structure_timeframe)
+    entry_pivots = atr_zigzag(entry, config, config.entry_timeframe)
     adx, plus_di, minus_di = _adx(entry, config.adx_period)
     entry_atr = _rolling(_true_ranges(entry), config.atr_period)
     volume_avg = _rolling([float(item.get("volume", 0)) for item in entry], config.volume_sma_period)
@@ -192,7 +200,7 @@ def detect_patterns(structure: list[dict], entry: list[dict], macro: list[dict],
             prior = pivots[pos - 3]
             if sign * (p1.price - prior.price) <= config.bos_buffer_atr * p1.atr:
                 invalid = "WAVE1_NO_BOS"
-        macro_side = _macro_direction(macro, p2.confirmed_at, config.macro_filter)
+        macro_side = _macro_direction(macro, p2.confirmed_at, config.macro_filter, config.macro_timeframe)
         features["macro_direction"] = macro_side
         if macro_side not in ("BOTH", direction):
             invalid = "MACRO_FILTER"
@@ -201,10 +209,29 @@ def detect_patterns(structure: list[dict], entry: list[dict], macro: list[dict],
             patterns.append(pattern)
             continue
 
-        candidates = [(index, candle) for index, candle in enumerate(entry) if int(candle["timestamp"]) > p2.confirmed_at]
+        # A Wave 3 entry belongs to the move out of P2. Once the next structure
+        # pivot in the Wave 3 direction is confirmed, that move is complete and
+        # a later CHOCH must not revive this old pattern.
+        expected_p3_kind = "HIGH" if direction == "LONG" else "LOW"
+        p3_candidate = next(
+            (pivot for pivot in pivots if pivot.index > p2.index and pivot.kind == expected_p3_kind),
+            None,
+        )
+        signal_deadline = p3_candidate.confirmed_at if p3_candidate else None
+        pattern.features["signal_deadline"] = signal_deadline or 0
+        entry_duration = TIMEFRAME_MILLISECONDS[config.entry_timeframe]
+        candidates = [
+            (index, candle) for index, candle in enumerate(entry)
+            if int(candle["timestamp"]) >= p2.confirmed_at
+            and (signal_deadline is None or int(candle["timestamp"]) + entry_duration < signal_deadline)
+        ]
         trigger = None
         for index, candle in candidates:
-            prior_swings = [pivot for pivot in entry_pivots if pivot.confirmed_at < int(candle["timestamp"]) and pivot.timestamp >= p1.timestamp]
+            candle_available_at = int(candle["timestamp"]) + entry_duration
+            prior_swings = [
+                pivot for pivot in entry_pivots
+                if pivot.confirmed_at <= int(candle["timestamp"]) and pivot.timestamp >= p1.timestamp
+            ]
             relevant = [pivot for pivot in prior_swings if pivot.kind == ("HIGH" if direction == "LONG" else "LOW")]
             if not relevant:
                 continue
@@ -222,7 +249,7 @@ def detect_patterns(structure: list[dict], entry: list[dict], macro: list[dict],
                 break
         if trigger:
             index, candle, level, displacement, body, volume_ratio = trigger
-            pattern.state, pattern.signal_time = "WAVE3_POTENTIAL", int(candle["timestamp"])
+            pattern.state, pattern.signal_time = "WAVE3_POTENTIAL", int(candle["timestamp"]) + entry_duration
             pattern.features.update({"choch_level": level, "choch_displacement_atr": displacement,
                                      "choch_close": close,
                                      "choch_body_ratio": body, "adx": adx[index], "plus_di": plus_di[index],
@@ -278,13 +305,14 @@ def _fixed_rr_target(entry_price: float, stop: float, direction: str, take_profi
 
 
 def _fee_adjusted_break_even_stop(entry_price: float, direction: str, maker_fee: float,
-                                  taker_fee: float, slippage: float, tick_size: float) -> float:
+                                  taker_fee: float, slippage: float, tick_size: float,
+                                  funding_per_unit: float = 0) -> float:
     """Return a trigger whose simulated fill covers both commissions and exit slippage."""
     if direction == "LONG":
-        executed = entry_price * (1 + maker_fee) / (1 - taker_fee)
+        executed = (entry_price * (1 + maker_fee) + funding_per_unit) / (1 - taker_fee)
         raw = executed / (1 - slippage)
         return ceil(raw / tick_size) * tick_size
-    executed = entry_price * (1 - maker_fee) / (1 + taker_fee)
+    executed = (entry_price * (1 - maker_fee) - funding_per_unit) / (1 + taker_fee)
     raw = executed / (1 + slippage)
     return floor(raw / tick_size) * tick_size
 
@@ -354,20 +382,42 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
                        "pnl_percent": position["realized"] / max(
                            position["entry_price"] * position["quantity"] / (config.leverage if ec.use_margin else 1), 1e-12,
                        ) * 100,
-                       "fees": position["fees"], "funding": 0, "reason": reason})
+                       "fees": position["fees"], "funding": position["funding"], "reason": reason})
         for key in ("stop", "targets", "target_allocations", "risk_capital", "remaining", "realized",
-                    "break_even_active", "entry_fee_rate"):
+                    "break_even_active", "entry_fee_rate", "last_funding_time"):
             trades[-1].pop(key, None)
         position = None
 
     for candle in entry:
         timestamp = int(candle["timestamp"])
+        available_at = timestamp + TIMEFRAME_MILLISECONDS[ec.entry_timeframe]
         high, low, close = float(candle["high"]), float(candle["low"]), float(candle["close"])
+        had_position = position is not None
         if position:
+            interval = config.funding_interval_hours * 3_600_000
+            funding_events = max(0, (available_at - position["last_funding_time"]) // interval)
+            if funding_events:
+                funding = (
+                    position["entry_price"] * position["remaining"] * config.funding_percent_per_day / 100
+                    * config.funding_interval_hours / 24 * funding_events
+                )
+                signed_funding = funding * (1 if position["direction"] == "LONG" else -1)
+                capital -= signed_funding
+                position["realized"] -= signed_funding
+                position["funding"] += signed_funding
+                position["last_funding_time"] += funding_events * interval
             side = 1 if position["direction"] == "LONG" else -1
-            liquidation = position["entry_price"] * (
-                1 - 1 / config.leverage if side == 1 else 1 + 1 / config.leverage
-            )
+            exit_cost_rate = taker_fee + config.liquidation_fee_percent / 100
+            margin = position["entry_price"] * position["quantity"] / config.leverage
+            entry_cost = position["entry_price"] * position["quantity"] * position["entry_fee_rate"]
+            if side == 1:
+                liquidation = (
+                    position["entry_price"] * position["quantity"] - margin + entry_cost + position["funding"]
+                ) / max(position["quantity"] * (1 - exit_cost_rate), 1e-12)
+            else:
+                liquidation = (
+                    position["entry_price"] * position["quantity"] + margin - entry_cost - position["funding"]
+                ) / max(position["quantity"] * (1 + exit_cost_rate), 1e-12)
             margin_active = ec.use_margin and config.leverage > 1
             terminal = (max(position["stop"], liquidation) if side == 1 else min(position["stop"], liquidation)) \
                 if margin_active else position["stop"]
@@ -393,12 +443,15 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
                     if position and not is_final and ec.first_take_action.value == "MOVE_TO_BREAK_EVEN":
                         position["stop"] = _fee_adjusted_break_even_stop(
                             position["entry_price"], position["direction"], position["entry_fee_rate"],
-                            taker_fee, slip, config.tick_size,
+                            taker_fee, slip, config.tick_size, position["funding"] / max(position["remaining"], 1e-12),
                         )
                         position["break_even_active"] = True
-        if position is None:
+        if position is None and not had_position:
             expiry_ms = ec.entry_expiry_bars * TIMEFRAME_MILLISECONDS[ec.entry_timeframe]
-            available = [item for item in signals if item.id not in processed and item.signal_time <= timestamp]
+            available = [
+                item for item in signals
+                if item.id not in processed and item.signal_time + config.execution_latency_ms <= timestamp
+            ]
             for stale in [item for item in available if timestamp > item.signal_time + expiry_ms]:
                 processed.add(stale.id)
                 expired_signals += 1
@@ -409,14 +462,14 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
                 candidate_side = 1 if candidate.direction == "LONG" else -1
                 candidate_entry = float(candle["open"]) * (1 + slip * candidate_side)
                 candidate_fee = taker_fee
-                touched = timestamp > candidate.signal_time
+                touched = timestamp >= candidate.signal_time
                 if ec.entry_model == ElliottEntryModel.CHOCH_RETRACE:
                     level = candidate.features["choch_level"]
                     signal_close = candidate.features["choch_close"]
                     candidate_entry = level + candidate_side * ec.entry_retracement * abs(signal_close - level)
                     candidate_entry = round(candidate_entry / config.tick_size) * config.tick_size
                     candidate_fee = maker_fee
-                    touched = timestamp > candidate.signal_time and low <= candidate_entry <= high
+                    touched = timestamp >= candidate.signal_time and low <= candidate_entry <= high
                 if touched:
                     pattern, entry_price, entry_fee_rate = candidate, candidate_entry, candidate_fee
                     break
@@ -449,6 +502,8 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
                         capital, config.initial_capital, entry_price,
                         ec.use_margin, config.leverage, ec.reinvest_profits, config.lot_size,
                     )
+                    quantity = min(quantity, float(candle.get("volume", 0)) * config.volume_participation_percent / 100)
+                    quantity = floor(quantity / config.lot_size) * config.lot_size
                     risk_capital = risk * quantity
                     if quantity >= config.minimum_order_size:
                         traded.add(pattern.id)
@@ -457,11 +512,45 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
                                     "targets": targets, "take_profit_prices": list(targets), "risk_capital": risk_capital,
                                     "target_allocations": ([1.0] if ec.take_profit_count == 1
                                                            else list(ec.take_profit_allocations)),
-                                    "remaining": quantity, "realized": 0.0, "fees": 0.0, "exits": [],
+                                    "remaining": quantity, "realized": 0.0, "fees": 0.0, "funding": 0.0, "exits": [],
                                     "break_even_active": False,
                                     "entry_fee_rate": entry_fee_rate,
+                                    "last_funding_time": timestamp,
                                     "signal_timeframe": ec.entry_timeframe,
                                     "structure_timeframe": ec.structure_timeframe}
+        # Market entries occur at the candle open; retracement entries occur
+        # inside this candle. Without lower-timeframe ordering, apply the
+        # conservative stop-first rule to the entry candle as well.
+        if position and not had_position:
+            side = 1 if position["direction"] == "LONG" else -1
+            liquidation = position["entry_price"] * (
+                1 - 1 / config.leverage if side == 1 else 1 + 1 / config.leverage
+            )
+            margin_active = ec.use_margin and config.leverage > 1
+            terminal = (max(position["stop"], liquidation) if side == 1 else min(position["stop"], liquidation)) \
+                if margin_active else position["stop"]
+            terminal_hit = low <= terminal if side == 1 else high >= terminal
+            if terminal_hit:
+                reason = "LIQUIDATION" if margin_active and terminal == liquidation else "STRUCTURAL_STOP"
+                raw_terminal = min(float(candle["open"]), terminal) if side == 1 else max(float(candle["open"]), terminal)
+                finish(raw_terminal, timestamp, reason)
+            else:
+                reached = ([target for target in position["targets"] if high >= target] if side == 1
+                           else [target for target in position["targets"] if low <= target])
+                for target in reached:
+                    target_index = position["targets"].index(target)
+                    position["targets"].pop(target_index)
+                    allocation = position["target_allocations"].pop(target_index)
+                    is_final = not position["targets"]
+                    if is_final or ec.first_take_action.value == "PARTIAL_CLOSE":
+                        finish(target, timestamp, "ELLIOTT_EXTENSION",
+                               position["remaining"] if is_final else position["quantity"] * allocation)
+                    if position and not is_final and ec.first_take_action.value == "MOVE_TO_BREAK_EVEN":
+                        position["stop"] = _fee_adjusted_break_even_stop(
+                            position["entry_price"], position["direction"], position["entry_fee_rate"],
+                            taker_fee, slip, config.tick_size,
+                        )
+                        position["break_even_active"] = True
         unrealized = 0 if not position else (
             (close - position["entry_price"]) * position["remaining"]
             * (1 if position["direction"] == "LONG" else -1)
@@ -504,6 +593,10 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
             "elliott_diagnostics": {"states": counts, "patterns": len(patterns), "signals": len(signals),
                                      "traded_signals": len(traded), "expired_signals": expired_signals,
                                      "lookahead_safe": True,
+                                     "availability_basis": "CANDLE_CLOSE",
+                                     "pivot_confirmation_uses_close_time": True,
+                                     "macro_filter_uses_closed_candles_only": True,
+                                     "entry_uses_next_candle_open": True,
                                      "excluded_v1_patterns": ["DIAGONAL", "FLAT", "TRIANGLE", "DOUBLE_THREE", "TRIPLE_THREE"]},
             "pattern_diagnostics": [], "template_distribution": {},
             "dataset": {

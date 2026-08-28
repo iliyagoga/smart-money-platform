@@ -2,7 +2,7 @@ import pytest
 
 from src.elliott import (
     Pattern, Pivot, _elliott_position_quantity, _fee_adjusted_break_even_stop,
-    _fixed_rr_target, _round_trade_prices,
+    _fixed_rr_target, _macro_direction, _round_trade_prices,
     atr_zigzag, detect_patterns, run_elliott_replay,
 )
 from src.models import BacktestConfig, ElliottConfig, StrategyType
@@ -134,8 +134,15 @@ def test_margin_position_is_liquidated_before_a_distant_structural_stop(monkeypa
 def test_atr_zigzag_confirmation_never_precedes_pivot():
     pivots = atr_zigzag(candles([100, 98, 95, 99, 105, 101, 97, 103, 110]), loose_config())
     assert len(pivots) >= 3
-    assert all(item.confirmed_at >= item.timestamp for item in pivots)
+    assert all(item.confirmed_at >= item.timestamp + 3_600_000 for item in pivots)
     assert all(left.kind != right.kind for left, right in zip(pivots, pivots[1:]))
+
+
+def test_macro_filter_never_reads_an_unclosed_higher_timeframe_candle():
+    macro = candles([100, 99, 120], 14_400_000)
+
+    assert _macro_direction(macro, 36_000_000, "STRUCTURE", "H4") == "BOTH"
+    assert _macro_direction(macro, 43_200_000, "STRUCTURE", "H4") == "LONG"
 
 
 def test_wave2_invalidation_rule(monkeypatch):
@@ -145,10 +152,32 @@ def test_wave2_invalidation_rule(monkeypatch):
         Pivot(4, 4_000, 5_000, 110, "HIGH", 2),
         Pivot(7, 7_000, 8_000, 99, "LOW", 2),
     ]
-    monkeypatch.setattr("src.elliott.atr_zigzag", lambda items, config: pivots if items is structure else [])
+    monkeypatch.setattr("src.elliott.atr_zigzag", lambda items, config, timeframe=None: pivots if items is structure else [])
     patterns, _, _ = detect_patterns(structure, candles([100] * 12, 900_000), candles([100] * 4, 14_400_000), loose_config())
     assert patterns[0].state == "INVALID"
     assert patterns[0].invalid_reason == "WAVE2_BEYOND_P0"
+
+
+def test_choch_after_confirmed_wave3_pivot_cannot_revive_old_pattern(monkeypatch):
+    structure = candles([100] * 8, 1_000)
+    entry = candles([100, 100, 100, 100, 100, 100, 112, 112], 1_000)
+    structure_pivots = [
+        Pivot(0, 0, 1_000, 100, "LOW", 2),
+        Pivot(1, 1_000, 2_000, 110, "HIGH", 2),
+        Pivot(2, 2_000, 3_000, 105, "LOW", 2),
+        Pivot(4, 4_000, 5_000, 115, "HIGH", 2),
+    ]
+    entry_pivots = [Pivot(3, 3_000, 3_500, 108, "HIGH", 1)]
+    monkeypatch.setattr(
+        "src.elliott.atr_zigzag",
+        lambda items, config, timeframe=None: structure_pivots if items is structure else entry_pivots if items is entry else [],
+    )
+
+    patterns, _, _ = detect_patterns(structure, entry, candles([100] * 3, 4_000), loose_config())
+    pattern = next(item for item in patterns if item.points["P0"].timestamp == 0)
+
+    assert pattern.features["signal_deadline"] == 5_000
+    assert pattern.signal_time is None
 
 
 def test_complete_impulse_and_abc_are_classified(monkeypatch):
@@ -160,7 +189,7 @@ def test_complete_impulse_and_abc_are_classified(monkeypatch):
         Pivot(13, 13_000, 14_000, 116, "LOW", 2), Pivot(15, 15_000, 16_000, 121, "HIGH", 2),
         Pivot(17, 17_000, 18_000, 111, "LOW", 2),
     ]
-    monkeypatch.setattr("src.elliott.atr_zigzag", lambda items, config: sequence if items is structure else [])
+    monkeypatch.setattr("src.elliott.atr_zigzag", lambda items, config, timeframe=None: sequence if items is structure else [])
     patterns, _, _ = detect_patterns(structure, candles([100] * 20, 900_000), candles([100] * 5, 14_400_000), loose_config())
     complete = next(item for item in patterns if item.points["P0"].timestamp == 1_000)
     assert complete.state == "ABC_COMPLETE"
