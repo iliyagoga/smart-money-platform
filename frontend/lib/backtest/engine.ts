@@ -103,6 +103,7 @@ export function runBacktest({ candles, settings }: BacktestInput): BacktestResul
     equity,
     chartCandles: sortedCandles.map(({ timestamp, open, high, low, close, volume }) => ({ timestamp, open, high, low, close, volume })),
     chartCandlesByTimeframe: {},
+    structureOverlaysByTimeframe: {},
     scenarios: [],
     patternDiagnostics: {},
   };

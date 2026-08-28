@@ -15,6 +15,8 @@ class OrderCreate(BaseModel):
         if self.side not in {"BUY","SELL"}:raise ValueError("side must be BUY or SELL")
         if self.type not in {"LIMIT","MARKET","STOP"}:raise ValueError("unsupported order type")
         if self.type!="MARKET" and self.price is None:raise ValueError("price is required")
+        if len(self.take_profit_prices)>1:raise ValueError("exactly one take profit is supported")
+        if self.target_allocations and self.target_allocations!=[1]:raise ValueError("single take profit allocation must be 1")
         return self
 class Order(OrderCreate):
     id:str=Field(default_factory=lambda:str(uuid4()));status:str="PENDING";exchange_order_id:str|None=None

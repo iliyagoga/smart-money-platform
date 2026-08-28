@@ -16,6 +16,7 @@ class Candle(BaseModel):
     symbol: str; timeframe: Timeframe; timestamp: int = Field(ge=0)
     open: float = Field(gt=0); high: float = Field(gt=0); low: float = Field(gt=0); close: float = Field(gt=0)
     volume: float = Field(ge=0); quote_volume: float | None = None; trades_count: int | None = None; is_closed: bool = True
+    indicators: dict[str, float] = Field(default_factory=dict)
     @model_validator(mode="after")
     def valid_ohlc(self):
         if self.low > self.high or not self.low <= self.open <= self.high or not self.low <= self.close <= self.high:

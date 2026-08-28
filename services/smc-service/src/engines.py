@@ -1,14 +1,20 @@
 from __future__ import annotations
 from collections import defaultdict
+import os
 from .models import *
+from .external_smc import SmartMoneyConceptsAdapter, available as external_smc_available
 
 
 def atr(candles:list[Candle], period:int=14)->float:
-    if len(candles)<2: return max(candles[-1].high-candles[-1].low,1e-12) if candles else 0
+    if candles and f"atr:{period}" in candles[-1].indicators:return candles[-1].indicators[f"atr:{period}"]
+    if len(candles)<2:
+        result=max(candles[-1].high-candles[-1].low,1e-12) if candles else 0
+        if candles:candles[-1].indicators[f"atr:{period}"]=result
+        return result
     values=[]
     for previous,current in zip(candles[-period-1:-1],candles[-period:]):
         values.append(max(current.high-current.low,abs(current.high-previous.close),abs(current.low-previous.close)))
-    return sum(values)/len(values)
+    result=sum(values)/len(values);candles[-1].indicators[f"atr:{period}"]=result;return result
 
 
 class SwingEngine:
@@ -143,11 +149,33 @@ class AnalysisPipeline:
         self.candles=defaultdict(list);self.swings=defaultdict(list);self.trends={};self.changes=defaultdict(list);self.seen=defaultdict(set)
         self.obs=defaultdict(list);self.fvgs=defaultdict(list);self.liquidity=defaultdict(list)
         self.swing_engine=SwingEngine(lookback);self.trend_engine=TrendEngine();self.structure_engine=StructureEngine();self.ob_engine=OrderBlockEngine();self.fvg_engine=FVGEngine();self.liquidity_engine=LiquidityEngine()
+        provider = os.getenv("SMC_PROVIDER", "smartmoneyconcepts").lower()
+        self.external = SmartMoneyConceptsAdapter(lookback) if provider in {"smartmoneyconcepts", "smc"} and external_smc_available() else None
     def process(self,candle:Candle)->AnalysisResult:
         key=(candle.symbol,candle.timeframe);bars=self.candles[key]
         if bars and candle.timestamp<=bars[-1].timestamp:
             bars[:]=[x for x in bars if x.timestamp!=candle.timestamp]
         bars.append(candle);bars.sort(key=lambda x:x.timestamp);del bars[:-500]
+        if self.external is not None:
+            swing_rows, change_rows, ob_rows, fvg_rows, liquidity_rows = self.external.detect(bars)
+            swings = [Swing(symbol=candle.symbol, timeframe=candle.timeframe, timestamp=x["timestamp"], price=x["price"],
+                type=SwingType(x["type"]), lookback=self.external.swing_length, id=x["id"]) for x in swing_rows]
+            changes = [StructureChange(symbol=candle.symbol, timeframe=candle.timeframe, type=x["type"],
+                direction=Direction(x["direction"]), break_level_price=x["price"], timestamp=x["timestamp"], id=x["id"])
+                for x in change_rows if x["broken_index"] < len(bars)]
+            obs = [OrderBlock(symbol=candle.symbol, timeframe=candle.timeframe, type=Direction(x["direction"]), zone_low=x["low"],
+                zone_high=x["high"], created_at=x["timestamp"], id=x["id"], strength_score=x.get("strength", .5),
+                is_broken=x.get("end_at") is not None, source_candle_timestamp=x["timestamp"], source_break_id=x.get("source_break_id")) for x in ob_rows]
+            fvgs = [FVG(symbol=candle.symbol, timeframe=candle.timeframe, type=Direction(x["direction"]), zone_low=x["low"],
+                zone_high=x["high"], created_at=x["timestamp"], id=x["id"], consequent_encroachment=x.get("ce"),
+                is_filled=x.get("end_at") is not None) for x in fvg_rows]
+            liquidity = [LiquidityZone(symbol=candle.symbol, timeframe=candle.timeframe, type=x["type"], price_level=x["price"],
+                created_at=x["timestamp"], id=x["id"], swept=x["swept"], swept_at=x.get("swept_at")) for x in liquidity_rows]
+            self.swings[key][:] = swings[-500:]; self.changes[key][:] = changes[-500:]
+            self.obs[key][:] = [x for x in obs if not x.is_broken][-500:]; self.fvgs[key][:] = [x for x in fvgs if not x.is_filled][-500:]
+            self.liquidity[key][:] = [x for x in liquidity if not x.swept][-500:] + [x for x in liquidity if x.swept][-100:]
+            trend = self.trend_engine.calculate(self.swings[key], candle.timestamp); self.trends[key] = trend
+            return AnalysisResult(swings=swings, trend=trend, changes=changes, order_blocks=obs, fvgs=fvgs, liquidity_zones=liquidity)
         new_swings=self.swing_engine.detect(bars,self.swings[key]);self.swings[key].extend(new_swings)
         trend=self.trend_engine.calculate(self.swings[key],candle.timestamp);self.trends[key]=trend
         changes=self.structure_engine.detect(candle,self.swings[key],trend,self.seen[key]);self.changes[key].extend(changes)

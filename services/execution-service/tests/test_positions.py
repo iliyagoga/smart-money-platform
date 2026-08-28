@@ -12,6 +12,9 @@ def test_stop_has_conservative_priority():
     events=PositionManager().update(position(),candle(94,111,105));assert events[0][0]=="close" and events[0][1]["reason"]=="STOP_LOSS"
 def test_take_profit_closes_single_target():
     events=PositionManager().update(position(),candle(99,111,110));assert events[0][0]=="close" and events[0][1]["reason"]=="TAKE_PROFIT"
+def test_order_rejects_multiple_take_profits():
+    with pytest.raises(ValueError,match="exactly one take profit"):
+        Order(symbol="BTC-USDT",side="BUY",type="LIMIT",price=100,quantity=1,take_profit_prices=[110,120])
 def test_one_r_protects_position():
     p=position(take_profit_prices=[120]);events=PositionManager().update(p,candle(99,106,105));assert p.stop_loss_price==100 and p.status=="PROTECTED" and events[0][0]=="updated"
 def test_short_stop():

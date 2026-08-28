@@ -1,15 +1,28 @@
 "use client";
 
 import { Box, Button, Chip, CircularProgress, FormControlLabel, MenuItem, Pagination, Paper, Stack, Switch, TextField, Typography } from "@mui/material";
-import { CandlestickSeries, ColorType, LineSeries, createChart, createSeriesMarkers, type IChartApi, type UTCTimestamp } from "lightweight-charts";
+import { BaselineSeries, CandlestickSeries, ColorType, HistogramSeries, LineSeries, LineType, createChart, createSeriesMarkers, type IChartApi, type UTCTimestamp } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { BacktestChartCandle, BacktestScenario, BacktestTrade } from "../../lib/backtest/types";
+import type { BacktestChartCandle, BacktestScenario, BacktestStructureOverlay, BacktestTrade } from "../../lib/backtest/types";
 
 const chartTime = (timestamp: number) => Math.floor(timestamp/1000) as UTCTimestamp;
 
-export function BacktestPriceChart({ candles, candlesByTimeframe, scenarios, trades }: {
+const candleTimeForMarker = (timestamp: number, candles: BacktestChartCandle[]) => {
+  if (!candles.length || timestamp < candles[0].timestamp || timestamp > candles[candles.length-1].timestamp) return undefined;
+  let low = 0;
+  let high = candles.length-1;
+  while (low < high) {
+    const middle = Math.ceil((low+high)/2);
+    if (candles[middle].timestamp <= timestamp) low = middle;
+    else high = middle-1;
+  }
+  return chartTime(candles[low].timestamp);
+};
+
+export function BacktestPriceChart({ candles, candlesByTimeframe, overlaysByTimeframe, scenarios, trades }: {
   candles: BacktestChartCandle[];
   candlesByTimeframe: Record<string, BacktestChartCandle[]>;
+  overlaysByTimeframe: Record<string, BacktestStructureOverlay>;
   scenarios: BacktestScenario[];
   trades: BacktestTrade[];
 }) {
@@ -20,20 +33,38 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, scenarios, tra
   const [visibleTemplates, setVisibleTemplates] = useState<string[]>([]);
   const [zoneLimit, setZoneLimit] = useState(100);
   const [zonePage, setZonePage] = useState(1);
-  const [showEntryZones, setShowEntryZones] = useState(true);
+  const [showEntryZones, setShowEntryZones] = useState(false);
+  const [showFractals, setShowFractals] = useState(true);
+  const [showBos, setShowBos] = useState(true);
+  const [showOrderBlocks, setShowOrderBlocks] = useState(true);
+  const [showFvgs, setShowFvgs] = useState(true);
   const [showStops, setShowStops] = useState(true);
   const [showTargets, setShowTargets] = useState(true);
   const [showTrades, setShowTrades] = useState(true);
+  const [showVolume, setShowVolume] = useState(true);
+  const [showAtr, setShowAtr] = useState(false);
+  const [showAdx, setShowAdx] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const fullscreenRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const fitRef = useRef<(scenario?: BacktestScenario) => void>(() => undefined);
   const selectedCandles = candlesByTimeframe[timeframe] ?? candles;
+  const selectedOverlay = overlaysByTimeframe[timeframe];
   const timeframeScenarios = useMemo(
     () => available.length ? scenarios.filter((item) => item.timeframe === timeframe) : scenarios,
     [available.length, scenarios, timeframe],
   );
+  const scenarioTimeframes = useMemo(
+    () => new Map(scenarios.map((item) => [item.id, item.timeframe])),
+    [scenarios],
+  );
+  const scenariosById = useMemo(() => new Map(scenarios.map((item) => [item.id, item])), [scenarios]);
+  const visibleTrades = useMemo(() => trades.filter((trade) => {
+    if (selectedScenario !== "ALL" && trade.scenarioId !== selectedScenario) return false;
+    if (!available.length || !trade.scenarioId) return true;
+    return scenarioTimeframes.get(trade.scenarioId) === timeframe;
+  }), [available.length, scenarioTimeframes, selectedScenario, timeframe, trades]);
   const templates = useMemo(() => [...new Set(timeframeScenarios.map((item) => item.templateId))].sort(), [timeframeScenarios]);
   const filteredScenarios = useMemo(() => timeframeScenarios.filter((item) =>
     (direction === "ALL" || item.direction === direction)
@@ -77,6 +108,70 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, scenarios, tra
     candleSeries.setData(selectedCandles.map((item) => ({
       time: chartTime(item.timestamp), open: item.open, high: item.high, low: item.low, close: item.close,
     })));
+    if (selectedOverlay && showFractals && selectedOverlay.swings.length > 1) {
+      const fractals = activeChart.addSeries(LineSeries, {
+        color: "rgba(255,255,255,.72)", lineWidth: 1, lineStyle: 2, title: "Fractals",
+        lastValueVisible: false, priceLineVisible: false,
+      });
+      fractals.setData(selectedOverlay.swings
+        .filter((item) => item.timestamp >= selectedCandles[0].timestamp && item.timestamp <= selectedCandles[selectedCandles.length-1].timestamp)
+        .map((item) => ({ time: chartTime(item.timestamp), value: item.price })));
+    }
+    if (selectedOverlay && showBos) {
+      (["BULLISH", "BEARISH"] as const).forEach((direction) => {
+        const points = selectedOverlay.changes.filter((item) => item.direction === direction
+          && item.timestamp >= selectedCandles[0].timestamp && item.timestamp <= selectedCandles[selectedCandles.length-1].timestamp);
+        if (!points.length) return;
+        const bos = activeChart.addSeries(LineSeries, {
+          color: direction === "BULLISH" ? "rgba(80,220,140,.78)" : "rgba(255,82,82,.78)",
+          lineWidth: 1, lineType: LineType.WithSteps, title: `${direction === "BULLISH" ? "Long" : "Short"} BOS`,
+          lastValueVisible: false, priceLineVisible: false,
+        });
+        bos.setData(points.map((item) => ({ time: chartTime(item.timestamp), value: item.price })));
+      });
+    }
+    const renderZones = (zones: Array<{ id: string; timestamp: number; low: number; high: number; direction: "BULLISH" | "BEARISH"; endAt?: number }>, kind: "OB" | "FVG") => {
+      zones.slice(-150).forEach((zone) => {
+        const start = Math.max(zone.timestamp, selectedCandles[0].timestamp);
+        const end = Math.min(zone.endAt ?? selectedCandles[selectedCandles.length-1].timestamp, selectedCandles[selectedCandles.length-1].timestamp);
+        if (start >= end) return;
+        const bullish = zone.direction === "BULLISH";
+        const color = kind === "OB" ? (bullish ? "rgba(40,200,110,.22)" : "rgba(240,65,65,.22)")
+          : (bullish ? "rgba(35,150,255,.22)" : "rgba(175,80,220,.24)");
+        const line = kind === "OB" ? (bullish ? "rgba(40,220,120,.7)" : "rgba(255,75,75,.7)")
+          : (bullish ? "rgba(50,165,255,.75)" : "rgba(190,90,235,.78)");
+        const zoneSeries = activeChart.addSeries(BaselineSeries, {
+          baseValue: { type: "price", price: zone.low }, topFillColor1: color, topFillColor2: color,
+          topLineColor: line, bottomFillColor1: color, bottomFillColor2: color, bottomLineColor: line,
+          lineWidth: 1, title: `${kind} ${bullish ? "LONG" : "SHORT"}`, lastValueVisible: false, priceLineVisible: false,
+        });
+        zoneSeries.setData([{ time: chartTime(start), value: zone.high }, { time: chartTime(end), value: zone.high }]);
+      });
+    };
+    if (selectedOverlay && showOrderBlocks) renderZones(selectedOverlay.orderBlocks, "OB");
+    if (selectedOverlay && showFvgs) renderZones(selectedOverlay.fvgs, "FVG");
+    let indicatorPane = 1;
+    if (showVolume) {
+      const volumeSeries = activeChart.addSeries(HistogramSeries, {
+        priceFormat: { type: "volume" }, priceScaleId: "volume", title: "Volume",
+      }, indicatorPane++);
+      volumeSeries.setData(selectedCandles.map((item) => ({
+        time: chartTime(item.timestamp), value: item.volume,
+        color: item.close >= item.open ? "rgba(38,166,154,.55)" : "rgba(239,83,80,.55)",
+      })));
+    }
+    if (showAtr) {
+      const atrSeries = activeChart.addSeries(LineSeries, { color: "#ffb74d", lineWidth: 2, title: "ATR(14)" }, indicatorPane++);
+      atrSeries.setData(selectedCandles.flatMap((item) => item.indicators?.["atr:14"] === undefined ? [] : [
+        { time: chartTime(item.timestamp), value: item.indicators["atr:14"] },
+      ]));
+    }
+    if (showAdx) {
+      const adxSeries = activeChart.addSeries(LineSeries, { color: "#ab47bc", lineWidth: 2, title: "ADX(14)" }, indicatorPane++);
+      adxSeries.setData(selectedCandles.flatMap((item) => item.indicators?.["adx:14"] === undefined ? [] : [
+        { time: chartTime(item.timestamp), value: item.indicators["adx:14"] },
+      ]));
+    }
     visibleScenarios.forEach((scenario) => {
       const color = scenario.direction === "LONG" ? "#26a69a" : "#ef5350";
       const end = Math.min(scenario.expiresAt, selectedCandles[selectedCandles.length-1].timestamp);
@@ -99,20 +194,48 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, scenarios, tra
           { time: chartTime(end), value: scenario.stopLossPrice },
         ]);
       }
-      if (showTargets) scenario.takeProfitPrices.forEach((target, index) => {
+      if (showTargets) scenario.takeProfitPrices.slice(0, 1).forEach((target) => {
         const takeProfit = activeChart.addSeries(LineSeries, {
-          color: "#00c853", lineWidth: 1, lineStyle: 2, title: `TP${index+1}`,
+          color: "#00c853", lineWidth: 1, lineStyle: 2, title: "TP",
         });
         takeProfit.setData([{ time: chartTime(scenario.timestamp), value: target }, { time: chartTime(end), value: target }]);
       });
     });
-    const markers = showTrades ? trades.flatMap((trade) => [
-      { time: chartTime(trade.entryTime), position: trade.direction === "LONG" ? "belowBar" as const : "aboveBar" as const,
-        color: trade.direction === "LONG" ? "#00e676" : "#ff5252", shape: trade.direction === "LONG" ? "arrowUp" as const : "arrowDown" as const,
-        text: `${trade.direction} #${trade.id}` },
-      { time: chartTime(trade.exitTime), position: "inBar" as const, color: trade.pnl >= 0 ? "#ffd54f" : "#ff9800",
-        shape: "circle" as const, text: `Exit ${trade.pnl.toFixed(2)}` },
-    ]).sort((left,right) => Number(left.time)-Number(right.time)) : [];
+    if (showTrades) visibleTrades.forEach((trade) => {
+      const scenario = trade.scenarioId ? scenariosById.get(trade.scenarioId) : undefined;
+      const target = scenario?.takeProfitPrices[0];
+      const stop = scenario?.stopLossPrice;
+      if (target === undefined || stop === undefined) return;
+      const from = Math.max(trade.entryTime, selectedCandles[0].timestamp);
+      const to = Math.min(trade.exitTime, selectedCandles[selectedCandles.length-1].timestamp);
+      if (from >= to) return;
+      const addTradeZone = (price: number, color: string, title: string) => {
+        const zone = activeChart.addSeries(BaselineSeries, {
+          baseValue: { type: "price", price: trade.entryPrice },
+          topFillColor1: color, topFillColor2: color, bottomFillColor1: color, bottomFillColor2: color,
+          topLineColor: color, bottomLineColor: color,
+          lineWidth: 1, title, lastValueVisible: false, priceLineVisible: false,
+        });
+        zone.setData([{ time: chartTime(from), value: price }, { time: chartTime(to), value: price }]);
+      };
+      addTradeZone(stop, "rgba(239, 83, 80, .28)", `${trade.direction} #${trade.id} SL`);
+      addTradeZone(target, "rgba(0, 200, 83, .24)", `${trade.direction} #${trade.id} TP`);
+    });
+    const markers = showTrades ? visibleTrades.flatMap((trade) => {
+      const entryTime = candleTimeForMarker(trade.entryTime, selectedCandles);
+      const exitTime = candleTimeForMarker(trade.exitTime, selectedCandles);
+      return [
+        entryTime === undefined ? undefined : {
+          time: entryTime, position: trade.direction === "LONG" ? "belowBar" as const : "aboveBar" as const,
+          color: trade.direction === "LONG" ? "#00e676" : "#ff5252", shape: trade.direction === "LONG" ? "arrowUp" as const : "arrowDown" as const,
+          text: `${trade.direction} #${trade.id}`,
+        },
+        exitTime === undefined ? undefined : {
+          time: exitTime, position: "inBar" as const, color: trade.pnl >= 0 ? "#ffd54f" : "#ff9800",
+          shape: "circle" as const, text: `Exit ${trade.pnl.toFixed(2)}`,
+        },
+      ].filter((item) => item !== undefined);
+    }).sort((left,right) => Number(left.time)-Number(right.time)) : [];
     createSeriesMarkers(candleSeries, markers);
     activeChart.timeScale().fitContent();
     fitRef.current = (scenario) => scenario
@@ -128,7 +251,7 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, scenarios, tra
       observer?.disconnect();
       chart?.remove();
     };
-  }, [selectedCandles, selectedScenario, showEntryZones, showStops, showTargets, showTrades, trades, visibleScenarios]);
+  }, [scenariosById, selectedCandles, selectedOverlay, selectedScenario, showAdx, showAtr, showBos, showEntryZones, showFractals, showFvgs, showOrderBlocks, showStops, showTargets, showTrades, showVolume, visibleScenarios, visibleTrades]);
 
   const focusScenario = () => {
     const scenario = visibleScenarios.find((item) => item.id === selectedScenario);
@@ -192,9 +315,16 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, scenarios, tra
       </Stack>
       <Stack direction="row" useFlexGap sx={{ alignItems: "center", flexWrap: "wrap", gap: .5, mt: 1 }}>
         <FormControlLabel control={<Switch size="small" checked={showEntryZones} onChange={(_,value) => setShowEntryZones(value)} />} label="Зоны входа" />
+        <FormControlLabel control={<Switch size="small" checked={showFractals} onChange={(_,value) => setShowFractals(value)} />} label="Фракталы" />
+        <FormControlLabel control={<Switch size="small" checked={showBos} onChange={(_,value) => setShowBos(value)} />} label="BOS" />
+        <FormControlLabel control={<Switch size="small" checked={showOrderBlocks} onChange={(_,value) => setShowOrderBlocks(value)} />} label="Order Blocks" />
+        <FormControlLabel control={<Switch size="small" checked={showFvgs} onChange={(_,value) => setShowFvgs(value)} />} label="FVG" />
         <FormControlLabel control={<Switch size="small" checked={showStops} onChange={(_,value) => setShowStops(value)} />} label="Stop Loss" />
         <FormControlLabel control={<Switch size="small" checked={showTargets} onChange={(_,value) => setShowTargets(value)} />} label="Take Profit" />
         <FormControlLabel control={<Switch size="small" checked={showTrades} onChange={(_,value) => setShowTrades(value)} />} label="Сделки" />
+        <FormControlLabel control={<Switch size="small" checked={showVolume} onChange={(_,value) => setShowVolume(value)} />} label="Объём" />
+        <FormControlLabel control={<Switch size="small" checked={showAtr} onChange={(_,value) => setShowAtr(value)} />} label="ATR(14)" />
+        <FormControlLabel control={<Switch size="small" checked={showAdx} onChange={(_,value) => setShowAdx(value)} />} label="ADX(14)" />
         <TextField select size="small" label="Зон на графике" value={zoneLimit} onChange={(event) => setZoneLimit(Number(event.target.value))} sx={{ width: 150 }}>
           {[25,50,100,200].map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}
         </TextField>
@@ -207,7 +337,7 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, scenarios, tra
     </Paper>
     <Stack direction="row" spacing={.75} sx={{ mb: 1 }}><Chip size="small" color="success" label="Long" />
       <Chip size="small" color="error" label="Short" /><Chip size="small" label={`${filteredScenarios.length} найдено · ${visibleScenarios.length} показано`} />
-      <Chip size="small" label={`${trades.length} сделок`} /></Stack>
+      <Chip size="small" label={`${visibleTrades.length} сделок показано · ${trades.length} всего`} /></Stack>
     <Box sx={{ position: "relative" }}>
       <Box ref={containerRef} sx={{ width: "100%", minHeight: 620, borderRadius: 1, overflow: "hidden" }} />
       {isRendering && <Stack sx={{ position: "absolute", inset: 0, alignItems: "center", justifyContent: "center", bgcolor: "rgba(16,23,34,.72)", zIndex: 2 }}>

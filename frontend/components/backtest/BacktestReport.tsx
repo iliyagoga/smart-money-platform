@@ -31,6 +31,10 @@ const diagnosticLabels: Record<string,{ title: string; hint: string }> = {
   NO_TRIGGER_BOS: { title: "Нет локального BOS", hint: "Продолжение структуры на trigger-ТФ не подтверждено." },
   NO_TRIGGER_CHOCH_MSS: { title: "Нет локального CHoCH/MSS", hint: "Разворот структуры на trigger-ТФ не подтвержден." },
   NO_LIQUIDITY_SWEEP: { title: "Не снята ликвидность", hint: "Не найден SFP/sweep нужного пула ликвидности." },
+  NO_LIQUIDITY_SWEEP_BEFORE_OB: { title: "Нет sweep до Order Block", hint: "Перед исходной свечой OB не снят нужный пул ликвидности." },
+  OB_OUTSIDE_OTE_ZONE: { title: "Order Block вне OTE", hint: "Середина OB находится вне зоны коррекции 61.8–78.6% последней структурной ноги." },
+  NO_OTE_STRUCTURAL_LEG: { title: "Нет структурной ноги для OTE", hint: "Недостаточно подтверждённых swing high/low для построения OTE." },
+  OB_DID_NOT_CAUSE_BOS: { title: "OB не связан с BOS", hint: "Order Block не имеет строгой связи с displacement и конкретным пробоем структуры." },
   WRONG_PREMIUM_DISCOUNT: { title: "Цена не в нужной половине диапазона", hint: "Long ожидается в discount, Short — в premium." },
   NO_HTF_ALIGNMENT: { title: "Старшие ТФ не согласованы", hint: "Недостаточно старших таймфреймов направлены в сторону сделки." },
   NO_TARGET_LIQUIDITY: { title: "Нет ликвидности для цели", hint: "За точкой входа не найден подходящий целевой пул ликвидности." },
@@ -113,10 +117,31 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
       Только закрытые свечи · ТФ: {result.dataset?.timeframes.join(", ") ?? "—"} · свечей теста: {result.dataset?.testCandles ?? 0}
       {" · "}режим: фиксированный алгоритм
     </Alert>
+    {result.optimization && <Paper variant="outlined" sx={{ mt: 1.5, p: 2.5 }}>
+      <Typography variant="h6">Результат автоматического подбора</Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mt: .5, mb: 1.5 }}>
+        Проверено комбинаций: {result.optimization.testedCombinations}; на валидацию прошли: {result.optimization.validatedCandidates}.
+      </Typography>
+      <Stack direction="row" useFlexGap sx={{ flexWrap: "wrap", gap: .75, mb: 1.5 }}>
+        {Object.entries(result.optimization.bestParameters).map(([key, value]) =>
+          <Chip key={key} color="primary" variant="outlined" label={`${key}: ${String(value)}`} />)}
+      </Stack>
+      <TableContainer><Table size="small">
+        <TableHead><TableRow><TableCell>Место</TableCell><TableCell>Score</TableCell><TableCell>Доходность</TableCell>
+          <TableCell>Просадка</TableCell><TableCell>Сделок</TableCell><TableCell>Win rate</TableCell><TableCell>Параметры</TableCell></TableRow></TableHead>
+        <TableBody>{result.optimization.validationLeaderboard.map((candidate, index) => <TableRow key={index}>
+          <TableCell>{index + 1}</TableCell><TableCell>{candidate.score?.toFixed(2) ?? "—"}</TableCell>
+          <TableCell>{candidate.totalReturnPercent.toFixed(2)}%</TableCell><TableCell>{candidate.maxDrawdownPercent.toFixed(2)}%</TableCell>
+          <TableCell>{candidate.totalTrades}</TableCell><TableCell>{candidate.winRate.toFixed(1)}%</TableCell>
+          <TableCell>{Object.entries(candidate.parameters).map(([key, value]) => `${key}=${String(value)}`).join(", ")}</TableCell>
+        </TableRow>)}</TableBody>
+      </Table></TableContainer>
+    </Paper>}
     <EquityChart points={result.equity} />
     <BacktestPriceChart
       candles={result.chartCandles}
       candlesByTimeframe={result.chartCandlesByTimeframe}
+      overlaysByTimeframe={result.structureOverlaysByTimeframe}
       scenarios={result.scenarios}
       trades={result.trades}
     />

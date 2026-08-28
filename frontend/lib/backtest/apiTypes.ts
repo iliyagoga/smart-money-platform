@@ -6,6 +6,9 @@ export interface BacktestRunSummary {
   timeframe: string;
   status: "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED";
   progress: number;
+  tests_completed: number;
+  tests_total: number;
+  progress_stage?: "OPTIMIZATION" | "VALIDATION";
   error?: string;
   created_at: string;
   completed_at?: string;
@@ -65,16 +68,30 @@ export interface BackendBacktestResult {
   };
   model_training?: { mode: string; samples: number; version?: string };
   template_distribution?: Record<string, { pnl: number; trades: number; wins: number }>;
-  chart_candles?: Array<{ timestamp: number; open: number; high: number; low: number; close: number; volume: number }>;
+  chart_candles?: Array<{ timestamp: number; open: number; high: number; low: number; close: number; volume: number; indicators?: Record<string, number> }>;
   chart_candles_by_timeframe?: Record<string, Array<{
-    timestamp: number; open: number; high: number; low: number; close: number; volume: number;
+    timestamp: number; open: number; high: number; low: number; close: number; volume: number; indicators?: Record<string, number>;
   }>>;
+  structure_overlays_by_timeframe?: Record<string, {
+    swings: Array<{ id: string; timestamp: number; price: number; type: "HIGH" | "LOW" }>;
+    changes: Array<{ id: string; timestamp: number; price: number; type: string; direction: "BULLISH" | "BEARISH" }>;
+    order_blocks: Array<{ id: string; timestamp: number; low: number; high: number; direction: "BULLISH" | "BEARISH"; strength: number; end_at?: number; status: string }>;
+    fvgs: Array<{ id: string; timestamp: number; low: number; high: number; ce?: number; direction: "BULLISH" | "BEARISH"; end_at?: number; status: string }>;
+  }>;
   scenarios?: Array<{
     id: string; timestamp: number; expires_at: number; timeframe: string; direction: "LONG" | "SHORT";
     template_id: string; priority: number; confidence: number; entry_zone_low: number; entry_zone_high: number;
     stop_loss_price: number; take_profit_prices: number[]; reasons: string[]; decision: string;
   }>;
   pattern_diagnostics?: Record<string, Record<string, number>>;
+  optimization?: {
+    tested_combinations: number; validated_candidates: number; objective: string;
+    best_parameters: Record<string, number | boolean | string>;
+    validation_leaderboard: Array<{
+      parameters: Record<string, number | boolean | string>; score?: number;
+      total_return_percent: number; max_drawdown_percent: number; total_trades: number; win_rate: number;
+    }>;
+  };
   strategy_config?: {
     leverage: number;
     position_size_percent: number;
@@ -124,6 +141,11 @@ export function mapBacktestResult(result: BackendBacktestResult): BacktestResult
     templateDistribution: result.template_distribution,
     chartCandles: result.chart_candles ?? [],
     chartCandlesByTimeframe: result.chart_candles_by_timeframe ?? {},
+    structureOverlaysByTimeframe: Object.fromEntries(Object.entries(result.structure_overlays_by_timeframe ?? {}).map(([timeframe, overlay]) => [timeframe, {
+      swings: overlay.swings, changes: overlay.changes,
+      orderBlocks: overlay.order_blocks.map((item) => ({ ...item, endAt: item.end_at })),
+      fvgs: overlay.fvgs.map((item) => ({ ...item, endAt: item.end_at })),
+    }])),
     scenarios: (result.scenarios ?? []).map((item) => ({
       id: item.id, timestamp: item.timestamp, expiresAt: item.expires_at, timeframe: item.timeframe,
       direction: item.direction, templateId: item.template_id, priority: item.priority, confidence: item.confidence,
@@ -132,6 +154,18 @@ export function mapBacktestResult(result: BackendBacktestResult): BacktestResult
       reasons: item.reasons, decision: item.decision,
     })),
     patternDiagnostics: result.pattern_diagnostics ?? {},
+    optimization: result.optimization ? {
+      testedCombinations: result.optimization.tested_combinations,
+      validatedCandidates: result.optimization.validated_candidates,
+      objective: result.optimization.objective,
+      bestParameters: result.optimization.best_parameters,
+      validationLeaderboard: result.optimization.validation_leaderboard.map((item) => ({
+        parameters: item.parameters, score: item.score,
+        totalReturnPercent: item.total_return_percent,
+        maxDrawdownPercent: item.max_drawdown_percent,
+        totalTrades: item.total_trades, winRate: item.win_rate,
+      })),
+    } : undefined,
     strategyConfig: result.strategy_config ? {
       leverage: result.strategy_config.leverage,
       positionSizePercent: result.strategy_config.position_size_percent,

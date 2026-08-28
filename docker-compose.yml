@@ -111,6 +111,7 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: ${REDIS_URL}
       SWING_LOOKBACK: ${SWING_LOOKBACK:-5}
+      SMC_PROVIDER: ${SMC_PROVIDER:-smartmoneyconcepts}
       ALGORITHM_CONFIG_DIR: /app/algorithm-configs
     ports:
       - "8010:8010"
@@ -217,6 +218,7 @@ services:
       MAX_CANDLES: ${BACKTEST_MAX_CANDLES:-2000000}
       SCENARIO_TEMPLATE_DIR: /app/algorithm-configs
       JOB_CONCURRENCY: ${BACKTEST_JOB_CONCURRENCY:-2}
+      SMC_PROVIDER: ${SMC_PROVIDER:-smartmoneyconcepts}
     ports:
       - "8085:8080"
     depends_on:

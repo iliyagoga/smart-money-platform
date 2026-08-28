@@ -24,6 +24,7 @@ const starterTemplate = {
   enabled: true,
   execution_timeframes: ["M1", "M5", "M15"],
   allowed_directions: ["LONG", "SHORT"],
+  avoid_countertrend_entries: true,
   entry_source: "ORDER_BLOCK",
   ob_entry_mode: "MIDPOINT",
   ob_boundary_mode: "FULL",

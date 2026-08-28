@@ -11,6 +11,7 @@ import httpx
 
 from .engine import run_backtest
 from .models import AssetCreate, BacktestCreate, StrategyType
+from .optimizer import optimize_smc_replay
 from .replay import run_smc_replay
 from .settings import Settings
 
@@ -51,6 +52,9 @@ class BacktestService:
             await connection.execute("ALTER TABLE trading_assets ADD COLUMN IF NOT EXISTS tick_size double precision")
             await connection.execute("ALTER TABLE trading_assets ADD COLUMN IF NOT EXISTS lot_size double precision")
             await connection.execute("ALTER TABLE trading_assets ADD COLUMN IF NOT EXISTS contract_value double precision NOT NULL DEFAULT 1")
+            await connection.execute("ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS tests_completed integer NOT NULL DEFAULT 0")
+            await connection.execute("ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS tests_total integer NOT NULL DEFAULT 0")
+            await connection.execute("ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS progress_stage text")
             queued = await connection.fetch("SELECT id FROM backtest_runs WHERE status IN ('QUEUED','RUNNING')")
         for row in queued:
             self.schedule(row["id"])
@@ -119,15 +123,34 @@ class BacktestService:
             )
             for candles in test_candles.values():
                 for candle in candles: candle["volume"] *= execution_spec["contract_value"]
+            training_candles = None
+            if request.config.optimization.enabled:
+                training_candles = await self.load_candles(
+                    request.symbol, request.timeframes, request.train_from, request.train_to, request.candle_limit,
+                )
+                for candles in training_candles.values():
+                    for candle in candles: candle["volume"] *= execution_spec["contract_value"]
             async with self.db.acquire() as connection:
                 await connection.execute("UPDATE backtest_runs SET progress=35 WHERE id=$1", run_id)
             if request.config.strategy == StrategyType.SMC:
-                async with self.db.acquire() as connection:
-                    await connection.execute("UPDATE backtest_runs SET progress=80 WHERE id=$1", run_id)
-                result = await asyncio.to_thread(
-                    run_smc_replay, test_candles, request.timeframe, request.config,
-                    self.settings.scenario_template_dir, None,
-                )
+                if request.config.optimization.enabled:
+                    loop = asyncio.get_running_loop()
+                    def update_progress(completed, total, stage):
+                        future = asyncio.run_coroutine_threadsafe(
+                            self._update_test_progress(run_id, completed, total, stage), loop,
+                        )
+                        future.result(timeout=10)
+                    result = await asyncio.to_thread(
+                        optimize_smc_replay, training_candles, test_candles, request.timeframe,
+                        request.config, self.settings.scenario_template_dir, update_progress,
+                    )
+                else:
+                    async with self.db.acquire() as connection:
+                        await connection.execute("UPDATE backtest_runs SET progress=80 WHERE id=$1", run_id)
+                    result = await asyncio.to_thread(
+                        run_smc_replay, test_candles, request.timeframe, request.config,
+                        self.settings.scenario_template_dir, None,
+                    )
                 result["dataset"]["timeframes"] = request.timeframes
                 result["dataset"]["execution_timeframe"] = request.timeframe
                 result["dataset"]["requested_train_from"] = request.train_from
@@ -165,12 +188,21 @@ class BacktestService:
                     run_id, str(exc)[:2000],
                 )
 
+    async def _update_test_progress(self, run_id, completed, total, stage):
+        percent = 35 + round(completed / max(total, 1) * 60)
+        async with self.db.acquire() as connection:
+            await connection.execute(
+                "UPDATE backtest_runs SET tests_completed=$2,tests_total=$3,progress_stage=$4,progress=$5 WHERE id=$1",
+                run_id, completed, total, stage, min(95, percent),
+            )
+
     async def load_candles(self, symbol, timeframes, start, end, limit):
         intervals = {"M1":60_000,"M5":300_000,"M15":900_000,"M30":1_800_000,"H1":3_600_000,"H4":14_400_000,"D1":86_400_000}
-        bounded_limit = min(limit, self.settings.max_candles)
         result = {}
         async with self.db.acquire() as connection:
             for timeframe in timeframes:
+                required = ((end - start) // intervals[timeframe] + 10) if start is not None and end is not None else limit
+                bounded_limit = min(max(limit, required), self.settings.max_candles)
                 rows = await connection.fetch(
                     """
                     SELECT symbol,timeframe,(extract(epoch FROM ts)*1000)::bigint AS timestamp,
@@ -192,6 +224,9 @@ class BacktestService:
             truncated = []
             for timeframe, candles in result.items():
                 step = intervals[timeframe]
+                bounded_limit = min(
+                    max(limit, ((end - start) // step + 10)), self.settings.max_candles,
+                )
                 latest_closed = (int(time.time() * 1000) // step - 1) * step
                 required_end = min(end, latest_closed)
                 if candles[0]["timestamp"] > start + step or candles[-1]["timestamp"] < required_end - step:
@@ -210,7 +245,7 @@ class BacktestService:
     async def runs(self, user_id: str, limit: int = 50):
         async with self.db.acquire() as connection:
             rows = await connection.fetch(
-                "SELECT id,symbol,timeframe,status,progress,error,created_at,completed_at,result FROM backtest_runs "
+                "SELECT id,symbol,timeframe,status,progress,tests_completed,tests_total,progress_stage,error,created_at,completed_at,result FROM backtest_runs "
                 "WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2", user_id, limit
             )
         return [self.serialize_run(row, include_result=False) for row in rows]
@@ -230,7 +265,8 @@ class BacktestService:
 
     @staticmethod
     def serialize_run(row, include_result: bool):
-        item = {key: row[key] for key in ("id", "symbol", "timeframe", "status", "progress", "error", "created_at", "completed_at")}
+        item = {key: row[key] for key in ("id", "symbol", "timeframe", "status", "progress", "tests_completed",
+                                          "tests_total", "progress_stage", "error", "created_at", "completed_at")}
         item = {**item, "id": str(item["id"]), "created_at": item["created_at"].isoformat(),
                 "completed_at": item["completed_at"].isoformat() if item["completed_at"] else None}
         if include_result:

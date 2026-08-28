@@ -46,6 +46,14 @@ const defaultSettings: BacktestSettings = {
   confidenceThreshold: 0.5,
   templateIds: [],
   localRetraining: false,
+  autoOptimize: true,
+  optimizationMaxCombinations: 64,
+  optimizationValidationCandidates: 5,
+  optimizationMinimumTrades: 5,
+  optimizationDrawdownPenalty: 1,
+  optimizationBounds: {
+    minimumObStrength: {}, minimumImpulseAtr: {}, minimumVolumeRatio: {}, minimumAdx: {}, stopBufferAtr: {},
+  },
 };
 
 const timeframes = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
@@ -63,7 +71,6 @@ export default function BacktestPage() {
   const [asset, setAsset] = useState("");
   const { addAsset, assetDetails, assets, reload: reloadAssets, removeAsset } = useTradingAssets();
   const [selectedTimeframes, setSelectedTimeframes] = useState(timeframes);
-  const [candleLimit, setCandleLimit] = useState(10_000);
   const today = new Date().toISOString().slice(0, 10);
   const [trainFrom, setTrainFrom] = useState("2025-01-01");
   const [trainTo, setTrainTo] = useState("2025-06-30");
@@ -75,6 +82,9 @@ export default function BacktestPage() {
   const [error, setError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [testsCompleted, setTestsCompleted] = useState(0);
+  const [testsTotal, setTestsTotal] = useState(0);
+  const [progressStage, setProgressStage] = useState<string>();
   const [workspaceTab, setWorkspaceTab] = useState(0);
   const runsResource = useApiResource<BacktestRunsResponse>("/api/v1/backtest/backtests");
   const templatesResource = useApiResource<ScenarioTemplatesResponse>("/api/v1/smc/scenario-templates");
@@ -89,27 +99,27 @@ export default function BacktestPage() {
   }, [templates]);
   const selectedAsset = asset || assets[0];
   const selectedAssetDetails = assetDetails.find((item) => item.symbol === selectedAsset);
-  const testRangeMilliseconds = Math.max(
-    0,
+  const rangesMilliseconds = [
+    Date.parse(`${trainTo}T23:59:59Z`) - Date.parse(`${trainFrom}T00:00:00Z`),
     Date.parse(`${testTo}T23:59:59Z`) - Date.parse(`${testFrom}T00:00:00Z`),
-  );
+  ];
   const requiredTestCandleLimit = Math.min(2_000_000, Math.max(
-    ...selectedTimeframes.map((item) => Math.ceil(testRangeMilliseconds / timeframeMilliseconds[item]) + 2),
+    ...rangesMilliseconds.flatMap((range) => selectedTimeframes.map((item) =>
+      Math.ceil(Math.max(0, range) / timeframeMilliseconds[item]) + 10)),
   ));
 
   const run = async () => {
-    const effectiveCandleLimit = Math.max(candleLimit, requiredTestCandleLimit);
-    if (effectiveCandleLimit !== candleLimit) setCandleLimit(effectiveCandleLimit);
     setIsRunning(true);
     setError("");
     try {
       setProgress(0);
+      setTestsCompleted(0); setTestsTotal(0); setProgressStage(undefined);
       const created = await api<BacktestCreateResponse>("/api/v1/backtest/backtests", {
         method: "POST",
         body: JSON.stringify({
           symbol: selectedAsset,
           timeframes: selectedTimeframes,
-          candle_limit: effectiveCandleLimit,
+          candle_limit: requiredTestCandleLimit,
           train_from: Date.parse(`${trainFrom}T00:00:00Z`),
           train_to: Date.parse(`${trainTo}T23:59:59Z`),
           test_from: Date.parse(`${testFrom}T00:00:00Z`),
@@ -142,6 +152,23 @@ export default function BacktestPage() {
             kelly_fraction: settings.kellyFraction,
             confidence_threshold: settings.confidenceThreshold,
             template_ids: settings.templateIds,
+            algorithm_overrides: {},
+            optimization: {
+              enabled: settings.autoOptimize,
+              max_combinations: settings.optimizationMaxCombinations,
+              validation_candidates: settings.optimizationValidationCandidates,
+              minimum_trades: settings.optimizationMinimumTrades,
+              drawdown_penalty: settings.optimizationDrawdownPenalty,
+              parameter_grid: {},
+              parameter_bounds: settings.autoOptimize ? Object.fromEntries(Object.entries({
+                minimum_ob_strength: settings.optimizationBounds.minimumObStrength,
+                minimum_impulse_atr: settings.optimizationBounds.minimumImpulseAtr,
+                minimum_volume_ratio: settings.optimizationBounds.minimumVolumeRatio,
+                minimum_adx: settings.optimizationBounds.minimumAdx,
+                stop_buffer_atr: settings.optimizationBounds.stopBufferAtr,
+              }).filter(([, bounds]) => bounds.minimum !== undefined && bounds.maximum !== undefined)
+                .map(([key, bounds]) => [key, [bounds.minimum, bounds.maximum]])) : {},
+            },
             local_retraining: settings.localRetraining,
           },
         }),
@@ -150,6 +177,9 @@ export default function BacktestPage() {
       for (let attempt = 0; attempt < 3_600; attempt += 1) {
         const current = await api<BacktestRun>(`/api/v1/backtest/backtests/${created.id}`);
         setProgress(current.progress);
+        setTestsCompleted(current.tests_completed ?? 0);
+        setTestsTotal(current.tests_total ?? 0);
+        setProgressStage(current.progress_stage);
         if (current.status === "FAILED") throw new Error(current.error ?? "Бэктест завершился с ошибкой");
         if (current.status === "COMPLETED") {
           completed = current;
@@ -227,17 +257,9 @@ export default function BacktestPage() {
         <Alert severity="info" sx={{ flex: 1 }}>
           Роли таймфреймов задаются шаблонами. Для точного исполнения сделок автоматически используется самый младший выбранный ТФ.
         </Alert>
-        <TextField
-          label="Количество свечей"
-          value={candleLimit}
-          type="number"
-          onChange={(event) => setCandleLimit(Number(event.target.value))}
-          helperText={`Нужно до ${requiredTestCandleLimit.toLocaleString("ru-RU")}; при запуске лимит увеличится автоматически`}
-          slotProps={{ htmlInput: { min: 100, max: 2_000_000 } }}
-        />
-        <Button variant="outlined" onClick={() => setCandleLimit(requiredTestCandleLimit)}>
-          Рассчитать лимит бэктеста
-        </Button>
+        <Alert severity="info" sx={{ flex: 1 }}>
+          Лимит рассчитывается автоматически отдельно для оптимизации и валидации: до {requiredTestCandleLimit.toLocaleString("ru-RU")} свечей на таймфрейм.
+        </Alert>
       </Stack>
       <FormGroup row sx={{ mt: 1 }}>
         {timeframes.map((item) => <FormControlLabel key={item} label={item} control={<Checkbox
@@ -248,22 +270,22 @@ export default function BacktestPage() {
             : current.filter((value) => value !== item))}
         />} />)}
       </FormGroup>
-      <Typography variant="subtitle2" sx={{ mt: 2.5, mb: 1 }}>Периоды без пересечения</Typography>
+      <Typography variant="subtitle2" sx={{ mt: 2.5, mb: 1 }}>Периоды оптимизации и валидации без пересечения</Typography>
       <Grid container spacing={1.5}>
         <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
-          <TextField fullWidth type="date" label="История: начало" value={trainFrom}
+          <TextField fullWidth type="date" label="Оптимизация: начало" value={trainFrom}
             onChange={(event) => setTrainFrom(event.target.value)} slotProps={{ inputLabel: { shrink: true } }} />
         </Grid>
         <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
-          <TextField fullWidth type="date" label="История: граница" value={trainTo}
+          <TextField fullWidth type="date" label="Оптимизация: конец" value={trainTo}
             onChange={(event) => setTrainTo(event.target.value)} slotProps={{ inputLabel: { shrink: true } }} />
         </Grid>
         <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
-          <TextField fullWidth type="date" label="Бэктест: начало" value={testFrom}
+          <TextField fullWidth type="date" label="Валидация: начало" value={testFrom}
             onChange={(event) => setTestFrom(event.target.value)} slotProps={{ inputLabel: { shrink: true } }} />
         </Grid>
         <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
-          <TextField fullWidth type="date" label="Бэктест: конец" value={testTo}
+          <TextField fullWidth type="date" label="Валидация: конец" value={testTo}
             onChange={(event) => setTestTo(event.target.value)} slotProps={{ inputLabel: { shrink: true } }} />
         </Grid>
       </Grid>
@@ -285,6 +307,9 @@ export default function BacktestPage() {
           onRun={() => void run()}
           isRunning={isRunning}
           progress={progress}
+          testsCompleted={testsCompleted}
+          testsTotal={testsTotal}
+          progressStage={progressStage}
           templates={templates}
         />
       </Grid>
@@ -295,7 +320,10 @@ export default function BacktestPage() {
             {selectedAsset} · {selectedTimeframes.join(", ")} · тест {testFrom} — {testTo}
           </Typography>
           <Alert severity={isRunning ? "warning" : "info"} sx={{ mt: 2 }}>
-            {isRunning ? `Расчёт выполняется: ${progress}%` : "После завершения система автоматически откроет вкладку результатов."}
+            {isRunning ? (testsTotal
+              ? `${progressStage === "VALIDATION" ? "Валидация" : "Оптимизация"}: выполнено ${testsCompleted} из ${testsTotal} тестов (${progress}%)`
+              : `Подготовка исторических данных: ${progress}%`)
+              : "После завершения система автоматически откроет вкладку результатов."}
           </Alert>
           <Button variant="outlined" sx={{ mt: 2 }} onClick={() => setWorkspaceTab(0)}>Изменить данные и периоды</Button>
         </Paper>

@@ -4,9 +4,9 @@ from dataclasses import dataclass, field
 from math import ceil, floor, sqrt
 from statistics import mean, pstdev
 
-from smc_core.engines import AnalysisPipeline
+from smc_core.engines import AnalysisPipeline, atr
 from smc_core.models import Candle, Timeframe
-from smc_core.algorithm import AlgorithmConfigStore, AlgorithmEngine
+from smc_core.algorithm import AlgorithmConfig, AlgorithmConfigStore, AlgorithmEngine, adx
 
 from .models import BacktestConfig, DirectionMode
 
@@ -42,20 +42,37 @@ def _candle(item: dict) -> Candle:
     return Candle.model_validate({**item, "timeframe": item["timeframe"]})
 
 
-def _chart_candles(candles: list[dict], maximum: int = 3000) -> list[dict]:
-    """Bound chart payload/DOM size while preserving OHLC extremes and volume."""
-    if len(candles) <= maximum:
-        return [{key: item[key] for key in ("timestamp", "open", "high", "low", "close", "volume")} for item in candles]
-    bucket_size = max(1, (len(candles) + maximum - 1) // maximum)
-    result = []
-    for offset in range(0, len(candles), bucket_size):
-        bucket = candles[offset:offset + bucket_size]
-        result.append({
-            "timestamp": bucket[0]["timestamp"], "open": bucket[0]["open"],
-            "high": max(item["high"] for item in bucket), "low": min(item["low"] for item in bucket),
-            "close": bucket[-1]["close"], "volume": sum(item["volume"] for item in bucket),
-        })
-    return result
+def initialize_indicators(candles_by_timeframe: dict[str, list[dict]], adx_periods: set[int]) -> None:
+    """Calculate each period once and persist values on the source candle payload."""
+    for values in candles_by_timeframe.values():
+        required = {"atr:14", *(f"adx:{period}" for period in adx_periods)}
+        if values and required.issubset(values[-1].get("indicators", {})):
+            continue
+        history: list[Candle] = []
+        for item in values:
+            candle = _candle(item)
+            history.append(candle)
+            del history[:-500]
+            atr(history, 14)
+            for period in adx_periods:
+                adx(history, period)
+            item["indicators"] = dict(candle.indicators)
+
+
+def _chart_candles(candles: list[dict], maximum: int = 50_000) -> list[dict]:
+    """Return real exchange candles, never synthetic bars mislabeled as a timeframe.
+
+    A long M1 replay can contain hundreds of thousands of bars.  Sending all of
+    them makes the report unusable, but aggregating them silently means an M1
+    chart is no longer an M1 chart and collapses many trade markers onto each
+    synthetic bar.  Keep a bounded, contiguous recent window instead.
+    """
+    window = candles[-maximum:]
+    return [
+        {**{key: item[key] for key in ("timestamp", "open", "high", "low", "close", "volume")},
+         "indicators": item.get("indicators", {})}
+        for item in window
+    ]
 
 
 def _execution_plan(entry: float, scenario, minimum_stop_percent: float, tick_size: float,
@@ -79,15 +96,10 @@ def _execution_plan(entry: float, scenario, minimum_stop_percent: float, tick_si
             if (target - planned_entry) * side > 0
         ]
     ratios = [ratio for ratio in ratios if minimum_target_rr <= ratio <= maximum_target_rr]
-    fixed = [ratio for ratio in (fixed_ratios or [2, 3]) if minimum_target_rr <= ratio <= maximum_target_rr]
-    # Keep at most one structural/liquidity objective and always retain a
-    # deterministic RR objective so a nearby pool cannot consume every target.
-    ratios = ratios[:1]
-    for ratio in fixed:
-        if all(abs(ratio - item) > 1e-9 for item in ratios):
-            ratios.append(ratio)
-        if len(ratios) >= max(1, len(scenario.take_profit_prices)):
-            break
+    fixed = [ratio for ratio in (fixed_ratios or [2]) if minimum_target_rr <= ratio <= maximum_target_rr]
+    # Every position has one final target. Prefer the structural objective and
+    # fall back to the template's deterministic R multiple.
+    ratios = ratios[:1] or fixed[:1]
     if not ratios:
         ratios = [minimum_target_rr]
 
@@ -127,8 +139,23 @@ def run_smc_replay(
     template_dir: str,
     model=None,
 ) -> dict:
+    adx_periods = {14}
+    for override in config.algorithm_overrides.values():
+        adx_periods.add(override.adx_period)
+    initialize_indicators(candles_by_tf, adx_periods)
     pipeline = AnalysisPipeline()
-    manager = AlgorithmEngine(AlgorithmConfigStore(template_dir))
+    store = AlgorithmConfigStore(template_dir)
+    if config.algorithm_overrides:
+        configured = {item.id: item for item in store.list()}
+        for template_id, overrides in config.algorithm_overrides.items():
+            template_id = template_id.upper()
+            if template_id not in configured:
+                raise ValueError(f"algorithm override references unknown template: {template_id}")
+            configured[template_id] = AlgorithmConfig.model_validate({
+                **configured[template_id].model_dump(), **overrides.model_dump(),
+            })
+        store.list = lambda: list(configured.values())
+    manager = AlgorithmEngine(store)
     rank = {Timeframe.D1: 0, Timeframe.H4: 1, Timeframe.H1: 2, Timeframe.M30: 3,
             Timeframe.M15: 4, Timeframe.M5: 5, Timeframe.M1: 6}
     events = sorted((_candle(item) for values in candles_by_tf.values() for item in values),
@@ -145,6 +172,10 @@ def run_smc_replay(
     scenarios = []
     scenario_reports = {}
     decision_reports = {}
+    overlay_swings: dict[str, list[dict]] = {}
+    overlay_changes: dict[str, dict[str, dict]] = {}
+    overlay_order_blocks: dict[str, dict[str, dict]] = {}
+    overlay_fvgs: dict[str, dict[str, dict]] = {}
     equity = []
     maker_rate = (config.maker_fee_percent if config.maker_fee_percent is not None else config.fee_percent) / 100
     taker_rate = (config.taker_fee_percent if config.taker_fee_percent is not None else config.fee_percent) / 100
@@ -196,7 +227,37 @@ def run_smc_replay(
 
     for candle in events:
         available_at = candle.timestamp + TIMEFRAME_MILLISECONDS[candle.timeframe]
-        pipeline.process(candle)
+        analysis = pipeline.process(candle)
+        overlay_timeframe = candle.timeframe.value
+        swings = overlay_swings.setdefault(overlay_timeframe, [])
+        for swing in analysis.swings:
+            if swings and swings[-1]["type"] == swing.type.value:
+                swings.pop()
+            swings.append({"id": swing.id, "timestamp": swing.timestamp, "price": swing.price, "type": swing.type.value})
+        changes = overlay_changes.setdefault(overlay_timeframe, {})
+        for change in analysis.changes:
+            changes[change.id] = {
+                "id": change.id, "timestamp": change.timestamp, "price": change.break_level_price,
+                "type": change.type, "direction": change.direction.value,
+            }
+        order_blocks = overlay_order_blocks.setdefault(overlay_timeframe, {})
+        for block in analysis.order_blocks:
+            current = order_blocks.get(block.id, {})
+            order_blocks[block.id] = {
+                **current, "id": block.id, "timestamp": block.created_at,
+                "low": block.zone_low, "high": block.zone_high, "direction": block.type.value,
+                "strength": block.strength_score, "end_at": available_at if block.is_broken else current.get("end_at"),
+                "status": "BROKEN" if block.is_broken else "ACTIVE",
+            }
+        fvgs = overlay_fvgs.setdefault(overlay_timeframe, {})
+        for gap in analysis.fvgs:
+            current = fvgs.get(gap.id, {})
+            fvgs[gap.id] = {
+                **current, "id": gap.id, "timestamp": gap.created_at,
+                "low": gap.zone_low, "high": gap.zone_high, "direction": gap.type.value,
+                "ce": gap.consequent_encroachment, "end_at": available_at if gap.is_filled else current.get("end_at"),
+                "status": "FILLED" if gap.is_filled else "ACTIVE",
+            }
         generated = manager.generate(candle, pipeline, set(config.template_ids) or None)
         for scenario in generated:
             confidence = scenario.score
@@ -358,6 +419,15 @@ def run_smc_replay(
     report["chart_candles"] = _chart_candles(candles_by_tf[primary_timeframe])
     report["chart_candles_by_timeframe"] = {
         timeframe: _chart_candles(candles) for timeframe, candles in candles_by_tf.items()
+    }
+    report["structure_overlays_by_timeframe"] = {
+        timeframe: {
+            "swings": overlay_swings.get(timeframe, [])[-1000:],
+            "changes": list(overlay_changes.get(timeframe, {}).values())[-1000:],
+            "order_blocks": list(overlay_order_blocks.get(timeframe, {}).values())[-500:],
+            "fvgs": list(overlay_fvgs.get(timeframe, {}).values())[-500:],
+        }
+        for timeframe in candles_by_tf
     }
     return report
 

@@ -8,7 +8,7 @@ from uuid import NAMESPACE_URL, uuid5
 from pydantic import BaseModel, Field, model_validator
 
 from .engines import atr
-from .models import AlgorithmSignal, Candle, Direction, Timeframe, TrendDirection
+from .models import AlgorithmSignal, Candle, Direction, SwingType, Timeframe, TrendDirection
 
 
 TIMEFRAME_MILLISECONDS = {
@@ -26,12 +26,17 @@ class AlgorithmConfig(BaseModel):
     enabled: bool = True
     execution_timeframes: list[Timeframe] = [Timeframe.M1, Timeframe.M5, Timeframe.M15]
     allowed_directions: list[str] = ["LONG", "SHORT"]
+    # Explicitly prevent signals against the detected trend.
+    avoid_countertrend_entries: bool = True
     entry_source: str = "ORDER_BLOCK"
     ob_entry_mode: str = "MIDPOINT"
     ob_boundary_mode: str = "FULL"
     ob_mitigation_mode: str = "CLOSE_INSIDE"
     fvg_entry_mode: str = "FIFTY_PERCENT"
     require_fvg_overlap: bool = False
+    require_liquidity_sweep_before_ob: bool = True
+    require_ob_in_ote_zone: bool = True
+    require_ob_caused_bos: bool = True
     minimum_ob_strength: float = Field(default=.45, ge=0, le=1)
     minimum_fvg_size_atr: float = Field(default=.1, ge=0, le=20)
     minimum_impulse_atr: float = Field(default=1, ge=0, le=20)
@@ -40,12 +45,12 @@ class AlgorithmConfig(BaseModel):
     adx_period: int = Field(default=14, ge=2, le=200)
     minimum_adx: float = Field(default=0, ge=0, le=100)
     stop_buffer_atr: float = Field(default=.1, ge=0, le=10)
-    risk_reward: list[float] = [2, 3]
+    risk_reward: list[float] = [2]
     minimum_rr: float = Field(default=1.5, gt=0, le=100)
     entry_valid_for_bars: int = Field(default=30, ge=1, le=10000)
     one_trade_per_zone: bool = True
     break_even_rule: str = "ONE_R"
-    target_allocations: list[float] = [.5, .5]
+    target_allocations: list[float] = [1]
 
     @model_validator(mode="after")
     def valid_modes(self):
@@ -59,8 +64,8 @@ class AlgorithmConfig(BaseModel):
             raise ValueError("unsupported OB mitigation mode")
         if self.fvg_entry_mode != "FIFTY_PERCENT":
             raise ValueError("unsupported FVG entry mode")
-        if not self.risk_reward or any(value < self.minimum_rr for value in self.risk_reward):
-            raise ValueError("risk_reward values must satisfy minimum_rr")
+        if len(self.risk_reward) != 1 or any(value < self.minimum_rr for value in self.risk_reward):
+            raise ValueError("exactly one risk_reward value must satisfy minimum_rr")
         if self.target_allocations and (len(self.target_allocations) != len(self.risk_reward)
                 or abs(sum(self.target_allocations) - 1) > 1e-6):
             raise ValueError("target allocations must match targets and sum to one")
@@ -94,7 +99,11 @@ class AlgorithmConfigStore:
 
 def adx(candles: list[Candle], period: int = 14) -> float:
     """Wilder-style ADX without third-party dependencies."""
+    if candles and f"adx:{period}" in candles[-1].indicators:
+        return candles[-1].indicators[f"adx:{period}"]
     if len(candles) < period * 2 + 1:
+        if candles:
+            candles[-1].indicators[f"adx:{period}"] = 0
         return 0
     trs, plus_dm, minus_dm = [], [], []
     for previous, current in zip(candles[:-1], candles[1:]):
@@ -111,7 +120,9 @@ def adx(candles: list[Candle], period: int = 14) -> float:
         plus = 100 * sum(plus_dm[end-period:end]) / tr
         minus = 100 * sum(minus_dm[end-period:end]) / tr
         dx.append(100 * abs(plus-minus) / max(plus+minus, 1e-12))
-    return sum(dx[-period:]) / min(period, len(dx))
+    result = sum(dx[-period:]) / min(period, len(dx))
+    candles[-1].indicators[f"adx:{period}"] = result
+    return result
 
 
 class AlgorithmEngine:
@@ -136,8 +147,19 @@ class AlgorithmEngine:
             if not trend or trend.direction == TrendDirection.SIDEWAYS:
                 self._reject(config.id, "NO_TREND"); continue
             direction = "LONG" if trend.direction == TrendDirection.UP else "SHORT"
+            if not config.avoid_countertrend_entries:
+                # When explicitly disabled, permit the newest eligible POI to
+                # define the side, including a counter-trend retest.
+                newest = max((item for item in pipeline.obs[key] if not item.is_broken),
+                             key=lambda item: item.created_at, default=None)
+                if newest is not None:
+                    direction = "LONG" if newest.type == Direction.BULLISH else "SHORT"
             side = Direction.BULLISH if direction == "LONG" else Direction.BEARISH
             if direction not in config.allowed_directions:
+                continue
+            if config.avoid_countertrend_entries and ((direction == "LONG" and trend.direction != TrendDirection.UP)
+                                                      or (direction == "SHORT" and trend.direction != TrendDirection.DOWN)):
+                self._reject(config.id, "COUNTERTREND_ENTRY_BLOCKED")
                 continue
             blocks = [item for item in pipeline.obs[key] if item.type == side and not item.is_broken
                       and not (config.one_trade_per_zone and item.traded)
@@ -146,6 +168,36 @@ class AlgorithmEngine:
             if not blocks:
                 self._reject(config.id, "NO_ACTIVE_OB"); continue
             block = max(blocks, key=lambda item: item.created_at)
+            if config.require_ob_caused_bos:
+                source_break = next((item for item in pipeline.changes[key]
+                                     if item.id == block.source_break_id
+                                     and (block.source_candle_timestamp is None or item.timestamp >= block.source_candle_timestamp)), None)
+                if not source_break or not source_break.broken_swing_id or block.source_candle_timestamp is None:
+                    self._reject(config.id, "OB_DID_NOT_CAUSE_BOS"); continue
+            if config.require_liquidity_sweep_before_ob:
+                required_pool = "SELL_STOP" if direction == "LONG" else "BUY_STOP"
+                sweep_deadline = block.source_candle_timestamp or block.created_at
+                sweep = next((item for item in reversed(pipeline.liquidity[key])
+                              if item.type == required_pool and item.swept
+                              and item.swept_at is not None and item.swept_at <= sweep_deadline), None)
+                if not sweep:
+                    self._reject(config.id, "NO_LIQUIDITY_SWEEP_BEFORE_OB"); continue
+            if config.require_ob_in_ote_zone:
+                structural = [item for item in pipeline.swings[key] if item.timestamp <= block.created_at]
+                highs = [item.price for item in structural if item.type == SwingType.HIGH]
+                lows = [item.price for item in structural if item.type == SwingType.LOW]
+                if not highs or not lows:
+                    self._reject(config.id, "NO_OTE_STRUCTURAL_LEG"); continue
+                swing_high, swing_low = highs[-1], lows[-1]
+                if swing_high <= swing_low:
+                    self._reject(config.id, "NO_OTE_STRUCTURAL_LEG"); continue
+                price_range = swing_high - swing_low
+                ote_low, ote_high = ((swing_high - price_range * .786, swing_high - price_range * .618)
+                                     if direction == "LONG" else
+                                     (swing_low + price_range * .618, swing_low + price_range * .786))
+                ob_midpoint = (block.zone_low + block.zone_high) / 2
+                if not ote_low <= ob_midpoint <= ote_high:
+                    self._reject(config.id, "OB_OUTSIDE_OTE_ZONE"); continue
             gaps = [item for item in pipeline.fvgs[key] if item.type == side and not item.is_filled
                     and item.size_atr >= config.minimum_fvg_size_atr]
             overlap = next((item for item in gaps if item.zone_low <= block.zone_high
@@ -196,7 +248,8 @@ class AlgorithmEngine:
                 id=signal_id, config_id=config.id, symbol=candle.symbol, timeframe=candle.timeframe,
                 direction=direction, entry_zone_low=low, entry_zone_high=high,
                 stop_loss_price=stop, take_profit_prices=targets, score=score,
-                reason_codes=["FIXED_BOS_OB_RETEST", f"ADX:{current_adx:.2f}", f"VOLUME_RATIO:{volume_ratio:.2f}"],
+                reason_codes=["FIXED_BOS_OB_RETEST", "OB_CAUSED_BOS", "LIQUIDITY_SWEEP_BEFORE_OB",
+                              "OB_IN_OTE_ZONE", f"ADX:{current_adx:.2f}", f"VOLUME_RATIO:{volume_ratio:.2f}"],
                 object_ids=[block.id] + ([selected_gap.id] if selected_gap else []), zone_id=block.id,
                 one_trade_per_zone=config.one_trade_per_zone,
                 target_allocations=config.target_allocations,
