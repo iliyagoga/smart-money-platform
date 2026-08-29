@@ -230,7 +230,7 @@ class BacktestService:
                            quote_volume::float8,trades_count,is_closed
                     FROM candles WHERE symbol=$1 AND timeframe=$2 AND is_closed
                       AND ($3::bigint IS NULL OR ts>=to_timestamp($3/1000.0))
-                      AND ($4::bigint IS NULL OR ts<=to_timestamp($4/1000.0))
+                      AND ($4::bigint IS NULL OR ts<to_timestamp($4/1000.0))
                     ORDER BY ts DESC LIMIT $5
                     """,
                     symbol, timeframe, start, end, bounded_limit,

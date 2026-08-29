@@ -2,7 +2,7 @@ import pytest
 
 from src.elliott import (
     Pattern, Pivot, _elliott_position_quantity, _fee_adjusted_break_even_stop,
-    _fixed_rr_target, _macro_direction, _round_trade_prices,
+    _fixed_rr_target, _liquidation_price, _macro_direction, _round_trade_prices,
     atr_zigzag, detect_patterns, run_elliott_replay,
 )
 from src.models import BacktestConfig, ElliottConfig, StrategyType
@@ -129,6 +129,23 @@ def test_margin_position_is_liquidated_before_a_distant_structural_stop(monkeypa
     result = run_elliott_replay({"H4": entry, "H1": entry, "M15": entry}, config)
 
     assert result["trades"][0]["reason"] == "LIQUIDATION"
+
+
+def test_liquidation_price_includes_maintenance_margin_fees_and_funding():
+    position = {
+        "direction": "LONG", "entry_price": 100, "quantity": 10,
+        "entry_fee_rate": .001, "funding": 2,
+    }
+    config = BacktestConfig(
+        leverage=10, maintenance_margin_percent=.5, liquidation_fee_percent=.5,
+    )
+
+    price = _liquidation_price(position, config, taker_fee=.001)
+
+    # At this price the remaining equity equals the configured maintenance margin.
+    exit_cost = price * 10 * (.001 + .005)
+    equity = 100 + (price - 100) * 10 - 1 - 2 - exit_cost
+    assert equity == pytest.approx(5)
 
 
 def test_atr_zigzag_confirmation_never_precedes_pivot():

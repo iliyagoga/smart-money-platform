@@ -106,41 +106,54 @@ def run_backtest(candles: list[dict], config: BacktestConfig) -> dict:
         notional = capital * config.position_size_percent / 100 * config.leverage
         position = Position(direction, price, timestamp, notional / price, price, price)
 
+    def apply_intrabar_exits(candle_open: float, high: float, low: float, timestamp: int) -> bool:
+        """Apply conservative stop-before-target ordering to an open position."""
+        if position is None:
+            return False
+        position.peak = max(position.peak, high)
+        position.trough = min(position.trough, low)
+        if position.direction == "LONG":
+            stop = position.entry_price * (1 - config.stop_loss_percent / 100)
+            if config.trailing_stop_percent:
+                stop = max(stop, position.peak * (1 - config.trailing_stop_percent / 100))
+            target = position.entry_price * (1 + config.take_profit_percent / 100)
+            if candle_open <= stop or low <= stop:
+                close(min(candle_open, stop), timestamp, "STOP_LOSS")
+            elif candle_open >= target or high >= target:
+                close(max(candle_open, target), timestamp, "TAKE_PROFIT")
+        else:
+            stop = position.entry_price * (1 + config.stop_loss_percent / 100)
+            if config.trailing_stop_percent:
+                stop = min(stop, position.trough * (1 + config.trailing_stop_percent / 100))
+            target = position.entry_price * (1 - config.take_profit_percent / 100)
+            if candle_open >= stop or high >= stop:
+                close(max(candle_open, stop), timestamp, "STOP_LOSS")
+            elif candle_open <= target or low <= target:
+                close(min(candle_open, target), timestamp, "TAKE_PROFIT")
+        return position is None
+
     for index in range(config.slow_period + 1, len(ordered)):
         candle = ordered[index]
         timestamp = int(candle["timestamp"])
         candle_open, high, low, close_price = map(float, (candle["open"], candle["high"], candle["low"], candle["close"]))
         long_signal, short_signal = signal_at(closes, index - 1, config)
         if position:
-            position.peak = max(position.peak, high)
-            position.trough = min(position.trough, low)
-            if position.direction == "LONG":
-                stop = position.entry_price * (1 - config.stop_loss_percent / 100)
-                if config.trailing_stop_percent:
-                    stop = max(stop, position.peak * (1 - config.trailing_stop_percent / 100))
-                target = position.entry_price * (1 + config.take_profit_percent / 100)
-                if candle_open <= stop or low <= stop:
-                    close(min(candle_open, stop), timestamp, "STOP_LOSS")
-                elif candle_open >= target or high >= target:
-                    close(max(candle_open, target), timestamp, "TAKE_PROFIT")
-                elif short_signal:
-                    close(candle_open, timestamp, "SIGNAL")
-            else:
-                stop = position.entry_price * (1 + config.stop_loss_percent / 100)
-                if config.trailing_stop_percent:
-                    stop = min(stop, position.trough * (1 + config.trailing_stop_percent / 100))
-                target = position.entry_price * (1 - config.take_profit_percent / 100)
-                if candle_open >= stop or high >= stop:
-                    close(max(candle_open, stop), timestamp, "STOP_LOSS")
-                elif candle_open <= target or low <= target:
-                    close(min(candle_open, target), timestamp, "TAKE_PROFIT")
-                elif long_signal:
-                    close(candle_open, timestamp, "SIGNAL")
+            direction = position.direction
+            exited = apply_intrabar_exits(candle_open, high, low, timestamp)
+            if not exited and ((direction == "LONG" and short_signal) or (direction == "SHORT" and long_signal)):
+                close(candle_open, timestamp, "SIGNAL")
+        opened = False
         if position is None:
             if long_signal and config.direction_mode != DirectionMode.SHORT:
                 open_position("LONG", candle_open, timestamp)
+                opened = True
             elif short_signal and config.direction_mode != DirectionMode.LONG:
                 open_position("SHORT", candle_open, timestamp)
+                opened = True
+        # The signal is known before this candle opens. Its whole OHLC range is
+        # therefore part of the position lifetime, including the entry candle.
+        if opened:
+            apply_intrabar_exits(candle_open, high, low, timestamp)
         unrealized = 0
         if position:
             unrealized = (close_price - position.entry_price) * position.quantity * (1 if position.direction == "LONG" else -1)

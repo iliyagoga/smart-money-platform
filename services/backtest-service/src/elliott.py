@@ -317,6 +317,24 @@ def _fee_adjusted_break_even_stop(entry_price: float, direction: str, maker_fee:
     return floor(raw / tick_size) * tick_size
 
 
+def _liquidation_price(position: dict, config: BacktestConfig, taker_fee: float) -> float:
+    """Price where remaining margin reaches maintenance margin after all costs."""
+    quantity = position["quantity"]
+    entry = position["entry_price"]
+    margin = entry * quantity / config.leverage
+    maintenance = entry * quantity * config.maintenance_margin_percent / 100
+    entry_cost = entry * quantity * position["entry_fee_rate"]
+    exit_cost_rate = taker_fee + config.liquidation_fee_percent / 100
+    funding = position["funding"]
+    if position["direction"] == "LONG":
+        return (entry * quantity - margin + maintenance + entry_cost + funding) / max(
+            quantity * (1 - exit_cost_rate), 1e-12,
+        )
+    return (entry * quantity + margin - maintenance - entry_cost - funding) / max(
+        quantity * (1 + exit_cost_rate), 1e-12,
+    )
+
+
 def _elliott_position_quantity(capital: float, initial_capital: float, entry_price: float,
                                use_margin: bool, leverage: float, reinvest_profits: bool,
                                lot_size: float) -> float:
@@ -407,17 +425,7 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
                 position["funding"] += signed_funding
                 position["last_funding_time"] += funding_events * interval
             side = 1 if position["direction"] == "LONG" else -1
-            exit_cost_rate = taker_fee + config.liquidation_fee_percent / 100
-            margin = position["entry_price"] * position["quantity"] / config.leverage
-            entry_cost = position["entry_price"] * position["quantity"] * position["entry_fee_rate"]
-            if side == 1:
-                liquidation = (
-                    position["entry_price"] * position["quantity"] - margin + entry_cost + position["funding"]
-                ) / max(position["quantity"] * (1 - exit_cost_rate), 1e-12)
-            else:
-                liquidation = (
-                    position["entry_price"] * position["quantity"] + margin - entry_cost - position["funding"]
-                ) / max(position["quantity"] * (1 + exit_cost_rate), 1e-12)
+            liquidation = _liquidation_price(position, config, taker_fee)
             margin_active = ec.use_margin and config.leverage > 1
             terminal = (max(position["stop"], liquidation) if side == 1 else min(position["stop"], liquidation)) \
                 if margin_active else position["stop"]
@@ -523,9 +531,7 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
         # conservative stop-first rule to the entry candle as well.
         if position and not had_position:
             side = 1 if position["direction"] == "LONG" else -1
-            liquidation = position["entry_price"] * (
-                1 - 1 / config.leverage if side == 1 else 1 + 1 / config.leverage
-            )
+            liquidation = _liquidation_price(position, config, taker_fee)
             margin_active = ec.use_margin and config.leverage > 1
             terminal = (max(position["stop"], liquidation) if side == 1 else min(position["stop"], liquidation)) \
                 if margin_active else position["stop"]

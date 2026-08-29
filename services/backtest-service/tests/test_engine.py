@@ -43,6 +43,19 @@ def test_stop_loss_uses_intrabar_low_and_conservative_order():
     assert result["trades"][0]["reason"] == "STOP_LOSS"
 
 
+def test_entry_candle_can_stop_position_and_uses_stop_before_target():
+    data = candles([10, 9, 10, 12, 12, 12, 12, 12, 12], spread=0)
+    # The cross is confirmed by candle 3 and entry is at candle 4 open.
+    data[4]["low"] = 5
+    data[4]["high"] = 20
+
+    result = run_backtest(data, config(stop_loss_percent=5, take_profit_percent=5, direction_mode="LONG"))
+
+    assert result["trades"][0]["entry_time"] == data[4]["timestamp"]
+    assert result["trades"][0]["exit_time"] == data[4]["timestamp"]
+    assert result["trades"][0]["reason"] == "STOP_LOSS"
+
+
 def test_fees_slippage_and_funding_reduce_capital():
     data = candles([10, 9, 10, 12, 14, 13, 11, 9, 8, 10])
     baseline = run_backtest(data, config(stop_loss_percent=50, take_profit_percent=50))
