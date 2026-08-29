@@ -36,7 +36,6 @@ export default function MarketPage() {
   const macroTimeframe = tradingMacroTimeframe(selectedConfig?.config);
   const strategyTimeframes = tradingElliottTimeframes(selectedConfig?.config);
   const candleLimit = timeframeWindowLimit(selectedTf, macroTimeframe);
-  const candles = useOkxCandles(viewed, selectedTf, candleLimit);
   const elliottPatterns = useApiResource<ElliottPatternsResponse>(`/api/v1/smc/elliott/patterns?symbol=${encodeURIComponent(viewed)}`);
   const liveEntries = useApiResource<LiveEntriesResponse>(`/api/v1/smc/elliott/entries?symbol=${encodeURIComponent(viewed)}`);
   const historicalEntryCandles = useOkxCandles(viewed,strategyTimeframes.entry,
@@ -44,7 +43,15 @@ export default function MarketPage() {
   const historicalStructureCandles = useOkxCandles(viewed,strategyTimeframes.structure,
     timeframeWindowLimit(strategyTimeframes.structure,strategyTimeframes.macro));
   const historicalMacroCandles = useOkxCandles(viewed,strategyTimeframes.macro,500);
+  const selectedUsesStrategyData = [strategyTimeframes.entry,strategyTimeframes.structure,strategyTimeframes.macro].includes(selectedTf);
+  const standaloneCandles = useOkxCandles(selectedUsesStrategyData ? "" : viewed,selectedTf,candleLimit);
+  const candles = selectedTf === strategyTimeframes.entry ? historicalEntryCandles
+    : selectedTf === strategyTimeframes.structure ? historicalStructureCandles
+    : selectedTf === strategyTimeframes.macro ? historicalMacroCandles : standaloneCandles;
   const [historicalElliott,setHistoricalElliott] = useState<ElliottHistoryResponse | null>(null);
+  const analysisKey = [viewed,configFingerprint(selectedConfig?.config),
+    candleFingerprint(historicalEntryCandles.data.candles),candleFingerprint(historicalStructureCandles.data.candles),
+    candleFingerprint(historicalMacroCandles.data.candles)].join("|");
   useEffect(() => {
     if (!viewed || historicalEntryCandles.loading || historicalStructureCandles.loading || historicalMacroCandles.loading) return;
     const byTimeframe = {
@@ -53,13 +60,15 @@ export default function MarketPage() {
       [strategyTimeframes.macro]: historicalMacroCandles.data.candles,
     };
     if (Object.values(byTimeframe).some((items) => !items.length)) return;
+    const cached=historicalAnalysisCache.get(analysisKey);
+    if (cached) { setHistoricalElliott(cached); return; }
     let cancelled=false;
     void api<ElliottHistoryResponse>("/api/v1/smc/elliott/history",{ method:"POST",
       body:JSON.stringify({ symbol:viewed,candles_by_timeframe:byTimeframe }) })
-      .then((result) => { if (!cancelled) setHistoricalElliott(result); })
+      .then((result) => { historicalAnalysisCache.set(analysisKey,result); if (!cancelled) setHistoricalElliott(result); })
       .catch(() => { if (!cancelled) setHistoricalElliott(null); });
     return () => { cancelled=true; };
-  },[viewed,strategyTimeframes.entry,strategyTimeframes.structure,strategyTimeframes.macro,
+  },[viewed,analysisKey,strategyTimeframes.entry,strategyTimeframes.structure,strategyTimeframes.macro,
     historicalEntryCandles.loading,historicalStructureCandles.loading,historicalMacroCandles.loading,
     historicalEntryCandles.data.candles,historicalStructureCandles.data.candles,historicalMacroCandles.data.candles]);
   const reloadCandles = candles.reload;
@@ -148,6 +157,16 @@ function timeframeWindowLimit(selected: string, macro: string): number {
 }
 
 const candleCache = new Map<string, Candle[]>();
+const historicalAnalysisCache = new Map<string,ElliottHistoryResponse>();
+
+function candleFingerprint(candles:Candle[]) {
+  const first=candles[0];const last=candles.at(-1);
+  return `${candles.length}:${first?.timestamp ?? 0}:${last?.timestamp ?? 0}:${last?.open ?? 0}:${last?.high ?? 0}:${last?.low ?? 0}:${last?.close ?? 0}`;
+}
+
+function configFingerprint(config?:BacktestSettings|string) {
+  return typeof config === "string" ? config : JSON.stringify(config ?? {});
+}
 
 function mergeCandles(current: Candle[], incoming: Candle[]): Candle[] {
   return [...new Map([...current, ...incoming].map((item) => [item.timestamp, item])).values()]

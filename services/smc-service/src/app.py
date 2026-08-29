@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import asyncio
+import json
 from fastapi import FastAPI,HTTPException,Query
 from .infrastructure import Infrastructure
 from .models import *
@@ -10,6 +11,8 @@ from .settings import settings
 
 infra=Infrastructure(settings.database_url,settings.redis_url)
 service=SMCService(infra,settings.swing_lookback)
+elliott_history_cache={}
+elliott_history_inflight={}
 class RebuildRequest(BaseModel):
     symbol:str;timeframes:list[Timeframe];limit:int=Field(default=500,ge=100,le=2000)
 class ElliottHistoryRequest(BaseModel):
@@ -100,11 +103,30 @@ async def elliott_history(request:ElliottHistoryRequest):
     mapping={(symbol,timeframe):items for timeframe,items in request.candles_by_timeframe.items()}
     entry=mapping.get((symbol,entry_timeframe),[])
     if not entry:raise HTTPException(422,"Entry timeframe candles are required")
-    engine=ElliottLiveEngine(live_signal_ids=set(service.elliott.live_signal_ids))
-    await asyncio.to_thread(engine.generate,symbol,entry[-1],mapping,config,False)
-    patterns=engine.latest_patterns.get(symbol,[]);entries=engine.latest_entries.get(symbol,[])
-    return {"symbol":symbol,"patterns":patterns,"entries":entries,
-            "patterns_total":len(patterns),"entries_total":len(entries)}
+    fingerprint=tuple(sorted((str(timeframe),len(items),items[0].timestamp if items else 0,
+                              items[-1].timestamp if items else 0,items[-1].open if items else 0,
+                              items[-1].high if items else 0,items[-1].low if items else 0,
+                              items[-1].close if items else 0)
+                             for timeframe,items in request.candles_by_timeframe.items()))
+    cache_key=(symbol,json.dumps(config,sort_keys=True,separators=(",",":")),fingerprint)
+    if cache_key in elliott_history_cache:return elliott_history_cache[cache_key]
+    async def calculate():
+        engine=ElliottLiveEngine(live_signal_ids=set(service.elliott.live_signal_ids))
+        await asyncio.to_thread(engine.generate,symbol,entry[-1],mapping,config,False)
+        patterns=engine.latest_patterns.get(symbol,[]);entries=engine.latest_entries.get(symbol,[])
+        return {"symbol":symbol,"patterns":patterns,"entries":entries,
+                "patterns_total":len(patterns),"entries_total":len(entries)}
+    task=elliott_history_inflight.get(cache_key)
+    owner=task is None
+    if owner:
+        task=asyncio.create_task(calculate());elliott_history_inflight[cache_key]=task
+    try:result=await task
+    finally:
+        if owner:elliott_history_inflight.pop(cache_key,None)
+    elliott_history_cache[cache_key]=result
+    if len(elliott_history_cache)>128:
+        for stale in list(elliott_history_cache)[:-64]:elliott_history_cache.pop(stale,None)
+    return result
 
 @app.get("/scenarios")
 async def scenarios(symbol:str|None=None,status:str|None=None,limit:int=Query(100,ge=1,le=1000)):

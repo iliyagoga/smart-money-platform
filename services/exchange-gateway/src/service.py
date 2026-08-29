@@ -22,7 +22,7 @@ class ExchangeGateway:
     def __init__(self,s):
         self.s=s;self.client=None;self.db=None;self.tasks=set();self.connected={"public":False,"business":False};self.last_error=None
         self.history_semaphore=asyncio.Semaphore(s.history_concurrency);self.running_history=set()
-        self.active_symbols=[];self.websockets={};self.market_page_cache={}
+        self.active_symbols=[];self.websockets={};self.market_page_cache={};self.market_page_locks={}
     async def start(self):
         self.client=httpx.AsyncClient(timeout=20)
         self.db=await asyncpg.create_pool(self.s.database_url,min_size=1,max_size=5)
@@ -131,18 +131,24 @@ class ExchangeGateway:
         key=(symbol,timeframe,after,limit);cached=self.market_page_cache.get(key)
         ttl=10 if after is None else 600
         if cached and monotonic()-cached[0]<ttl:return cached[1]
-        params={"instId":symbol,"bar":TIMEFRAMES[timeframe],"limit":min(limit,300)}
-        if after is not None:params["after"]=str(after)
-        response=await self.client.get(self.s.okx_rest_url+"/api/v5/market/history-candles",params=params)
-        response.raise_for_status();body=response.json()
-        if body.get("code")!="0":raise ValueError(body.get("msg","OKX error"))
-        values=[candle(item,symbol,timeframe) for item in body.get("data",[])]
-        values.sort(key=lambda item:item["timestamp"])
-        self.market_page_cache[key]=(monotonic(),values)
-        if len(self.market_page_cache)>5000:
-            self.market_page_cache={item:value for item,value in self.market_page_cache.items()
-                                    if monotonic()-value[0]<600}
-        return values
+        lock=self.market_page_locks.setdefault(key,asyncio.Lock())
+        async with lock:
+            cached=self.market_page_cache.get(key)
+            if cached and monotonic()-cached[0]<ttl:return cached[1]
+            params={"instId":symbol,"bar":TIMEFRAMES[timeframe],"limit":min(limit,300)}
+            if after is not None:params["after"]=str(after)
+            response=await self.client.get(self.s.okx_rest_url+"/api/v5/market/history-candles",params=params)
+            response.raise_for_status();body=response.json()
+            if body.get("code")!="0":raise ValueError(body.get("msg","OKX error"))
+            values=[candle(item,symbol,timeframe) for item in body.get("data",[])]
+            values.sort(key=lambda item:item["timestamp"])
+            self.market_page_cache[key]=(monotonic(),values)
+            if len(self.market_page_cache)>5000:
+                self.market_page_cache={item:value for item,value in self.market_page_cache.items()
+                                        if monotonic()-value[0]<600}
+                self.market_page_locks={item:value for item,value in self.market_page_locks.items()
+                                        if item in self.market_page_cache or value.locked()}
+            return values
     async def history_page(self,symbol,timeframe,after=None):
         params={"instId":symbol,"bar":TIMEFRAMES[timeframe],"limit":300}
         if after is not None:params["after"]=str(after)
