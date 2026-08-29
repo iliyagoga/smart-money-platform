@@ -12,6 +12,7 @@ class SMCService:
     def __init__(self,infra:Infrastructure,lookback:int=5):self.infra=infra;self.pipeline=AnalysisPipeline(lookback);self.scenarios=ScenarioManager();self.elliott=ElliottLiveEngine();self.task=None
     async def start(self):
         await self.restore()
+        await self.restore_elliott_patterns()
         self.task=asyncio.create_task(resilient_loop(self.subscribe))
     async def stop(self):
         if self.task:self.task.cancel()
@@ -69,6 +70,18 @@ class SMCService:
         if not row:return None
         value=row["config"]
         return json.loads(value) if isinstance(value,str) else value
+    async def restore_elliott_patterns(self):
+        try:rows=await self.infra.db.fetch("SELECT symbol,config FROM trading_configs WHERE status='ACTIVE'")
+        except asyncpg.UndefinedTableError:return
+        for row in rows:
+            raw=json.loads(row["config"]) if isinstance(row["config"],str) else row["config"]
+            normalized=normalize_config(raw)
+            if normalized.get("strategy")!="ELLIOTT":continue
+            try:
+                timeframe=Timeframe(normalized.get("elliott",{}).get("entry_timeframe","M15"))
+                candles=self.pipeline.candles.get((row["symbol"],timeframe),[])
+                if candles:self.elliott.generate(row["symbol"],candles[-1],self.pipeline.candles,raw)
+            except (ValueError,KeyError):log.exception("Could not restore Elliott waves for %s",row["symbol"])
     async def process(self,candle:Candle,correlation_id:str|None=None):
         result=self.pipeline.process(candle);key=(candle.symbol,candle.timeframe)
         mappings=[(result.swings,"swing","structure.update","swing.detected"),(result.changes,"structure_change","smc.update","structure.changed")]

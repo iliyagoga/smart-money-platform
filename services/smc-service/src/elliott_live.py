@@ -30,6 +30,7 @@ def normalize_config(value):
 class ElliottLiveEngine:
     emitted: set[str] = field(default_factory=set)
     wave1_broken: set[str] = field(default_factory=set)
+    latest_patterns: dict[str, list[dict]] = field(default_factory=dict)
 
     def generate(self, symbol: str, current: Candle, candles_by_tf: dict, raw_config: dict) -> list[Scenario]:
         # The live image imports the exact detector and config models used by
@@ -52,6 +53,22 @@ class ElliottLiveEngine:
         }
         patterns, _, _ = detect_patterns(series[ec.structure_timeframe], series[ec.entry_timeframe],
                                           series[ec.macro_timeframe], ec)
+        self.latest_patterns[symbol] = [
+            {
+                "id": pattern.id, "direction": pattern.direction, "state": pattern.state,
+                "invalid_reason": pattern.invalid_reason, "signal_time": pattern.signal_time,
+                "structure_timeframe": ec.structure_timeframe,
+                "entry_timeframe": ec.entry_timeframe,
+                "points": {
+                    label: {
+                        "timestamp": point.timestamp, "confirmed_at": point.confirmed_at,
+                        "price": point.price, "kind": point.kind,
+                    }
+                    for label, point in pattern.points.items()
+                },
+            }
+            for pattern in patterns
+        ]
         available_at = current.timestamp + TIMEFRAME_MILLISECONDS[ec.entry_timeframe]
         expiry = ec.entry_expiry_bars * TIMEFRAME_MILLISECONDS[ec.entry_timeframe]
         result = []

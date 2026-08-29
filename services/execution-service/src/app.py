@@ -67,6 +67,17 @@ async def save_trading_config(request: TradingConfigCreate):
       ON CONFLICT(symbol) DO UPDATE SET mode=excluded.mode,status='ACTIVE',config=excluded.config,updated_at=now()
       RETURNING symbol,mode,status,config,created_at,updated_at""",symbol,request.mode,json.dumps(request.config))
     return dict(row)
+@app.delete("/trading-configs/{symbol}")
+async def delete_trading_config(symbol: str):
+    symbol=symbol.strip().upper()
+    if not symbol:raise HTTPException(422,"symbol must not be empty")
+    has_order=any(item.symbol==symbol and item.status in {"PENDING","OPEN"} for item in service.orders.values())
+    has_position=any(item.symbol==symbol and item.status!="CLOSED" for item in service.positions.values())
+    if has_order or has_position:
+        raise HTTPException(409,"Close the active order or position before removing the trading asset")
+    removed=await service.db.fetchval("DELETE FROM trading_configs WHERE symbol=$1 RETURNING symbol",symbol)
+    if not removed:raise HTTPException(404,"Trading asset not found")
+    return {"success":True,"symbol":removed}
 @app.get("/positions/{position_id}")
 async def position(position_id:str):
     item=service.positions.get(position_id)

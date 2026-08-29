@@ -71,6 +71,12 @@ async def context(symbol:str):
     regime="TRENDING_UP" if up>down and up/total>=.6 else "TRENDING_DOWN" if down>up and down/total>=.6 else "RANGING"
     return {"symbol":symbol,"regime":regime,"confidence":max(up,down)/total,"adx":None,"volatility":None}
 
+@app.get("/elliott/patterns")
+async def elliott_patterns(symbol:str):
+    symbol=symbol.strip().upper()
+    items=service.elliott.latest_patterns.get(symbol,[])
+    return {"symbol":symbol,"patterns":items,"total":len(items)}
+
 @app.get("/scenarios")
 async def scenarios(symbol:str|None=None,status:str|None=None,limit:int=Query(100,ge=1,le=1000)):
     items=service.scenarios.list(symbol,status);return {"scenarios":items[-limit:],"total":len(items)}
