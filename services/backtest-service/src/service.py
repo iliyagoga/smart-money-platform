@@ -54,7 +54,7 @@ class BacktestService:
         self.settings = settings
         self.db: asyncpg.Pool | None = None
         self.client: httpx.AsyncClient | None = None
-        self.tasks: set[asyncio.Task] = set()
+        self.tasks: dict[UUID, asyncio.Task] = {}
         self.semaphore = asyncio.Semaphore(settings.job_concurrency)
         self.s3 = boto3.client(
             "s3", endpoint_url=settings.minio_endpoint, aws_access_key_id=settings.minio_access_key,
@@ -94,18 +94,20 @@ class BacktestService:
             self.schedule(row["id"])
 
     async def stop(self):
-        for task in self.tasks:
+        for task in self.tasks.values():
             task.cancel()
-        await asyncio.gather(*self.tasks, return_exceptions=True)
+        await asyncio.gather(*self.tasks.values(), return_exceptions=True)
         if self.client:
             await self.client.aclose()
         if self.db:
             await self.db.close()
 
     def schedule(self, run_id: UUID):
+        if run_id in self.tasks and not self.tasks[run_id].done():
+            return
         task = asyncio.create_task(self.execute(run_id))
-        self.tasks.add(task)
-        task.add_done_callback(self.tasks.discard)
+        self.tasks[run_id] = task
+        task.add_done_callback(lambda completed, identifier=run_id: self.tasks.pop(identifier, None))
 
     async def create_run(self, user_id: str, request: BacktestCreate) -> UUID:
         run_id = uuid4()
@@ -245,13 +247,17 @@ class BacktestService:
             }
             async with self.db.acquire() as connection:
                 await connection.execute(
-                    "UPDATE backtest_runs SET status='COMPLETED',progress=100,result=$2::jsonb,completed_at=now() WHERE id=$1",
+                    "UPDATE backtest_runs SET status='COMPLETED',progress=100,result=$2::jsonb,completed_at=now() "
+                    "WHERE id=$1 AND status='RUNNING'",
                     run_id, json.dumps(result, separators=(",", ":"))
                 )
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             async with self.db.acquire() as connection:
                 await connection.execute(
-                    "UPDATE backtest_runs SET status='FAILED',error=$2,completed_at=now() WHERE id=$1",
+                    "UPDATE backtest_runs SET status='FAILED',error=$2,completed_at=now() "
+                    "WHERE id=$1 AND status<>'CANCELLED'",
                     run_id, str(exc)[:2000],
                 )
 
@@ -360,11 +366,15 @@ class BacktestService:
 
     async def cancel_run(self, run_id: UUID, user_id: str):
         async with self.db.acquire() as connection:
-            return await connection.fetchval(
+            cancelled = await connection.fetchval(
                 """UPDATE backtest_runs SET status='CANCELLED',completed_at=now()
-                   WHERE id=$1 AND user_id=$2 AND status='QUEUED' RETURNING id""",
+                   WHERE id=$1 AND user_id=$2 AND status IN ('QUEUED','RUNNING') RETURNING id""",
                 run_id, user_id,
             )
+        task = self.tasks.get(run_id)
+        if cancelled and task and not task.done():
+            task.cancel()
+        return cancelled
 
     @staticmethod
     def serialize_run(row, include_result: bool):

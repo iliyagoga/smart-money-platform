@@ -99,7 +99,7 @@ async def backtest(run_id: UUID, x_user_id: str = Header(default="local")):
 @app.post("/backtests/{run_id}/cancel")
 async def cancel_backtest(run_id: UUID, x_user_id: str = Header(default="local")):
     if not await service.cancel_run(run_id, x_user_id):
-        raise HTTPException(409, "Only a queued backtest can be cancelled")
+        raise HTTPException(409, "Only a queued or running backtest can be cancelled")
     return {"id": str(run_id), "status": "CANCELLED"}
 
 
