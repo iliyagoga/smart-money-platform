@@ -3,6 +3,7 @@ import csv
 import io
 import json
 import time
+from math import isfinite
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -15,6 +16,37 @@ from .elliott import run_elliott_replay
 from .models import AssetCreate, BacktestCreate, StrategyType
 from .replay import FrozenModel, run_smc_replay, train_local_model
 from .settings import Settings
+
+
+TIMEFRAME_INTERVALS = {
+    "M1": 60_000, "M5": 300_000, "M15": 900_000, "M30": 1_800_000,
+    "H1": 3_600_000, "H4": 14_400_000, "D1": 86_400_000,
+}
+
+
+def validate_candle_series(timeframe: str, candles: list[dict]) -> None:
+    """Reject malformed, duplicate, unordered or internally incomplete market data."""
+    previous_timestamp = None
+    step = TIMEFRAME_INTERVALS[timeframe]
+    for index, candle in enumerate(candles):
+        timestamp = int(candle["timestamp"])
+        values = {key: float(candle[key]) for key in ("open", "high", "low", "close", "volume")}
+        if not all(isfinite(value) for value in values.values()):
+            raise ValueError(f"non-finite {timeframe} candle at {timestamp}")
+        if min(values["open"], values["high"], values["low"], values["close"]) <= 0:
+            raise ValueError(f"non-positive {timeframe} price at {timestamp}")
+        if values["volume"] < 0:
+            raise ValueError(f"negative {timeframe} volume at {timestamp}")
+        if values["high"] < max(values["open"], values["low"], values["close"]) \
+                or values["low"] > min(values["open"], values["high"], values["close"]):
+            raise ValueError(f"invalid {timeframe} OHLC at {timestamp}")
+        if previous_timestamp is not None:
+            difference = timestamp - previous_timestamp
+            if difference <= 0:
+                raise ValueError(f"duplicate or unordered {timeframe} candle at index {index}")
+            if difference != step:
+                raise ValueError(f"internal {timeframe} candle gap after {previous_timestamp}")
+        previous_timestamp = timestamp
 
 
 class BacktestService:
@@ -218,7 +250,6 @@ class BacktestService:
                 )
 
     async def load_candles(self, symbol, timeframes, start, end, limit):
-        intervals = {"M1":60_000,"M5":300_000,"M15":900_000,"M30":1_800_000,"H1":3_600_000,"H4":14_400_000,"D1":86_400_000}
         bounded_limit = min(limit, self.settings.max_candles)
         result = {}
         async with self.db.acquire() as connection:
@@ -239,11 +270,13 @@ class BacktestService:
         missing = [timeframe for timeframe, candles in result.items() if not candles]
         if missing:
             raise ValueError(f"no stored closed candles for: {', '.join(missing)}")
+        for timeframe, candles in result.items():
+            validate_candle_series(timeframe, candles)
         if start is not None and end is not None:
             incomplete = []
             truncated = []
             for timeframe, candles in result.items():
-                step = intervals[timeframe]
+                step = TIMEFRAME_INTERVALS[timeframe]
                 latest_closed = (int(time.time() * 1000) // step - 1) * step
                 required_end = min(end, latest_closed)
                 if candles[0]["timestamp"] > start + step or candles[-1]["timestamp"] < required_end - step:
