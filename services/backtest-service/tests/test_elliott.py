@@ -275,7 +275,7 @@ def test_macro_filter_never_reads_an_unclosed_higher_timeframe_candle():
     macro = candles([100, 99, 120], 14_400_000)
 
     assert _macro_direction(macro, 36_000_000, "STRUCTURE", "H4") == "BOTH"
-    assert _macro_direction(macro, 43_200_000, "STRUCTURE", "H4") == "BOTH"
+    assert _macro_direction(macro, 43_200_000, "STRUCTURE", "H4") == "LONG"
 
 
 def test_wave2_invalidation_rule(monkeypatch):

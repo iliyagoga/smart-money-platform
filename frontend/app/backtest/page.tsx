@@ -14,7 +14,7 @@ import { api, downloadApi } from "../../lib/api";
 import { useApiResource } from "../../hooks/useApiResource";
 import { useTradingAssets } from "../../hooks/useTradingAssets";
 import { mapBacktestResult } from "../../lib/backtest/apiTypes";
-import type { BacktestCreateResponse, BacktestRun, BacktestRunsResponse } from "../../lib/backtest/apiTypes";
+import type { BacktestCreateResponse, BacktestRun, BacktestRunsResponse, SavedBacktestRequest } from "../../lib/backtest/apiTypes";
 import type { BacktestResult, BacktestSettings } from "../../lib/backtest/types";
 import { useAuth } from "../../components/auth/AuthProvider";
 
@@ -67,6 +67,78 @@ const timeframeMilliseconds: Record<string, number> = {
   M1: 60_000, M5: 300_000, M15: 900_000, M30: 1_800_000, H1: 3_600_000, H4: 14_400_000, D1: 86_400_000,
 };
 
+const savedNumber = (value: unknown, fallback: number) => typeof value === "number" ? value : fallback;
+const savedBoolean = (value: unknown, fallback: boolean) => typeof value === "boolean" ? value : fallback;
+const savedDate = (value: number) => new Date(value).toISOString().slice(0, 10);
+
+function restoreSettings(request: SavedBacktestRequest, current: BacktestSettings): BacktestSettings {
+  const config = request.config;
+  const elliott = config.elliott ?? {};
+  const fixedSmcTarget = typeof config.smc_target_rr === "number";
+  return {
+    ...current,
+    initialCapital: savedNumber(config.initial_capital, current.initialCapital),
+    strategy: typeof config.strategy === "string" ? config.strategy as BacktestSettings["strategy"] : current.strategy,
+    fastPeriod: savedNumber(config.fast_period, current.fastPeriod),
+    slowPeriod: savedNumber(config.slow_period, current.slowPeriod),
+    feePercent: savedNumber(config.fee_percent, current.feePercent),
+    makerFeePercent: savedNumber(config.maker_fee_percent, current.makerFeePercent ?? current.feePercent),
+    takerFeePercent: savedNumber(config.taker_fee_percent, current.takerFeePercent ?? current.feePercent),
+    slippagePercent: savedNumber(config.slippage_percent, current.slippagePercent),
+    stopLossPercent: savedNumber(config.stop_loss_percent, current.stopLossPercent),
+    takeProfitPercent: savedNumber(config.take_profit_percent, current.takeProfitPercent),
+    positionSizePercent: savedNumber(config.position_size_percent, current.positionSizePercent),
+    leverage: savedNumber(config.leverage, current.leverage),
+    fundingPercentPerDay: savedNumber(config.funding_percent_per_day, current.fundingPercentPerDay),
+    fundingIntervalHours: savedNumber(config.funding_interval_hours, current.fundingIntervalHours ?? 8),
+    executionLatencyMs: savedNumber(config.execution_latency_ms, current.executionLatencyMs ?? 0),
+    tickSize: savedNumber(config.tick_size, current.tickSize ?? .01),
+    lotSize: savedNumber(config.lot_size, current.lotSize ?? .000001),
+    minimumOrderSize: savedNumber(config.minimum_order_size, current.minimumOrderSize ?? .000001),
+    volumeParticipationPercent: savedNumber(config.volume_participation_percent, current.volumeParticipationPercent ?? 5),
+    liquidationFeePercent: savedNumber(config.liquidation_fee_percent, current.liquidationFeePercent ?? .5),
+    trailingStopPercent: typeof config.trailing_stop_percent === "number" ? config.trailing_stop_percent : undefined,
+    directionMode: typeof config.direction_mode === "string" ? config.direction_mode as BacktestSettings["directionMode"] : current.directionMode,
+    riskPerTradePercent: savedNumber(config.risk_per_trade_percent, current.riskPerTradePercent),
+    smcTargetMode: fixedSmcTarget ? "FIXED" : "TEMPLATE",
+    smcTargetRr: savedNumber(config.smc_target_rr, current.smcTargetRr),
+    smcMinTargetRr: savedNumber(config.smc_min_target_rr, current.smcMinTargetRr),
+    smcMaxTargetRr: savedNumber(config.smc_max_target_rr, current.smcMaxTargetRr),
+    kellyFraction: savedNumber(config.kelly_fraction, current.kellyFraction),
+    confidenceThreshold: savedNumber(config.confidence_threshold, current.confidenceThreshold),
+    templateIds: Array.isArray(config.template_ids) ? config.template_ids.filter((item): item is string => typeof item === "string") : current.templateIds,
+    localRetraining: savedBoolean(config.local_retraining, current.localRetraining),
+    elliott: {
+      ...current.elliott,
+      useMargin: savedBoolean(elliott.use_margin, current.elliott.useMargin),
+      reinvestProfits: savedBoolean(elliott.reinvest_profits, current.elliott.reinvestProfits),
+      macroTimeframe: typeof elliott.macro_timeframe === "string" ? elliott.macro_timeframe : current.elliott.macroTimeframe,
+      structureTimeframe: typeof elliott.structure_timeframe === "string" ? elliott.structure_timeframe : current.elliott.structureTimeframe,
+      entryTimeframe: typeof elliott.entry_timeframe === "string" ? elliott.entry_timeframe : current.elliott.entryTimeframe,
+      atrPeriod: savedNumber(elliott.atr_period, current.elliott.atrPeriod),
+      zigzagReversalAtr: savedNumber(elliott.zigzag_reversal_atr, current.elliott.zigzagReversalAtr),
+      minSwingAtr: savedNumber(elliott.min_swing_atr, current.elliott.minSwingAtr),
+      wave1MinAtr: savedNumber(elliott.wave1_min_atr, current.elliott.wave1MinAtr),
+      wave1MinEfficiency: savedNumber(elliott.wave1_min_efficiency, current.elliott.wave1MinEfficiency),
+      wave2MinRetracement: savedNumber(elliott.wave2_min_retracement, current.elliott.wave2MinRetracement),
+      wave2MaxRetracement: savedNumber(elliott.wave2_max_retracement, current.elliott.wave2MaxRetracement),
+      entryModel: typeof elliott.entry_model === "string" ? elliott.entry_model as BacktestSettings["elliott"]["entryModel"] : current.elliott.entryModel,
+      entryRetracement: savedNumber(elliott.entry_retracement, current.elliott.entryRetracement),
+      entryExpiryBars: savedNumber(elliott.entry_expiry_bars, current.elliott.entryExpiryBars),
+      chochMinAtr: savedNumber(elliott.choch_min_atr, current.elliott.chochMinAtr),
+      chochMinBodyRatio: savedNumber(elliott.choch_min_body_ratio, current.elliott.chochMinBodyRatio),
+      macroFilter: typeof elliott.macro_filter === "string" ? elliott.macro_filter as BacktestSettings["elliott"]["macroFilter"] : current.elliott.macroFilter,
+      stopBufferAtr: savedNumber(elliott.stop_buffer_atr, current.elliott.stopBufferAtr),
+      takeProfitCount: savedNumber(elliott.take_profit_count, current.elliott.takeProfitCount) as 1 | 2,
+      takeProfitRr: savedNumber(elliott.take_profit_rr, current.elliott.takeProfitRr),
+      secondTakeProfitRr: savedNumber(elliott.second_take_profit_rr, current.elliott.secondTakeProfitRr),
+      firstTakeAction: typeof elliott.first_take_action === "string" ? elliott.first_take_action as BacktestSettings["elliott"]["firstTakeAction"] : current.elliott.firstTakeAction,
+      minimumRr: savedNumber(elliott.minimum_rr, current.elliott.minimumRr),
+      breakEvenAtOneR: savedBoolean(elliott.break_even_at_one_r, current.elliott.breakEvenAtOneR),
+    },
+  };
+}
+
 interface ScenarioTemplatesResponse {
   templates: Array<{ id: string; name: string }>;
   total: number;
@@ -90,6 +162,8 @@ export default function BacktestPage() {
   const [isRunning, setIsRunning] = useState(false);
   const [progress, setProgress] = useState(0);
   const [workspaceTab, setWorkspaceTab] = useState(0);
+  const restoredConfig = useRef<SavedBacktestRequest["config"] | undefined>(undefined);
+  const restoredModelVersion = useRef<string | null | undefined>(undefined);
   const runsResource = useApiResource<BacktestRunsResponse>("/api/v1/backtest/backtests");
   const templatesResource = useApiResource<ScenarioTemplatesResponse>("/api/v1/smc/scenario-templates");
   const templateSelectionInitialized = useRef(false);
@@ -139,7 +213,9 @@ export default function BacktestPage() {
           train_to: includeTrainingPeriod ? Date.parse(`${trainTo}T23:59:59Z`) : undefined,
           test_from: Date.parse(`${period.from}T00:00:00Z`),
           test_to: Date.parse(`${period.to}T23:59:59Z`),
+          model_version: restoredModelVersion.current,
           config: {
+            ...restoredConfig.current,
             strategy: candidateSettings.strategy,
             initial_capital: candidateSettings.initialCapital,
             position_size_percent: candidateSettings.positionSizePercent,
@@ -171,6 +247,7 @@ export default function BacktestPage() {
             template_ids: candidateSettings.templateIds,
             local_retraining: candidateSettings.localRetraining,
             elliott: {
+              ...(restoredConfig.current?.elliott ?? {}),
               use_margin: candidateSettings.elliott.useMargin,
               reinvest_profits: candidateSettings.elliott.reinvestProfits,
               macro_timeframe: candidateSettings.elliott.macroTimeframe,
@@ -245,6 +322,29 @@ export default function BacktestPage() {
       anchor.download = `backtest-${runId}.${format}`;
       anchor.click();
       URL.revokeObjectURL(url);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
+  const repeatRun = async (runId: string) => {
+    setError("");
+    try {
+      const runDetails = await api<BacktestRun>(`/api/v1/backtest/backtests/${runId}`);
+      const request = runDetails.result?.request_config;
+      if (!request) throw new Error("В этом отчёте отсутствуют сохранённые параметры запуска");
+      restoredConfig.current = request.config;
+      restoredModelVersion.current = request.model_version;
+      setAsset(request.symbol);
+      setSelectedTimeframes(request.timeframes.length ? request.timeframes : [request.timeframe]);
+      setCandleLimit(request.candle_limit);
+      if (typeof request.train_from === "number") setTrainFrom(savedDate(request.train_from));
+      if (typeof request.train_to === "number") setTrainTo(savedDate(request.train_to));
+      if (typeof request.test_from === "number") setTestFrom(savedDate(request.test_from));
+      if (typeof request.test_to === "number") setTestTo(savedDate(request.test_to));
+      setSettings((current) => restoreSettings(request, current));
+      setProgress(0);
+      setWorkspaceTab(1);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     }
@@ -380,6 +480,7 @@ export default function BacktestPage() {
     <BacktestHistory
       runs={runsResource.data?.runs ?? []}
       onOpen={(runItem) => void openRun(runItem.id)}
+      onRepeat={(runItem) => void repeatRun(runItem.id)}
       onExport={(runItem, format) => void exportRun(runItem.id, format)}
       onCompare={(ids) => void compareRuns(ids)}
     />

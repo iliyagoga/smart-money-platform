@@ -5,6 +5,7 @@ import type { BacktestRunSummary } from "../../lib/backtest/apiTypes";
 interface BacktestHistoryProps {
   onExport: (run: BacktestRunSummary, format: "csv" | "json") => void;
   onOpen: (run: BacktestRunSummary) => void;
+  onRepeat: (run: BacktestRunSummary) => void;
   onCompare: (ids: string[]) => void;
   runs: BacktestRunSummary[];
 }
@@ -15,7 +16,7 @@ const statusColor = (status: BacktestRunSummary["status"]) => {
   return "default";
 };
 
-export function BacktestHistory({ onCompare, onExport, onOpen, runs }: BacktestHistoryProps) {
+export function BacktestHistory({ onCompare, onExport, onOpen, onRepeat, runs }: BacktestHistoryProps) {
   const [selected, setSelected] = useState<string[]>([]);
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
@@ -42,6 +43,7 @@ export function BacktestHistory({ onCompare, onExport, onOpen, runs }: BacktestH
       </Stack>
       <Chip label={run.status === "RUNNING" ? `${run.progress}%` : run.status} color={statusColor(run.status)} size="small" />
       <Button disabled={run.status !== "COMPLETED"} onClick={() => onOpen(run)}>Открыть</Button>
+      <Button disabled={run.status !== "COMPLETED"} onClick={() => onRepeat(run)}>Повторить</Button>
       <Button disabled={run.status !== "COMPLETED"} onClick={() => onExport(run, "csv")}>CSV</Button>
       <Button disabled={run.status !== "COMPLETED"} onClick={() => onExport(run, "json")}>JSON</Button>
     </Stack>)}</Stack>

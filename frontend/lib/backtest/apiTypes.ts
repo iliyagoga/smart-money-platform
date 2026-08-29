@@ -15,6 +15,19 @@ export interface BacktestRun extends BacktestRunSummary {
   result?: BackendBacktestResult;
 }
 
+export interface SavedBacktestRequest {
+  symbol: string;
+  timeframe: string;
+  timeframes: string[];
+  candle_limit: number;
+  train_from?: number | null;
+  train_to?: number | null;
+  test_from?: number | null;
+  test_to?: number | null;
+  model_version?: string | null;
+  config: Record<string, unknown> & { elliott?: Record<string, unknown> };
+}
+
 export interface BacktestRunsResponse { runs: BacktestRunSummary[] }
 export interface BacktestCreateResponse { id: string; status: string }
 
@@ -55,10 +68,7 @@ export interface BackendBacktestResult {
   benchmark_return_percent: number;
   trades: BackendTrade[];
   equity: BackendEquityPoint[];
-  request_config?: {
-    test_from?: number;
-    test_to?: number;
-  };
+  request_config?: SavedBacktestRequest;
   decisions?: Array<{
     confidence: number;
     decision: string;
@@ -144,8 +154,8 @@ export function mapBacktestResult(result: BackendBacktestResult): BacktestResult
     dataset: result.dataset ? {
       closedCandlesOnly: result.dataset.closed_candles_only,
       testCandles: result.dataset.test_candles,
-      testFrom: result.dataset.test_from ?? result.request_config?.test_from,
-      testTo: result.dataset.test_to ?? result.request_config?.test_to,
+      testFrom: result.dataset.test_from ?? result.request_config?.test_from ?? undefined,
+      testTo: result.dataset.test_to ?? result.request_config?.test_to ?? undefined,
       timeframes: result.dataset.timeframes,
     } : undefined,
     modelTraining: result.model_training,

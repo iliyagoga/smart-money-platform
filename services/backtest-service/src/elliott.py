@@ -90,7 +90,7 @@ def atr_zigzag(candles: list[dict], config, timeframe: str | None = None) -> lis
     pivots: list[Pivot] = []
     candle_duration = TIMEFRAME_MILLISECONDS[timeframe or config.structure_timeframe]
 
-    def append(index: int, confirmed: int, kind: str) -> bool:
+    def append(index: int, confirmed: int, kind: str):
         price = float(candles[index]["high" if kind == "HIGH" else "low"])
         if pivots and (pivots[-1].kind == kind or index - pivots[-1].index < config.min_swing_candles):
             if pivots and pivots[-1].kind == kind:
@@ -100,19 +100,17 @@ def atr_zigzag(candles: list[dict], config, timeframe: str | None = None) -> lis
                         index, int(candles[index]["timestamp"]),
                         int(candles[confirmed]["timestamp"]) + candle_duration, price, kind, atrs[index],
                     )
-            return False
+            return
         if pivots:
             distance = abs(price - pivots[-1].price)
             if distance < config.min_swing_atr * max(atrs[index], 1e-12):
-                return False
-            # Never reject a confirmed reversal merely because it took too
-            # long. Doing so leaves the state machine unable to alternate
-            # again. Duration belongs to the wave-pattern filter below.
+                return
+            if config.max_swing_candles and index - pivots[-1].index > config.max_swing_candles:
+                return
         pivots.append(Pivot(
             index, int(candles[index]["timestamp"]),
             int(candles[confirmed]["timestamp"]) + candle_duration, price, kind, atrs[index],
         ))
-        return True
 
     for index in range(1, len(candles)):
         if float(candles[index]["high"]) >= float(candles[high_index]["high"]):
@@ -122,19 +120,19 @@ def atr_zigzag(candles: list[dict], config, timeframe: str | None = None) -> lis
         threshold = config.zigzag_reversal_atr * max(atrs[index], 1e-12)
         if direction == 0:
             if float(candles[high_index]["high"]) - float(candles[index]["low"]) >= threshold and high_index < index:
-                # The first confirmed fact is the high from which price
-                # reversed. Do not invent a synthetic opposite pivot at bar 0.
-                if append(high_index, index, "HIGH"):
-                    direction, low_index = -1, index
-            elif float(candles[index]["high"]) - float(candles[low_index]["low"]) >= threshold and low_index < index:
-                if append(low_index, index, "LOW"):
-                    direction, high_index = 1, index
-        elif direction == 1 and float(candles[high_index]["high"]) - float(candles[index]["low"]) >= threshold:
-            if append(high_index, index, "HIGH"):
+                append(low_index if low_index < high_index else 0, high_index, "LOW")
+                append(high_index, index, "HIGH")
                 direction, low_index = -1, index
-        elif direction == -1 and float(candles[index]["high"]) - float(candles[low_index]["low"]) >= threshold:
-            if append(low_index, index, "LOW"):
+            elif float(candles[index]["high"]) - float(candles[low_index]["low"]) >= threshold and low_index < index:
+                append(high_index if high_index < low_index else 0, low_index, "HIGH")
+                append(low_index, index, "LOW")
                 direction, high_index = 1, index
+        elif direction == 1 and float(candles[high_index]["high"]) - float(candles[index]["low"]) >= threshold:
+            append(high_index, index, "HIGH")
+            direction, low_index = -1, index
+        elif direction == -1 and float(candles[index]["high"]) - float(candles[low_index]["low"]) >= threshold:
+            append(low_index, index, "LOW")
+            direction, high_index = 1, index
     return pivots
 
 
@@ -147,7 +145,7 @@ def _efficiency(candles: list[dict], left: int, right: int) -> float:
 def _macro_direction(candles: list[dict], timestamp: int, mode: ElliottMacroFilter, timeframe: str) -> str:
     duration = TIMEFRAME_MILLISECONDS[timeframe]
     available = [item for item in candles if int(item["timestamp"]) + duration <= timestamp]
-    required = 200 if mode in (ElliottMacroFilter.EMA200, ElliottMacroFilter.EMA_CROSS) else 5
+    required = 200 if mode in (ElliottMacroFilter.EMA200, ElliottMacroFilter.EMA_CROSS) else 3
     if mode == ElliottMacroFilter.OFF or len(available) < required:
         return "BOTH"
     closes = [float(item["close"]) for item in available]
@@ -155,24 +153,7 @@ def _macro_direction(candles: list[dict], timestamp: int, mode: ElliottMacroFilt
         return "LONG" if closes[-1] >= _ema(closes, 200)[-1] else "SHORT"
     if mode == ElliottMacroFilter.EMA_CROSS:
         return "LONG" if _ema(closes, 50)[-1] >= _ema(closes, 200)[-1] else "SHORT"
-    # STRUCTURE: use only confirmed fractals (two closed bars on the right),
-    # then require both highs and lows to agree. Mixed structure is neutral.
-    highs: list[float] = []
-    lows: list[float] = []
-    for index in range(2, len(available) - 2):
-        window = available[index - 2:index + 3]
-        high = float(available[index]["high"])
-        low = float(available[index]["low"])
-        if high == max(float(item["high"]) for item in window):
-            highs.append(high)
-        if low == min(float(item["low"]) for item in window):
-            lows.append(low)
-    if len(highs) >= 2 and len(lows) >= 2:
-        if highs[-1] > highs[-2] and lows[-1] > lows[-2]:
-            return "LONG"
-        if highs[-1] < highs[-2] and lows[-1] < lows[-2]:
-            return "SHORT"
-    return "BOTH"
+    return "LONG" if closes[-1] >= closes[max(0, len(closes) - 3)] else "SHORT"
 
 
 def detect_patterns(structure: list[dict], entry: list[dict], macro: list[dict], config) -> tuple[list[Pattern], list[Pivot], list[Pivot]]:
@@ -259,16 +240,6 @@ def detect_patterns(structure: list[dict], entry: list[dict], macro: list[dict],
             relevant = [pivot for pivot in prior_swings if pivot.kind == ("HIGH" if direction == "LONG" else "LOW")]
             if not relevant:
                 continue
-            # A CHOCH reverses an established local structure. A break of an
-            # arbitrary single pivot is a BOS/level break, not a CHOCH.
-            if config.require_strict_choch:
-                same_kind = relevant[-2:]
-                reversing_structure = len(same_kind) == 2 and (
-                    same_kind[-1].price < same_kind[-2].price if direction == "LONG"
-                    else same_kind[-1].price > same_kind[-2].price
-                )
-                if not reversing_structure:
-                    continue
             level = relevant[-1].price
             close, open_price = float(candle["close"]), float(candle["open"])
             crossed = close > level if direction == "LONG" else close < level
@@ -690,7 +661,6 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
                                      "traded_signals": len(traded), "expired_signals": expired_signals,
                                      "lookahead_safe": True,
                                      "pivot_algorithm": "CAUSAL_NON_REPAINTING",
-                                     "strict_choch": ec.require_strict_choch,
                                      "position_sizing": "STOP_RISK_CAPPED_BY_MARGIN",
                                      "risk_per_trade_percent": config.risk_per_trade_percent,
                                      "drawdown_basis": "INTRABAR_ADVERSE_EXTREME",
