@@ -1,8 +1,8 @@
 "use client";
 
-import { Box, Paper, Stack, Typography } from "@mui/material";
+import { Box, Chip, Paper, Stack, Typography } from "@mui/material";
 import { CandlestickSeries, ColorType, LineSeries, createChart, createSeriesMarkers, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Candle } from "../../lib/types";
 
 export interface LiveElliottPoint { timestamp: number; confirmed_at: number; price: number; kind: "HIGH" | "LOW" }
@@ -10,14 +10,22 @@ export interface LiveElliottPattern {
   id: string; direction: "LONG" | "SHORT"; state: string; invalid_reason?: string; signal_time?: number;
   structure_timeframe: string; entry_timeframe: string; points: Record<string, LiveElliottPoint>;
 }
+export interface LiveEntryScenario {
+  id: string; direction: "LONG" | "SHORT"; setup_type: string; status: string;
+  entry_type?: "LIMIT" | "MARKET"; entry_zone_low: number; entry_zone_high: number;
+  created_at: number; expires_at: number;
+}
 
-export function TradingViewChart({ candles, elliottPatterns = [] }: { candles: Candle[]; elliottPatterns?: LiveElliottPattern[] }) {
+export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios = [] }: {
+  candles: Candle[]; elliottPatterns?: LiveElliottPattern[]; entryScenarios?: LiveEntryScenario[];
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
   const seriesRef = useRef<ReturnType<ReturnType<typeof createChart>["addSeries"]> | null>(null);
   const waveSeriesRef = useRef<Array<ReturnType<ReturnType<typeof createChart>["addSeries"]>>>([]);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const hasDataRef = useRef(false);
+  const [selectedEntryId,setSelectedEntryId] = useState("");
   useEffect(() => {
     const container = ref.current; if (!container) return;
     const chart = createChart(container, { width: container.clientWidth, height: 560,
@@ -75,12 +83,71 @@ export function TradingViewChart({ candles, elliottPatterns = [] }: { candles: C
         text: `${point.label} · ${pattern.structure_timeframe}`,
       }));
     });
+    entryScenarios.filter((scenario) => scenario.setup_type === "ELLIOTT_WAVE3").forEach((scenario) => {
+      const start = nearestTimestamp(orderedCandles,scenario.created_at);
+      const end = nearestTimestamp(orderedCandles,Math.min(scenario.expires_at,orderedCandles.at(-1)?.timestamp ?? scenario.expires_at));
+      if (start === end) return;
+      const entry = (scenario.entry_zone_low+scenario.entry_zone_high)/2;
+      const result = entryResult(scenario,orderedCandles);
+      const color = result === "PASSED" ? "#00c853" : result === "WAITING" ? "#ffb300" : "#78909c";
+      const line = chart.addSeries(LineSeries, { color, lineWidth: scenario.id === selectedEntryId ? 4 : 2,
+        lineStyle: result === "MISSED" ? 3 : 2,
+        priceLineVisible: false, lastValueVisible: false, title: "" });
+      line.setData([{ time: chartTime(start), value: entry }, { time: chartTime(end), value: entry }]);
+      waveSeriesRef.current.push(line);
+      markers.push({ time: chartTime(start), position: scenario.direction === "LONG" ? "belowBar" : "aboveBar",
+        color, shape: scenario.direction === "LONG" ? "arrowUp" : "arrowDown",
+        text: `${entryResultLabel(result)} · ${scenario.direction}` });
+    });
     const sortedMarkers = markers.sort((left, right) => Number(left.time) - Number(right.time));
     if (!markersRef.current) markersRef.current = createSeriesMarkers(candleSeries, sortedMarkers);
     else markersRef.current.setMarkers(sortedMarkers);
-  }, [candles, elliottPatterns]);
+  }, [candles, elliottPatterns, entryScenarios, selectedEntryId]);
   const validPatterns = elliottPatterns.filter((pattern) => pattern.state !== "INVALID").length;
-  return <Paper variant="outlined" sx={{ p: 1, overflow: "hidden" }}><Stack direction="row" sx={{ px: 1, pb: 1, justifyContent: "space-between", alignItems: "center" }}><Typography variant="subtitle2">График актива</Typography><Typography variant="caption" color={validPatterns ? "primary.light" : "text.secondary"}>Elliott: {validPatterns} волн</Typography></Stack><Box ref={ref} sx={{ width: "100%", minHeight: 560 }} /></Paper>;
+  const entries = entryScenarios.filter((scenario) => scenario.setup_type === "ELLIOTT_WAVE3")
+    .sort((left,right) => right.created_at-left.created_at);
+  return <Paper variant="outlined" sx={{ p: 1, overflow: "hidden" }}><Stack direction="row" sx={{ px: 1, pb: 1, justifyContent: "space-between", alignItems: "center" }}><Typography variant="subtitle2">График актива</Typography><Typography variant="caption" color={validPatterns ? "primary.light" : "text.secondary"}>Elliott: {validPatterns} волн · потенциальных входов: {entries.length}</Typography></Stack><Box ref={ref} sx={{ width: "100%", minHeight: 560 }} />
+    <Paper variant="outlined" sx={{ mt: 1, p: 1.5, bgcolor: "rgba(255,255,255,.02)" }}>
+      <Typography variant="subtitle2" sx={{ mb: 1 }}>Потенциальные точки входа выбранного актива</Typography>
+      {entries.length ? <Stack spacing={.75}>{entries.slice(0,20).map((scenario) => {
+        const result = entryResult(scenario,candles); const entry = (scenario.entry_zone_low+scenario.entry_zone_high)/2;
+        const focus = () => {
+          setSelectedEntryId(scenario.id);
+          const duration = Math.max(60_000,scenario.expires_at-scenario.created_at);
+          chartRef.current?.timeScale().setVisibleRange({
+            from: chartTime(scenario.created_at-duration*.5),
+            to: chartTime(scenario.expires_at+duration*.5),
+          });
+        };
+        return <Stack key={scenario.id} direction={{ xs: "column", sm: "row" }} role="button" tabIndex={0}
+          onClick={focus} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") focus(); }}
+          sx={{ gap: 1, alignItems: { sm: "center" }, py: .75, px: 1, borderBottom: 1,
+            borderColor: selectedEntryId === scenario.id ? "primary.main" : "divider", borderRadius: 1,
+            cursor: "pointer", bgcolor: selectedEntryId === scenario.id ? "action.selected" : "transparent",
+            "&:hover": { bgcolor: "action.hover" }, "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main" } }}>
+          <Chip size="small" color={result === "PASSED" ? "success" : result === "WAITING" ? "warning" : "default"} label={entryResultLabel(result)} sx={{ minWidth: 145 }} />
+          <Typography variant="body2" color={scenario.direction === "LONG" ? "success.light" : "error.light"} sx={{ minWidth: 55, fontWeight: 700 }}>{scenario.direction}</Typography>
+          <Typography variant="body2" sx={{ minWidth: 110 }}>Вход: {entry.toLocaleString("ru-RU",{ maximumFractionDigits: 8 })}</Typography>
+          <Typography variant="caption" color="text.secondary">Сигнал: {formatDubaiTimestamp(scenario.created_at)} · до {formatDubaiTimestamp(scenario.expires_at)}</Typography>
+        </Stack>;
+      })}</Stack> : <Typography variant="body2" color="text.secondary">Потенциальных входов пока нет.</Typography>}
+    </Paper>
+  </Paper>;
+}
+
+type EntryResult = "PASSED" | "WAITING" | "MISSED";
+
+function entryResult(scenario: LiveEntryScenario,candles: Candle[]): EntryResult {
+  if (scenario.entry_type === "MARKET") return "PASSED";
+  const entry = (scenario.entry_zone_low+scenario.entry_zone_high)/2;
+  const touched = candles.some((candle) => candle.timestamp >= scenario.created_at
+    && candle.timestamp <= scenario.expires_at && candle.low <= entry && candle.high >= entry);
+  if (touched) return "PASSED";
+  return scenario.expires_at >= Date.now() ? "WAITING" : "MISSED";
+}
+
+function entryResultLabel(result: EntryResult) {
+  return result === "PASSED" ? "Уровень достигнут" : result === "WAITING" ? "Ожидает входа" : "Не сработал";
 }
 
 const chartTime = (timestamp: number) => Math.floor(timestamp / 1000) as UTCTimestamp;
@@ -101,4 +168,10 @@ function formatDubaiTime(seconds: number): string {
   return new Intl.DateTimeFormat("ru-RU", {
     timeZone: "Asia/Dubai", hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit",
   }).format(new Date(seconds * 1000));
+}
+
+function formatDubaiTimestamp(timestamp: number): string {
+  return new Intl.DateTimeFormat("ru-RU", {
+    timeZone: "Asia/Dubai", hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit",
+  }).format(new Date(timestamp));
 }

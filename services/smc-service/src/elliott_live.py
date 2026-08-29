@@ -93,8 +93,6 @@ class ElliottLiveEngine:
             else:
                 entry = current.close
             entry = round(entry / config.tick_size) * config.tick_size
-            if entry_type == "LIMIT" and not current.low <= entry <= current.high:
-                continue
             stop = pattern.points["P2"].price - side * ec.stop_buffer_atr * pattern.points["P2"].atr
             stop = (floor(stop / config.tick_size) if side == 1 else ceil(stop / config.tick_size)) * config.tick_size
             risk = abs(entry - stop)
