@@ -153,12 +153,16 @@ export default function BacktestPage() {
   const [asset, setAsset] = useState("");
   const { addAsset, assetDetails, assets, reload: reloadAssets, removeAsset } = useTradingAssets();
   const [selectedTimeframes, setSelectedTimeframes] = useState(timeframes);
+  const [okxAsset, setOkxAsset] = useState("");
+  const [okxTimeframes] = useState(timeframes);
   const [candleLimit, setCandleLimit] = useState(10_000);
   const today = new Date().toISOString().slice(0, 10);
   const [trainFrom, setTrainFrom] = useState("2025-01-01");
   const [trainTo, setTrainTo] = useState("2025-06-30");
   const [testFrom, setTestFrom] = useState("2025-07-01");
   const [testTo, setTestTo] = useState(today);
+  const [dataFrom, setDataFrom] = useState("2024-01-01");
+  const [dataTo, setDataTo] = useState(today);
   const [settings, setSettings] = useState(defaultSettings);
   const [result, setResult] = useState<BacktestResult>();
   const [comparison, setComparison] = useState<BacktestRun[]>([]);
@@ -189,6 +193,10 @@ export default function BacktestPage() {
       : { ...current, templateIds: templates.map((template) => template.id) });
   }, [templates]);
   const selectedAsset = asset || assets[0];
+  const selectedOkxAsset = okxAsset || assets[0];
+  useEffect(() => {
+    if (!okxAsset && assets.length) setOkxAsset(assets[0]);
+  }, [assets, okxAsset]);
   const testRangeMilliseconds = Math.max(
     0,
     Date.parse(`${testTo}T23:59:59Z`) - Date.parse(`${testFrom}T00:00:00Z`),
@@ -436,12 +444,13 @@ export default function BacktestPage() {
         <Tab label={result ? "3. Результаты" : "3. Результаты · нет данных"} />
         <Tab label="4. История запусков" />
         <Tab label="5. Перебор параметров" />
+        <Tab label="6. Данные OKX" />
       </Tabs>
     </Paper>
     {error && <Alert severity="error" sx={{ mb: 1.5 }}>{error}</Alert>}
     {workspaceTab === 0 && <Box sx={{ p: { xs: 1, md: 2 }, borderRadius: 2, bgcolor: "action.hover" }}>
-    <Paper variant="outlined" sx={{ p: 3, mb: 1.5 }}>
-      <Typography variant="h6" sx={{ mb: 2 }}>Активы и исторические данные</Typography>
+    <Paper variant="outlined" sx={{ p: 2, mb: 1.5 }}>
+      <Typography variant="h6" sx={{ mb: 1.5 }}>Актив и параметры периода</Typography>
       <AssetManager
         addAsset={addAsset}
         assets={assets}
@@ -450,11 +459,8 @@ export default function BacktestPage() {
         onSelect={setAsset}
         onAssetsChanged={reloadAssets}
       />
-      <DatasetOverview assets={assets} canManage={roles.includes("admin")} selectedAsset={selectedAsset} />
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mt: 2.5 }}>
-        <Alert severity="info" sx={{ flex: 1 }}>
-          Роли таймфреймов задаются шаблонами. Для точного исполнения сделок автоматически используется самый младший выбранный ТФ.
-        </Alert>
+      <DatasetOverview assets={selectedAsset ? [selectedAsset] : []} canManage={false} selectedAsset={selectedAsset} />
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mt: 1.5 }}>
         <TextField
           label="Количество свечей"
           value={candleLimit}
@@ -463,9 +469,6 @@ export default function BacktestPage() {
           helperText={`Нужно до ${requiredTestCandleLimit.toLocaleString("ru-RU")}; при запуске лимит увеличится автоматически`}
           slotProps={{ htmlInput: { min: 100, max: 2_000_000 } }}
         />
-        <Button variant="outlined" onClick={() => setCandleLimit(requiredTestCandleLimit)}>
-          Рассчитать лимит бэктеста
-        </Button>
       </Stack>
       <FormGroup row sx={{ mt: 1 }}>
         {timeframes.map((item) => <FormControlLabel key={item} label={item} control={<Checkbox
@@ -476,7 +479,7 @@ export default function BacktestPage() {
             : current.filter((value) => value !== item))}
         />} />)}
       </FormGroup>
-      <Typography variant="subtitle2" sx={{ mt: 2.5, mb: 1 }}>Периоды без пересечения</Typography>
+      <Typography variant="subtitle2" sx={{ mt: 1.5, mb: 1 }}>Периоды без пересечения</Typography>
       <Grid container spacing={1.5}>
         <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
           <TextField fullWidth type="date" label="Обучение: начало" value={trainFrom}
@@ -495,21 +498,6 @@ export default function BacktestPage() {
             onChange={(event) => setTestTo(event.target.value)} slotProps={{ inputLabel: { shrink: true } }} />
         </Grid>
       </Grid>
-      <FormControlLabel
-        sx={{ mt: 1 }}
-        control={<Checkbox checked={settings.localRetraining} onChange={(event) => setSettings({
-          ...settings,
-          localRetraining: event.target.checked,
-        })} />}
-        label="Локально переобучить модель только на обучающем периоде"
-      />
-      <HistoryLoader
-        canManage={roles.includes("admin")}
-        symbol={selectedAsset}
-        timeframes={selectedTimeframes}
-        from={trainFrom}
-        to={testTo}
-      />
     </Paper>
     </Box>}
     {workspaceTab === 1 && <Box sx={{ p: { xs: 1, md: 2 }, borderRadius: 2, bgcolor: "action.hover" }}>
@@ -600,5 +588,38 @@ export default function BacktestPage() {
         }}
       />
     </Box>
+    {workspaceTab === 5 && <Box sx={{ p: { xs: 1, md: 2 }, borderRadius: 2, bgcolor: "action.hover" }}>
+      <Paper variant="outlined" sx={{ p: 2.5, mb: 1.5 }}>
+        <Typography variant="h6" sx={{ mb: 1.5 }}>Параметры запроса к OKX</Typography>
+        <AssetManager
+          addAsset={addAsset}
+          assets={assets}
+          removeAsset={removeAsset}
+          selectedAsset={selectedOkxAsset}
+          onSelect={setOkxAsset}
+          onAssetsChanged={reloadAssets}
+        />
+      </Paper>
+      <DatasetOverview assets={assets} canManage={roles.includes("admin")} selectedAsset={selectedOkxAsset} />
+      <Paper variant="outlined" sx={{ p: 2.5, mb: 1.5 }}>
+        <Typography variant="h6" sx={{ mb: 0.75 }}>Период запроса к OKX</Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+          Этот период независим от периода бэктеста. Для догрузки назад укажите более раннюю дату начала.
+        </Typography>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+          <TextField fullWidth type="date" label="Начало загрузки" value={dataFrom}
+            onChange={(event) => setDataFrom(event.target.value)} slotProps={{ inputLabel: { shrink: true } }} />
+          <TextField fullWidth type="date" label="Конец загрузки" value={dataTo}
+            onChange={(event) => setDataTo(event.target.value)} slotProps={{ inputLabel: { shrink: true } }} />
+        </Stack>
+      </Paper>
+      <HistoryLoader
+        canManage={roles.includes("admin")}
+        symbol={selectedOkxAsset}
+        timeframes={okxTimeframes}
+        from={dataFrom}
+        to={dataTo}
+      />
+    </Box>}
   </SectionPage>;
 }

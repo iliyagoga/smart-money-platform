@@ -37,6 +37,7 @@ class ExchangeGateway:
         await self.db.execute("ALTER TABLE exchange_history_jobs ADD COLUMN IF NOT EXISTS timeframe_status jsonb NOT NULL DEFAULT '{}'")
         await self.db.execute("ALTER TABLE exchange_history_jobs ADD COLUMN IF NOT EXISTS timeframe_from jsonb NOT NULL DEFAULT '{}'")
         await self.db.execute("ALTER TABLE exchange_history_jobs ADD COLUMN IF NOT EXISTS mode text NOT NULL DEFAULT 'FULL'")
+        await self.db.execute("ALTER TABLE exchange_history_jobs ADD COLUMN IF NOT EXISTS timeframe_to jsonb NOT NULL DEFAULT '{}'")
         await self.db.execute("ALTER TABLE trading_assets ADD COLUMN IF NOT EXISTS tick_size double precision")
         await self.db.execute("ALTER TABLE trading_assets ADD COLUMN IF NOT EXISTS lot_size double precision")
         await self.db.execute("ALTER TABLE trading_assets ADD COLUMN IF NOT EXISTS contract_value double precision NOT NULL DEFAULT 1")
@@ -132,9 +133,10 @@ class ExchangeGateway:
         response.raise_for_status();body=response.json()
         if body.get("code")!="0":raise ValueError(body.get("msg","OKX error"))
         return [candle(item,symbol,timeframe) for item in body["data"]]
-    async def create_history(self,job_id,symbol,timeframes,start,end,incremental=False):
+    async def create_history(self,job_id,symbol,timeframes,start,end,incremental=False,backfill=False):
         statuses={timeframe:{"status":"QUEUED","ingested":0,"requests":0,"error":None} for timeframe in timeframes}
         timeframe_from={}
+        timeframe_to={}
         if incremental:
             rows=await self.db.fetch(
                 """SELECT timeframe,(extract(epoch FROM max(ts))*1000)::bigint latest
@@ -144,12 +146,21 @@ class ExchangeGateway:
             latest={row["timeframe"]:row["latest"] for row in rows}
             timeframe_from={timeframe:incremental_start(timeframe,latest.get(timeframe),start)
                             for timeframe in timeframes}
+        if backfill:
+            rows=await self.db.fetch(
+                """SELECT timeframe,(extract(epoch FROM min(ts))*1000)::bigint earliest
+                   FROM candles WHERE symbol=$1 AND timeframe=ANY($2::text[]) AND is_closed GROUP BY timeframe""",
+                symbol,timeframes,
+            )
+            earliest={row["timeframe"]:row["earliest"] for row in rows}
+            timeframe_to={timeframe:(earliest.get(timeframe)-1 if earliest.get(timeframe) is not None else end)
+                          for timeframe in timeframes}
         await self.db.execute(
             """INSERT INTO exchange_history_jobs(id,status,symbol,timeframes,from_timestamp,to_timestamp,max_candles,
-                                                  timeframe_status,timeframe_from,mode)
-               VALUES($1::uuid,'QUEUED',$2,$3::jsonb,$4,$5,$6,$7::jsonb,$8::jsonb,$9)""",
+                                                  timeframe_status,timeframe_from,mode,timeframe_to)
+               VALUES($1::uuid,'QUEUED',$2,$3::jsonb,$4,$5,$6,$7::jsonb,$8::jsonb,$9,$10::jsonb)""",
             job_id,symbol,json.dumps(timeframes),start,end,0,json.dumps(statuses),json.dumps(timeframe_from),
-            "INCREMENTAL" if incremental else "FULL",
+            "BACKFILL" if backfill else ("INCREMENTAL" if incremental else "FULL"), json.dumps(timeframe_to),
         )
         self.schedule_history(job_id);return await self.history_job(job_id)
     def schedule_history(self,job_id):
@@ -161,7 +172,7 @@ class ExchangeGateway:
         row=await self.db.fetchrow("SELECT * FROM exchange_history_jobs WHERE id=$1::uuid",job_id)
         if not row:return None
         item=dict(row)
-        for field in ("timeframes","cursors","timeframe_counts","timeframe_status","timeframe_from"):
+        for field in ("timeframes","cursors","timeframe_counts","timeframe_status","timeframe_from","timeframe_to"):
             if isinstance(item[field],str):item[field]=json.loads(item[field])
         item["id"]=str(item["id"]);item["from"]=item.pop("from_timestamp");item["to"]=item.pop("to_timestamp")
         item["created_at"]=item["created_at"].isoformat();item["updated_at"]=item["updated_at"].isoformat()
@@ -205,6 +216,7 @@ class ExchangeGateway:
         await self.update_timeframe(job_id,timeframe,details)
         count=int(job["timeframe_counts"].get(timeframe,details["ingested"]));cursor=job["cursors"].get(timeframe,job["to"])
         lower_bound=job.get("timeframe_from",{}).get(timeframe,job["from"])
+        upper_bound=job.get("timeframe_to",{}).get(timeframe,job["to"])
         try:
             if lower_bound is not None and job["to"] is not None and lower_bound>job["to"]:
                 details["status"]="COMPLETED";await self.update_timeframe(job_id,timeframe,details);return
@@ -216,7 +228,7 @@ class ExchangeGateway:
                 if not page:break
                 eligible=[item for item in page if item["is_closed"]
                           and (lower_bound is None or item["timestamp"]>=lower_bound)
-                          and (job["to"] is None or item["timestamp"]<=job["to"])]
+                          and (upper_bound is None or item["timestamp"]<=upper_bound)]
                 await self.ingest_batch(list(reversed(eligible)))
                 added=len(eligible);count+=added;details["ingested"]+=added;details["requests"]+=1
                 oldest=min(item["timestamp"] for item in page);cursor=oldest

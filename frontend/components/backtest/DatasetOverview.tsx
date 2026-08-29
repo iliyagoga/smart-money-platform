@@ -56,18 +56,18 @@ export function DatasetOverview({ assets, canManage, selectedAsset }: DatasetOve
     }
   };
 
-  return <Paper variant="outlined" sx={{ p: 2.5, my: 2 }}>
-    <Stack direction="row" sx={{ alignItems: "center", justifyContent: "space-between", mb: 2 }}>
+  return <Paper variant="outlined" sx={{ p: 1.5, my: 1.5 }}>
+    <Stack direction="row" sx={{ alignItems: "center", justifyContent: "space-between", mb: 1 }}>
       <Typography variant="h6">Загруженные датасеты</Typography>
       <Button size="small" onClick={() => void load()} disabled={isLoading}>
         {isLoading ? "Обновляем…" : "Обновить"}
       </Button>
     </Stack>
-    <Stack spacing={1.5}>
+    <Stack spacing={0.75}>
       {datasets.map((dataset) => {
         const total = dataset.timeframes.reduce((sum, item) => sum + item.candles, 0);
         return <Paper key={dataset.symbol} variant="outlined" sx={{
-          p: 2,
+          p: 1,
           borderColor: dataset.symbol === selectedAsset ? "primary.main" : "divider",
         }}>
           <Stack direction={{ xs: "column", md: "row" }} sx={{ justifyContent: "space-between", gap: 1 }}>

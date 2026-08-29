@@ -14,6 +14,7 @@ class HistoryRequest(BaseModel):
     symbol:str="BTC-USDT-SWAP";timeframes:list[str]=["M1","M5","M15","M30","H1","H4","D1"]
     from_timestamp:int|None=Field(default=None,ge=0);to_timestamp:int|None=Field(default=None,ge=0)
     incremental:bool=False
+    backfill:bool=False
     @model_validator(mode="after")
     def normalize(self):
         self.symbol=self.symbol.strip().upper();self.timeframes=list(dict.fromkeys(x.strip().upper() for x in self.timeframes))
@@ -34,7 +35,7 @@ async def sync(req:SyncRequest):
 @app.post("/exchange/history",status_code=202)
 async def history(req:HistoryRequest):
     job_id=str(uuid4());return await service.create_history(
-        job_id,req.symbol,req.timeframes,req.from_timestamp,req.to_timestamp,req.incremental,
+        job_id,req.symbol,req.timeframes,req.from_timestamp,req.to_timestamp,req.incremental,req.backfill,
     )
 @app.get("/exchange/history")
 async def histories():return {"jobs":await service.history_jobs()}
