@@ -29,6 +29,13 @@ class SMCService:
         for row in scenarios:
             item=Scenario.model_validate_json(row["data"] if isinstance(row["data"],str) else json.dumps(row["data"]))
             self.scenarios.items[item.id]=item
+        live_elliott=await self.infra.db.fetch("SELECT data FROM scenarios WHERE data->>'setup_type'='ELLIOTT_WAVE3'")
+        for row in live_elliott:
+            value=json.loads(row["data"]) if isinstance(row["data"],str) else row["data"]
+            pattern_id=value.get("id")
+            if pattern_id:
+                self.elliott.emitted.add(pattern_id)
+                self.elliott.live_signal_ids.add(pattern_id)
     async def subscribe(self):
         pubsub=self.infra.redis.pubsub();await pubsub.subscribe("candle.update")
         try:
@@ -80,7 +87,7 @@ class SMCService:
             try:
                 timeframe=Timeframe(normalized.get("elliott",{}).get("entry_timeframe","M15"))
                 candles=self.pipeline.candles.get((row["symbol"],timeframe),[])
-                if candles:self.elliott.generate(row["symbol"],candles[-1],self.pipeline.candles,raw)
+                if candles:self.elliott.generate(row["symbol"],candles[-1],self.pipeline.candles,raw,allow_live_emit=False)
             except (ValueError,KeyError):log.exception("Could not restore Elliott waves for %s",row["symbol"])
     async def process(self,candle:Candle,correlation_id:str|None=None):
         result=self.pipeline.process(candle);key=(candle.symbol,candle.timeframe)
@@ -102,7 +109,8 @@ class SMCService:
         trading_config=await self.trading_config(candle.symbol)
         strategy=(normalize_config(trading_config or {}).get("strategy") if trading_config else None)
         if strategy=="ELLIOTT":
-            try:generated=self.elliott.generate(candle.symbol,candle,self.pipeline.candles,trading_config)
+            try:generated=self.elliott.generate(candle.symbol,candle,self.pipeline.candles,trading_config,
+                                                allow_live_emit=correlation_id != "history-rebuild")
             except (ValueError,KeyError):
                 log.exception("Invalid Elliott live config for %s",candle.symbol);generated=[]
         else:generated=self.scenarios.generate_top_down(candle.symbol,candle,self.pipeline)

@@ -15,6 +15,7 @@ export interface LiveEntryScenario {
   entry_type?: "LIMIT" | "MARKET"; entry_zone_low: number; entry_zone_high: number;
   created_at: number; expires_at: number;
   entry_model?: string;
+  origin?: "HISTORICAL" | "LIVE";
 }
 
 export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios = [] }: {
@@ -68,7 +69,7 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
       if (points.length < 2) return;
       const color = pattern.direction === "LONG" ? "#42a5f5" : "#ce93d8";
       const waveData = [...new Map(points.map((point) => {
-        const time = chartTime(nearestTimestamp(orderedCandles, point.confirmed_at));
+        const time = chartTime(containingCandleTimestamp(orderedCandles, point.timestamp));
         return [Number(time), { time, value: point.price }] as const;
       })).values()].sort((left, right) => Number(left.time) - Number(right.time));
       // Several lower-timeframe pivots can map to one H4/D1 candle. The chart
@@ -78,11 +79,12 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
         lastValueVisible: false, title: "" });
       wave.setData(waveData);
       waveSeriesRef.current.push(wave);
-      points.forEach((point) => markers.push({
-        time: chartTime(nearestTimestamp(orderedCandles, point.confirmed_at)),
-        position: point.kind === "LOW" ? "belowBar" : "aboveBar", color, shape: "circle",
-        text: `${point.label} · ${pattern.structure_timeframe}`,
-      }));
+      const waveMarkers = [...new Map(points.map((point) => {
+        const time = chartTime(containingCandleTimestamp(orderedCandles, point.timestamp));
+        return [Number(time), { time, position: point.kind === "LOW" ? "belowBar" as const : "aboveBar" as const,
+          color, shape: "circle" as const, text: `${point.label} · ${pattern.structure_timeframe}` }] as const;
+      })).values()].sort((left, right) => Number(left.time) - Number(right.time));
+      createSeriesMarkers(wave, waveMarkers);
     });
     entryScenarios.filter((scenario) => scenario.setup_type === "ELLIOTT_WAVE3").forEach((scenario) => {
       const start = nearestTimestamp(orderedCandles,scenario.created_at);
@@ -90,7 +92,9 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
       if (start === end) return;
       const entry = (scenario.entry_zone_low+scenario.entry_zone_high)/2;
       const result = entryResult(scenario,orderedCandles);
-      const color = result === "PASSED" ? "#00c853" : result === "WAITING" ? "#ffb300" : "#78909c";
+      const color = scenario.origin === "LIVE"
+        ? (result === "PASSED" ? "#00e676" : result === "WAITING" ? "#ffca28" : "#90a4ae")
+        : (result === "PASSED" ? "#2e7d32" : result === "WAITING" ? "#9e7d24" : "#546e7a");
       const line = chart.addSeries(LineSeries, { color, lineWidth: scenario.id === selectedEntryId ? 4 : 2,
         lineStyle: result === "MISSED" ? 3 : 2,
         priceLineVisible: false, lastValueVisible: false, title: "" });
@@ -98,7 +102,7 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
       waveSeriesRef.current.push(line);
       markers.push({ time: chartTime(start), position: scenario.direction === "LONG" ? "belowBar" : "aboveBar",
         color, shape: scenario.direction === "LONG" ? "arrowUp" : "arrowDown",
-        text: `${entryResultLabel(result)} · ${scenario.direction}` });
+        text: `${scenario.origin === "LIVE" ? "LIVE" : "История"} · ${entryResultLabel(result)} · ${scenario.direction}` });
     });
     const sortedMarkers = markers.sort((left, right) => Number(left.time) - Number(right.time));
     if (!markersRef.current) markersRef.current = createSeriesMarkers(candleSeries, sortedMarkers);
@@ -127,6 +131,9 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
             cursor: "pointer", bgcolor: selectedEntryId === scenario.id ? "action.selected" : "transparent",
             "&:hover": { bgcolor: "action.hover" }, "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main" } }}>
           <Chip size="small" color={result === "PASSED" ? "success" : result === "WAITING" ? "warning" : "default"} label={entryResultLabel(result)} sx={{ minWidth: 145 }} />
+          <Chip size="small" variant={scenario.origin === "LIVE" ? "filled" : "outlined"}
+            color={scenario.origin === "LIVE" ? "info" : "default"}
+            label={scenario.origin === "LIVE" ? "LIVE" : "История"} sx={{ minWidth: 82 }} />
           <Typography variant="body2" color={scenario.direction === "LONG" ? "success.light" : "error.light"} sx={{ minWidth: 55, fontWeight: 700 }}>{scenario.direction}</Typography>
           <Typography variant="body2" sx={{ minWidth: 110 }}>Вход: {entry.toLocaleString("ru-RU",{ maximumFractionDigits: 8 })}</Typography>
           <Typography variant="caption" color="text.secondary" sx={{ minWidth: 145 }}>{scenario.entry_model ?? scenario.entry_type ?? "—"}</Typography>
@@ -164,6 +171,17 @@ function nearestTimestamp(candles: Candle[], timestamp: number) {
   }
   return left > 0 && Math.abs(candles[left - 1].timestamp - timestamp) < Math.abs(candles[left].timestamp - timestamp)
     ? candles[left - 1].timestamp : candles[left].timestamp;
+}
+
+function containingCandleTimestamp(candles: Candle[], timestamp: number) {
+  if (!candles.length) return timestamp;
+  let left = 0; let right = candles.length - 1;
+  while (left <= right) {
+    const middle = Math.floor((left + right) / 2);
+    if (candles[middle].timestamp <= timestamp) left = middle + 1;
+    else right = middle - 1;
+  }
+  return candles[Math.max(0, right)].timestamp;
 }
 
 function formatDubaiTime(seconds: number): string {

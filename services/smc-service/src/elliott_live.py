@@ -29,11 +29,13 @@ def normalize_config(value):
 @dataclass
 class ElliottLiveEngine:
     emitted: set[str] = field(default_factory=set)
+    live_signal_ids: set[str] = field(default_factory=set)
     wave1_broken: set[str] = field(default_factory=set)
     latest_patterns: dict[str, list[dict]] = field(default_factory=dict)
     latest_entries: dict[str, list[dict]] = field(default_factory=dict)
 
-    def generate(self, symbol: str, current: Candle, candles_by_tf: dict, raw_config: dict) -> list[Scenario]:
+    def generate(self, symbol: str, current: Candle, candles_by_tf: dict, raw_config: dict,
+                 allow_live_emit: bool = True) -> list[Scenario]:
         # The live image imports the exact detector and config models used by
         # backtests, so changes cannot silently create strategy drift.
         from backtest_core.elliott import detect_patterns
@@ -95,8 +97,11 @@ class ElliottLiveEngine:
                 "entry_type":entry_type,"entry_zone_low":entry,"entry_zone_high":entry,
                 "created_at":pattern.signal_time,"expires_at":pattern.signal_time+expiry,
                 "entry_model":entry_model,
+                "origin":"LIVE" if pattern.id in self.live_signal_ids else "HISTORICAL",
             })
         self.latest_entries[symbol]=entries
+        if not allow_live_emit:
+            return []
         available_at = current.timestamp + TIMEFRAME_MILLISECONDS[ec.entry_timeframe]
         result = []
         for pattern in sorted((item for item in patterns if item.signal_time), key=lambda item: item.signal_time):
@@ -138,6 +143,11 @@ class ElliottLiveEngine:
                 "AFTER_TARGET" if first_take_action == "MOVE_TO_BREAK_EVEN" else "OFF"
             )
             self.emitted.add(pattern.id)
+            self.live_signal_ids.add(pattern.id)
+            for item in entries:
+                if item["id"] == pattern.id:
+                    item["origin"] = "LIVE"
+                    break
             result.append(Scenario(
                 id=pattern.id, symbol=symbol, timeframe=Timeframe(ec.entry_timeframe),
                 direction=pattern.direction, setup_type="ELLIOTT_WAVE3", confidence=1,
