@@ -77,6 +77,12 @@ async def elliott_patterns(symbol:str):
     items=service.elliott.latest_patterns.get(symbol,[])
     return {"symbol":symbol,"patterns":items,"total":len(items)}
 
+@app.get("/elliott/entries")
+async def elliott_entries(symbol:str):
+    symbol=symbol.strip().upper()
+    items=service.elliott.latest_entries.get(symbol,[])
+    return {"symbol":symbol,"entries":items,"total":len(items)}
+
 @app.get("/scenarios")
 async def scenarios(symbol:str|None=None,status:str|None=None,limit:int=Query(100,ge=1,le=1000)):
     items=service.scenarios.list(symbol,status);return {"scenarios":items[-limit:],"total":len(items)}

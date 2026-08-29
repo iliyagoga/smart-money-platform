@@ -31,6 +31,7 @@ class ElliottLiveEngine:
     emitted: set[str] = field(default_factory=set)
     wave1_broken: set[str] = field(default_factory=set)
     latest_patterns: dict[str, list[dict]] = field(default_factory=dict)
+    latest_entries: dict[str, list[dict]] = field(default_factory=dict)
 
     def generate(self, symbol: str, current: Candle, candles_by_tf: dict, raw_config: dict) -> list[Scenario]:
         # The live image imports the exact detector and config models used by
@@ -69,8 +70,34 @@ class ElliottLiveEngine:
             }
             for pattern in patterns
         ]
-        available_at = current.timestamp + TIMEFRAME_MILLISECONDS[ec.entry_timeframe]
         expiry = ec.entry_expiry_bars * TIMEFRAME_MILLISECONDS[ec.entry_timeframe]
+        entries = []
+        for pattern in patterns:
+            if not pattern.signal_time:
+                continue
+            side = 1 if pattern.direction == "LONG" else -1
+            entry_model = str(ec.entry_model)
+            if entry_model == "CHOCH_RETRACE":
+                level = pattern.features["choch_level"]
+                signal_close = pattern.features["choch_close"]
+                entry = level + side * ec.entry_retracement * abs(signal_close-level)
+                entry_type = "LIMIT"
+            elif entry_model == "WAVE1_BREAK_RETRACE":
+                entry = pattern.points["P1"].price
+                entry_type = "LIMIT"
+            else:
+                entry = pattern.features["choch_close"]
+                entry_type = "MARKET"
+            entry = round(entry/config.tick_size)*config.tick_size
+            entries.append({
+                "id":pattern.id,"direction":pattern.direction,"setup_type":"ELLIOTT_WAVE3",
+                "status":"ACTIVE" if pattern.signal_time+expiry >= current.timestamp else "EXPIRED",
+                "entry_type":entry_type,"entry_zone_low":entry,"entry_zone_high":entry,
+                "created_at":pattern.signal_time,"expires_at":pattern.signal_time+expiry,
+                "entry_model":entry_model,
+            })
+        self.latest_entries[symbol]=entries
+        available_at = current.timestamp + TIMEFRAME_MILLISECONDS[ec.entry_timeframe]
         result = []
         for pattern in sorted((item for item in patterns if item.signal_time), key=lambda item: item.signal_time):
             if pattern.id in self.emitted or available_at < pattern.signal_time or available_at > pattern.signal_time + expiry:

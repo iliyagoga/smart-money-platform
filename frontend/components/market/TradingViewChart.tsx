@@ -14,6 +14,7 @@ export interface LiveEntryScenario {
   id: string; direction: "LONG" | "SHORT"; setup_type: string; status: string;
   entry_type?: "LIMIT" | "MARKET"; entry_zone_low: number; entry_zone_high: number;
   created_at: number; expires_at: number;
+  entry_model?: string;
 }
 
 export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios = [] }: {
@@ -128,6 +129,7 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
           <Chip size="small" color={result === "PASSED" ? "success" : result === "WAITING" ? "warning" : "default"} label={entryResultLabel(result)} sx={{ minWidth: 145 }} />
           <Typography variant="body2" color={scenario.direction === "LONG" ? "success.light" : "error.light"} sx={{ minWidth: 55, fontWeight: 700 }}>{scenario.direction}</Typography>
           <Typography variant="body2" sx={{ minWidth: 110 }}>Вход: {entry.toLocaleString("ru-RU",{ maximumFractionDigits: 8 })}</Typography>
+          <Typography variant="caption" color="text.secondary" sx={{ minWidth: 145 }}>{scenario.entry_model ?? scenario.entry_type ?? "—"}</Typography>
           <Typography variant="caption" color="text.secondary">Сигнал: {formatDubaiTimestamp(scenario.created_at)} · до {formatDubaiTimestamp(scenario.expires_at)}</Typography>
         </Stack>;
       })}</Stack> : <Typography variant="body2" color="text.secondary">Потенциальных входов пока нет.</Typography>}
