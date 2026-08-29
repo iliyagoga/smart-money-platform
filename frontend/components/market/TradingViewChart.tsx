@@ -1,6 +1,6 @@
 "use client";
 
-import { Box, Chip, Paper, Stack, Typography } from "@mui/material";
+import { Box, Button, Chip, Paper, Stack, Typography } from "@mui/material";
 import { CandlestickSeries, ColorType, LineSeries, createChart, createSeriesMarkers, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
 import { useEffect, useRef, useState } from "react";
 import type { Candle } from "../../lib/types";
@@ -30,16 +30,17 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
   candles: Candle[]; elliottPatterns?: LiveElliottPattern[]; entryScenarios?: LiveEntryScenario[];
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const fullscreenRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
   const seriesRef = useRef<ReturnType<ReturnType<typeof createChart>["addSeries"]> | null>(null);
   const waveSeriesRef = useRef<ChartSeries[]>([]);
-  const patternSeriesRef = useRef(new Map<string, { wave: ChartSeries; levels: ChartSeries[] }>());
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const hasDataRef = useRef(false);
   const [selectedEntryId,setSelectedEntryId] = useState("");
+  const [isFullscreen,setIsFullscreen] = useState(false);
   useEffect(() => {
     const container = ref.current; if (!container) return;
-    const chart = createChart(container, { width: container.clientWidth, height: 560,
+    const chart = createChart(container, { width: container.clientWidth, height: container.clientHeight || 560,
       layout: { background: { type: ColorType.Solid, color: "#101722" }, textColor: "#b2b9c6", attributionLogo: true },
       grid: { vertLines: { color: "#1e2938" }, horzLines: { color: "#1e2938" } },
       rightPriceScale: { borderColor: "#334155" }, timeScale: {
@@ -53,30 +54,23 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
       upColor: "#26a69a", downColor: "#ef5350", wickUpColor: "#26a69a", wickDownColor: "#ef5350", borderVisible: false,
     });
     chartRef.current = chart; seriesRef.current = series;
-    let highlightedPattern = "";
-    const handleHover = (param: Parameters<Parameters<typeof chart.subscribeCrosshairMove>[0]>[0]) => {
-      const hovered = param.hoveredSeries;
-      const match = hovered ? [...patternSeriesRef.current.entries()]
-        .find(([, related]) => related.levels.includes(hovered as ChartSeries)) : undefined;
-      const nextPattern = match?.[0] ?? "";
-      if (nextPattern === highlightedPattern) return;
-      if (highlightedPattern) {
-        const previous = patternSeriesRef.current.get(highlightedPattern);
-        previous?.wave.applyOptions({ lineWidth: 3 });
-        previous?.levels.forEach((item) => item.applyOptions({ lineWidth: 1 }));
-      }
-      if (nextPattern) {
-        const next = patternSeriesRef.current.get(nextPattern);
-        next?.wave.applyOptions({ lineWidth: 4 });
-        next?.levels.forEach((item) => item.applyOptions({ lineWidth: 2 }));
-      }
-      highlightedPattern = nextPattern;
-    };
-    chart.subscribeCrosshairMove(handleHover);
-    const resize = () => chart.applyOptions({ width: container.clientWidth });
+    const resize = () => chart.applyOptions({ width: container.clientWidth, height: container.clientHeight || 560 });
     const observer = new ResizeObserver(resize); observer.observe(container);
-    return () => { observer.disconnect(); chart.unsubscribeCrosshairMove(handleHover); chart.remove(); };
+    return () => { observer.disconnect(); chart.remove(); };
   }, []);
+  useEffect(() => {
+    const update = () => setIsFullscreen(document.fullscreenElement === fullscreenRef.current);
+    document.addEventListener("fullscreenchange", update);
+    return () => document.removeEventListener("fullscreenchange", update);
+  }, []);
+  const toggleFullscreen = async () => {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await fullscreenRef.current?.requestFullscreen();
+  };
+  const autoFit = () => {
+    chartRef.current?.priceScale("right").applyOptions({ autoScale: true });
+    chartRef.current?.timeScale().fitContent();
+  };
   useEffect(() => {
     const series = seriesRef.current; const chart = chartRef.current;
     if (!series || !chart || !candles.length) return;
@@ -88,9 +82,9 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
   useEffect(() => {
     const chart = chartRef.current; const candleSeries = seriesRef.current;
     if (!chart || !candleSeries || !candles.length) return;
-    waveSeriesRef.current.forEach((series) => chart.removeSeries(series));
+    const staleSeries = waveSeriesRef.current;
     waveSeriesRef.current = [];
-    patternSeriesRef.current.clear();
+    staleSeries.forEach((series) => chart.removeSeries(series));
     const orderedCandles = [...candles].sort((a, b) => a.timestamp - b.timestamp);
     const markers: SeriesMarker<Time>[] = [];
     elliottPatterns.filter((pattern) => pattern.state !== "INVALID").forEach((pattern) => {
@@ -109,7 +103,6 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
         lastValueVisible: false, title: "" });
       wave.setData(waveData);
       waveSeriesRef.current.push(wave);
-      const relatedLevels: ChartSeries[] = [];
       const waveMarkers = [...new Map(points.map((point) => {
         const time = chartTime(containingCandleTimestamp(orderedCandles, point.timestamp));
         return [Number(time), { time, position: point.kind === "LOW" ? "belowBar" as const : "aboveBar" as const,
@@ -121,26 +114,25 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
       if (levels) {
         const structureFrom = containingCandleTimestamp(orderedCandles, levels.structure_from);
         const structureTo = containingCandleTimestamp(orderedCandles, levels.structure_to);
-        addLevel(chart, waveSeriesRef.current, relatedLevels, structureFrom, structureTo, levels.wave1_break,
+        addLevel(chart, waveSeriesRef.current, structureFrom, structureTo, levels.wave1_break,
           "#90caf9", "Пробой Wave 1", 2);
-        addLevel(chart, waveSeriesRef.current, relatedLevels, structureFrom, structureTo, levels.wave2_zone_high,
+        addLevel(chart, waveSeriesRef.current, structureFrom, structureTo, levels.wave2_zone_high,
           "#7e57c2", `W2 min ${(levels.wave2_min_retracement * 100).toFixed(1)}%`, 3);
-        addLevel(chart, waveSeriesRef.current, relatedLevels, structureFrom, structureTo, levels.wave2_zone_low,
+        addLevel(chart, waveSeriesRef.current, structureFrom, structureTo, levels.wave2_zone_low,
           "#7e57c2", `W2 max ${(levels.wave2_max_retracement * 100).toFixed(1)}%`, 3);
         if (levels.choch != null && levels.trade_from != null) {
-          addLevel(chart, waveSeriesRef.current, relatedLevels, structureTo,
+          addLevel(chart, waveSeriesRef.current, structureTo,
             containingCandleTimestamp(orderedCandles, levels.trade_from), levels.choch,
             "#ffb74d", "CHOCH", 2);
         }
         if (levels.stop != null && levels.trade_from != null && levels.trade_to != null) {
           const tradeFrom = containingCandleTimestamp(orderedCandles, levels.trade_from);
           const tradeTo = containingCandleTimestamp(orderedCandles, levels.trade_to);
-          addLevel(chart, waveSeriesRef.current, relatedLevels, tradeFrom, tradeTo, levels.stop, "#ef5350", "SL", 2);
-          (levels.targets ?? []).forEach((target, index) => addLevel(chart, waveSeriesRef.current, relatedLevels,
+          addLevel(chart, waveSeriesRef.current, tradeFrom, tradeTo, levels.stop, "#ef5350", "SL", 2);
+          (levels.targets ?? []).forEach((target, index) => addLevel(chart, waveSeriesRef.current,
             tradeFrom, tradeTo, target, "#26a69a", `TP${index + 1}`, 2));
         }
       }
-      patternSeriesRef.current.set(pattern.id, { wave, levels: relatedLevels });
     });
     entryScenarios.filter((scenario) => scenario.setup_type === "ELLIOTT_WAVE3").forEach((scenario) => {
       const start = nearestTimestamp(orderedCandles,scenario.created_at);
@@ -156,7 +148,6 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
         priceLineVisible: false, lastValueVisible: false, title: "" });
       line.setData([{ time: chartTime(start), value: entry }, { time: chartTime(end), value: entry }]);
       waveSeriesRef.current.push(line);
-      patternSeriesRef.current.get(scenario.id)?.levels.push(line);
       markers.push({ time: chartTime(start), position: scenario.direction === "LONG" ? "belowBar" : "aboveBar",
         color, shape: scenario.direction === "LONG" ? "arrowUp" : "arrowDown",
         text: `Вход · ${scenario.origin === "LIVE" ? "LIVE" : "История"} · ${entryResultLabel(result)} · ${scenario.direction}` });
@@ -168,8 +159,25 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
   const validPatterns = elliottPatterns.filter((pattern) => pattern.state !== "INVALID").length;
   const entries = entryScenarios.filter((scenario) => scenario.setup_type === "ELLIOTT_WAVE3")
     .sort((left,right) => right.created_at-left.created_at);
-  return <Paper variant="outlined" sx={{ p: 1, overflow: "hidden" }}><Stack direction="row" sx={{ px: 1, pb: 1, justifyContent: "space-between", alignItems: "center" }}><Typography variant="subtitle2">График актива</Typography><Typography variant="caption" color={validPatterns ? "primary.light" : "text.secondary"}>Elliott: {validPatterns} волн · потенциальных входов: {entries.length}</Typography></Stack><Box ref={ref} sx={{ width: "100%", minHeight: 560 }} />
-    <Paper variant="outlined" sx={{ mt: 1, p: 1.5, bgcolor: "rgba(255,255,255,.02)" }}>
+  return <Paper ref={fullscreenRef} variant="outlined" sx={{ p: 1, overflow: "hidden", position: "relative",
+    "&:fullscreen": { bgcolor: "#101722", width: "100vw", height: "100vh", display: "flex", flexDirection: "column", p: 1 } }}>
+    <Stack direction="row" sx={{ px: 1, pb: 1, gap: 1, justifyContent: "space-between", alignItems: "center" }}>
+      <Typography variant="subtitle2">График актива</Typography>
+      <Stack direction="row" sx={{ gap: 1, alignItems: "center" }}>
+        <Typography variant="caption" color={validPatterns ? "primary.light" : "text.secondary"}>Elliott: {validPatterns} волн · потенциальных входов: {entries.length}</Typography>
+        <Button size="small" variant="outlined" onClick={() => void toggleFullscreen()} sx={{ minWidth: 112, py: .35, textTransform: "none" }}>
+          {isFullscreen ? "Свернуть" : "На весь экран"}
+        </Button>
+      </Stack>
+    </Stack>
+    <Box sx={{ position: "relative", width: "100%", height: isFullscreen ? "calc(100vh - 54px)" : 560, flex: isFullscreen ? 1 : "none" }}>
+      <Box ref={ref} sx={{ width: "100%", height: "100%" }} />
+      <Button aria-label="Автовыравнивание графика" title="Автовыравнивание" onClick={autoFit}
+        variant="contained" size="small" sx={{ position: "absolute", right: 10, bottom: 28, zIndex: 3,
+          minWidth: 32, width: 32, height: 28, p: 0, bgcolor: "rgba(38,50,66,.92)", color: "#dbe5f1",
+          border: "1px solid #526174", boxShadow: "none", "&:hover": { bgcolor: "#334155", boxShadow: "none" } }}>A</Button>
+    </Box>
+    {!isFullscreen && <Paper variant="outlined" sx={{ mt: 1, p: 1.5, bgcolor: "rgba(255,255,255,.02)" }}>
       <Typography variant="subtitle2" sx={{ mb: 1 }}>Потенциальные точки входа выбранного актива</Typography>
       {entries.length ? <Stack spacing={.75}>{entries.slice(0,20).map((scenario) => {
         const result = entryResult(scenario,candles); const entry = (scenario.entry_zone_low+scenario.entry_zone_high)/2;
@@ -197,7 +205,7 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
           <Typography variant="caption" color="text.secondary">Сигнал: {formatDubaiTimestamp(scenario.created_at)} · до {formatDubaiTimestamp(scenario.expires_at)}</Typography>
         </Stack>;
       })}</Stack> : <Typography variant="body2" color="text.secondary">Потенциальных входов пока нет.</Typography>}
-    </Paper>
+    </Paper>}
   </Paper>;
 }
 
@@ -218,7 +226,7 @@ function entryResultLabel(result: EntryResult) {
 
 const chartTime = (timestamp: number) => Math.floor(timestamp / 1000) as UTCTimestamp;
 
-function addLevel(chart: ReturnType<typeof createChart>, collection: ChartSeries[], related: ChartSeries[],
+function addLevel(chart: ReturnType<typeof createChart>, collection: ChartSeries[],
   from: number, to: number, value: number, color: string, label: string, lineStyle: number) {
   if (!Number.isFinite(value) || from >= to) return;
   const series = chart.addSeries(LineSeries, { color, lineWidth: 1, lineStyle,
@@ -227,7 +235,6 @@ function addLevel(chart: ReturnType<typeof createChart>, collection: ChartSeries
   series.setData([{ time: startTime, value }, { time: endTime, value }]);
   createSeriesMarkers(series, [{ time: endTime, position: "aboveBar", color, shape: "circle", text: label }]);
   collection.push(series);
-  related.push(series);
 }
 
 function waveLegend(label: string) {
