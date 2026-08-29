@@ -1,6 +1,6 @@
 "use client";
 import { Accordion, AccordionDetails, AccordionSummary, Alert, Button, MenuItem, Paper, Stack, TextField, Typography } from "@mui/material";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { BacktestSettingsForm } from "../../components/backtest/BacktestSettingsForm";
 import { SectionPage } from "../../components/layout/SectionPage";
 import { TradingViewChart } from "../../components/market/TradingViewChart";
@@ -27,20 +27,13 @@ export default function MarketPage() {
   const viewed = viewSymbol || activeAssets[0] || "";
   const availableTimeframes = allTimeframes;
   const query = useMemo(() => `symbol=${encodeURIComponent(viewed)}&timeframe=${selectedTf}`, [viewed, selectedTf]);
-  const candles = useApiResource<CandlesResponse>(`/api/v1/data/market/candles?${query}&limit=500`);
+  const candles = useApiResource<CandlesResponse>(`/api/v1/exchange/exchange/market-candles?${query}&limit=100`);
   const reloadCandles = candles.reload;
-  const requestedIncremental = useRef("");
   useEffect(() => {
     if (!symbol && assets.assets.length) setSymbol(assets.assets[0]);
     if (!viewSymbol && activeAssets.length) setViewSymbol(activeAssets[0]);
   }, [assets.assets, activeAssets, symbol, viewSymbol]);
   useEffect(() => { const socket = new EventSocket(["candle.*"]); const unsubscribe = socket.subscribe((event) => { if (event.payload?.symbol === viewed) reloadCandles(); }); void socket.connect(); const timer = window.setInterval(() => reloadCandles(), 15_000); return () => { unsubscribe(); socket.close(); window.clearInterval(timer); }; }, [viewed, reloadCandles]);
-  useEffect(() => {
-    const latest = candles.data?.candles.at(-1)?.timestamp ?? 0; const key = `${viewed}:${selectedTf}`;
-    if (!viewed || !candles.data || (latest && latest > Date.now() - 4 * 3600000) || requestedIncremental.current === key) return;
-    requestedIncremental.current = key;
-    void api("/api/v1/exchange/exchange/history", { method: "POST", body: JSON.stringify({ symbol: viewed, timeframes: [selectedTf], incremental: true, from_timestamp: 0, to_timestamp: Date.now(), backfill: false }) }).then(() => reloadCandles()).catch(() => undefined);
-  }, [candles.data, reloadCandles, selectedTf, viewed]);
   const save = async () => { setSaving(true); setMessage(""); try { if (!selected) throw new Error("Введите актив"); const elliottTimeframes = [settings.elliott.entryTimeframe, settings.elliott.structureTimeframe, settings.elliott.macroTimeframe]; const dataset = await api<{ timeframes: Array<{ timeframe: string; candles: number }> }>(`/api/v1/backtest/datasets/${encodeURIComponent(selected)}`).catch(() => ({ timeframes: [] })); const missing = elliottTimeframes.filter((timeframe) => !dataset.timeframes.some((item) => item.timeframe === timeframe && item.candles > 0)); if (missing.length) { await api("/api/v1/exchange/exchange/history", { method: "POST", body: JSON.stringify({ symbol: selected, timeframes: missing, from_timestamp: Date.now() - 180 * 86400000, to_timestamp: Date.now(), incremental: false, backfill: false }) }); setMessage(`Для ${selected} запрошены свечи: ${missing.join(", ")}. Конфигурация сохраняется.`); } await api(`/api/v1/backtest/assets`, { method: "POST", body: JSON.stringify({ symbol: selected, category: "crypto" }) }).catch((error: unknown) => { if (!(error instanceof Error) || !error.message.startsWith("409")) throw error; }); await api("/api/v1/execution/trading-configs", { method: "POST", body: JSON.stringify({ symbol: selected, mode: "SIMULATION", config: settings }) }); await api("/api/v1/exchange/exchange/reload-symbols", { method: "POST" }).catch(() => undefined); assets.reload(); tradingConfigs.reload(); setMessage(`Актив ${selected} зарегистрирован в автономной симуляции.`); } catch (reason) { setMessage(reason instanceof Error ? reason.message : String(reason)); } finally { setSaving(false); } };
   const pasteConfig = async () => {
     try {

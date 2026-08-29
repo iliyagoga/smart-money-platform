@@ -32,6 +32,12 @@ async def sync(req:SyncRequest):
     if req.timeframe not in TIMEFRAMES:raise HTTPException(422,"Unsupported timeframe")
     try:return {"ingested":await service.history(req.symbol,req.timeframe,req.limit)}
     except Exception as exc:raise HTTPException(502,str(exc)) from exc
+@app.get("/exchange/market-candles")
+async def market_candles(symbol:str, timeframe:str="M15", limit:int=100):
+    symbol=symbol.strip().upper(); timeframe=timeframe.strip().upper()
+    if timeframe not in TIMEFRAMES: raise HTTPException(422,"Unsupported timeframe")
+    try: return {"symbol":symbol,"timeframe":timeframe,"candles":await service.market_candles(symbol,timeframe,limit)}
+    except Exception as exc: raise HTTPException(502,str(exc)) from exc
 @app.post("/exchange/history",status_code=202)
 async def history(req:HistoryRequest):
     job_id=str(uuid4());return await service.create_history(

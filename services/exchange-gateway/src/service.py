@@ -126,6 +126,12 @@ class ExchangeGateway:
         values=[candle(x,symbol,timeframe) for x in body["data"]]
         for value in reversed(values):await self.ingest("/internal/ingest/candles",value)
         return len(values)
+    async def market_candles(self,symbol,timeframe,limit=100):
+        params={"instId":symbol,"bar":TIMEFRAMES[timeframe],"limit":min(limit,100)}
+        response=await self.client.get(self.s.okx_rest_url+"/api/v5/market/candles",params=params)
+        response.raise_for_status(); body=response.json()
+        if body.get("code")!="0": raise ValueError(body.get("msg","OKX error"))
+        return [candle(item,symbol,timeframe) for item in reversed(body.get("data",[]))]
     async def history_page(self,symbol,timeframe,after=None):
         params={"instId":symbol,"bar":TIMEFRAMES[timeframe],"limit":300}
         if after is not None:params["after"]=str(after)
