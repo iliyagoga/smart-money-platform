@@ -78,8 +78,9 @@ async def create_backtest(request: BacktestCreate, x_user_id: str = Header(defau
 
 
 @app.get("/backtests")
-async def backtests(x_user_id: str = Header(default="local"), limit: int = Query(default=50, ge=1, le=500)):
-    return {"runs": await service.runs(x_user_id, limit)}
+async def backtests(x_user_id: str = Header(default="local"), limit: int = Query(default=10, ge=1, le=100),
+                    offset: int = Query(default=0, ge=0)):
+    return await service.runs(x_user_id, limit, offset)
 
 
 @app.get("/backtests/compare")
@@ -94,6 +95,13 @@ async def backtest(run_id: UUID, x_user_id: str = Header(default="local")):
     if not run:
         raise HTTPException(404, "Backtest not found")
     return run
+
+
+@app.delete("/backtests/{run_id}")
+async def delete_backtest(run_id: UUID, x_user_id: str = Header(default="local")):
+    if not await service.delete_run(run_id, x_user_id):
+        raise HTTPException(409, "Backtest not found or still active")
+    return {"id": str(run_id), "deleted": True}
 
 
 @app.post("/backtests/{run_id}/cancel")

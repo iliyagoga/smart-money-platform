@@ -4,7 +4,7 @@ export interface BacktestRunSummary {
   id: string;
   symbol: string;
   timeframe: string;
-  status: "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED";
+  status: "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
   progress: number;
   error?: string;
   created_at: string;
@@ -28,7 +28,7 @@ export interface SavedBacktestRequest {
   config: Record<string, unknown> & { elliott?: Record<string, unknown> };
 }
 
-export interface BacktestRunsResponse { runs: BacktestRunSummary[] }
+export interface BacktestRunsResponse { runs: BacktestRunSummary[]; total: number }
 export interface BacktestCreateResponse { id: string; status: string }
 
 interface BackendTrade {

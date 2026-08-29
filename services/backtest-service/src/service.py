@@ -351,13 +351,14 @@ class BacktestService:
             weights=[float(item) for item in artifact["weights"]], bias=float(artifact.get("bias", 0)),
         )
 
-    async def runs(self, user_id: str, limit: int = 50):
+    async def runs(self, user_id: str, limit: int = 50, offset: int = 0):
         async with self.db.acquire() as connection:
             rows = await connection.fetch(
                 "SELECT id,symbol,timeframe,status,progress,error,created_at,completed_at,result FROM backtest_runs "
-                "WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2", user_id, limit
+                "WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2 OFFSET $3", user_id, limit, offset
             )
-        return [self.serialize_run(row, include_result=False) for row in rows]
+            total = await connection.fetchval("SELECT count(*) FROM backtest_runs WHERE user_id=$1", user_id)
+        return {"runs": [self.serialize_run(row, include_result=False) for row in rows], "total": total}
 
     async def run(self, run_id: UUID, user_id: str):
         async with self.db.acquire() as connection:
@@ -375,6 +376,15 @@ class BacktestService:
         if cancelled and task and not task.done():
             task.cancel()
         return cancelled
+
+    async def delete_run(self, run_id: UUID, user_id: str):
+        async with self.db.acquire() as connection:
+            return await connection.fetchval(
+                """DELETE FROM backtest_runs
+                   WHERE id=$1 AND user_id=$2 AND status NOT IN ('QUEUED','RUNNING')
+                   RETURNING id""",
+                run_id, user_id,
+            )
 
     @staticmethod
     def serialize_run(row, include_result: bool):

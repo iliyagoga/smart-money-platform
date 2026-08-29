@@ -162,12 +162,21 @@ export default function BacktestPage() {
   const [isRunning, setIsRunning] = useState(false);
   const [progress, setProgress] = useState(0);
   const [workspaceTab, setWorkspaceTab] = useState(0);
+  const [historyPage, setHistoryPage] = useState(0);
+  const [historyRowsPerPage, setHistoryRowsPerPage] = useState(10);
+  const [historyBusy, setHistoryBusy] = useState(false);
   const restoredConfig = useRef<SavedBacktestRequest["config"] | undefined>(undefined);
   const restoredModelVersion = useRef<string | null | undefined>(undefined);
-  const runsResource = useApiResource<BacktestRunsResponse>("/api/v1/backtest/backtests");
+  const runsResource = useApiResource<BacktestRunsResponse>(
+    `/api/v1/backtest/backtests?limit=${historyRowsPerPage}&offset=${historyPage * historyRowsPerPage}`,
+  );
   const templatesResource = useApiResource<ScenarioTemplatesResponse>("/api/v1/smc/scenario-templates");
   const templateSelectionInitialized = useRef(false);
   const templates = useMemo(() => templatesResource.data?.templates ?? [], [templatesResource.data?.templates]);
+  useEffect(() => {
+    const lastPage = Math.max(0, Math.ceil((runsResource.data?.total ?? 0) / historyRowsPerPage) - 1);
+    if (historyPage > lastPage) setHistoryPage(lastPage);
+  }, [historyPage, historyRowsPerPage, runsResource.data?.total]);
   useEffect(() => {
     if (templateSelectionInitialized.current || !templates.length) return;
     templateSelectionInitialized.current = true;
@@ -350,6 +359,59 @@ export default function BacktestPage() {
     }
   };
 
+  const copyRunConfig = async (runId: string) => {
+    setError("");
+    setHistoryBusy(true);
+    try {
+      const runDetails = await api<BacktestRun>(`/api/v1/backtest/backtests/${runId}`);
+      const request = runDetails.result?.request_config;
+      if (!request) throw new Error("В этом отчёте отсутствует сохранённая конфигурация");
+      await navigator.clipboard.writeText(JSON.stringify(request, null, 2));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally { setHistoryBusy(false); }
+  };
+
+  const pasteRunConfig = async () => {
+    setError("");
+    setHistoryBusy(true);
+    try {
+      const parsed = JSON.parse(await navigator.clipboard.readText()) as SavedBacktestRequest;
+      if (!parsed || typeof parsed.symbol !== "string" || !parsed.config || typeof parsed.config !== "object") {
+        throw new Error("В буфере обмена нет корректной конфигурации бэктеста");
+      }
+      restoredConfig.current = parsed.config;
+      restoredModelVersion.current = parsed.model_version;
+      setAsset(parsed.symbol);
+      setSelectedTimeframes(parsed.timeframes?.length ? parsed.timeframes : [parsed.timeframe]);
+      setCandleLimit(parsed.candle_limit);
+      if (typeof parsed.train_from === "number") setTrainFrom(savedDate(parsed.train_from));
+      if (typeof parsed.train_to === "number") setTrainTo(savedDate(parsed.train_to));
+      if (typeof parsed.test_from === "number") setTestFrom(savedDate(parsed.test_from));
+      if (typeof parsed.test_to === "number") setTestTo(savedDate(parsed.test_to));
+      setSettings((current) => restoreSettings(parsed, current));
+      setProgress(0);
+      setWorkspaceTab(1);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally { setHistoryBusy(false); }
+  };
+
+  const deleteRuns = async (runs: BacktestRun[]) => {
+    const label = runs.length === 1 ? "этот отчёт" : `${runs.length} отчётов`;
+    if (!window.confirm(`Удалить ${label}? Это действие нельзя отменить.`)) return;
+    setError("");
+    setHistoryBusy(true);
+    try {
+      await Promise.all(runs.map((runItem) => api(`/api/v1/backtest/backtests/${runItem.id}`, { method: "DELETE" })));
+      setComparison((current) => current.filter((item) => !runs.some((deleted) => deleted.id === item.id)));
+      runsResource.reload();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      runsResource.reload();
+    } finally { setHistoryBusy(false); }
+  };
+
   const compareRuns = async (ids: string[]) => {
     try {
       const query = ids.map((id) => `ids=${encodeURIComponent(id)}`).join("&");
@@ -478,8 +540,18 @@ export default function BacktestPage() {
     </Box>}
     {workspaceTab === 3 && <Box sx={{ p: { xs: 1, md: 2 }, borderRadius: 2, bgcolor: "action.hover" }}>
     <BacktestHistory
+      busy={historyBusy}
+      loading={runsResource.isLoading}
       runs={runsResource.data?.runs ?? []}
+      total={runsResource.data?.total ?? 0}
+      page={historyPage}
+      rowsPerPage={historyRowsPerPage}
+      onPageChange={setHistoryPage}
+      onRowsPerPageChange={(value) => { setHistoryRowsPerPage(value); setHistoryPage(0); }}
+      onCopy={(runItem) => void copyRunConfig(runItem.id)}
+      onDelete={(runItems) => void deleteRuns(runItems)}
       onOpen={(runItem) => void openRun(runItem.id)}
+      onPaste={() => void pasteRunConfig()}
       onRepeat={(runItem) => void repeatRun(runItem.id)}
       onExport={(runItem, format) => void exportRun(runItem.id, format)}
       onCompare={(ids) => void compareRuns(ids)}
