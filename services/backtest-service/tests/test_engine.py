@@ -108,3 +108,16 @@ def test_indicator_margin_position_can_be_liquidated():
     ))
 
     assert result["trades"][0]["reason"] == "LIQUIDATION"
+
+
+def test_warmup_candles_create_signal_but_are_excluded_from_benchmark():
+    data = candles([10, 9, 10, 12, 14, 13, 11, 9, 8, 10])
+    evaluation_start = data[4]["timestamp"]
+
+    result = run_backtest(
+        data, config(stop_loss_percent=50, take_profit_percent=50), evaluation_start,
+    )
+
+    assert result["trades"][0]["entry_time"] >= evaluation_start
+    assert result["benchmark_return_percent"] == pytest.approx((10 / 14 - 1) * 100)
+    assert min(point["timestamp"] for point in result["equity"]) >= evaluation_start

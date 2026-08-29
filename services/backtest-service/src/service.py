@@ -152,8 +152,12 @@ class BacktestService:
             request.config = request.config.model_copy(update={
                 key: execution_spec[key] for key in ("tick_size", "lot_size", "minimum_order_size")
             })
+            warmup_bars = (max(request.config.slow_period, request.config.rsi_period, 35)
+                           if request.config.strategy not in (StrategyType.SMC, StrategyType.ELLIOTT)
+                           else 250)
             test_candles = await self.load_candles(
                 request.symbol, request.timeframes, request.test_from, request.test_to, request.candle_limit,
+                warmup_bars=warmup_bars if request.test_from is not None else 0,
             )
             for candles in test_candles.values():
                 for candle in candles: candle["volume"] *= execution_spec["contract_value"]
@@ -185,7 +189,7 @@ class BacktestService:
                     await connection.execute("UPDATE backtest_runs SET progress=80 WHERE id=$1", run_id)
                 result = await asyncio.to_thread(
                     run_smc_replay, test_candles, request.timeframe, request.config,
-                    self.settings.scenario_template_dir, model,
+                    self.settings.scenario_template_dir, model, request.test_from,
                 )
                 result["dataset"]["timeframes"] = request.timeframes
                 result["dataset"]["execution_timeframe"] = request.timeframe
@@ -198,13 +202,15 @@ class BacktestService:
             elif request.config.strategy == StrategyType.ELLIOTT:
                 async with self.db.acquire() as connection:
                     await connection.execute("UPDATE backtest_runs SET progress=80 WHERE id=$1", run_id)
-                result = await asyncio.to_thread(run_elliott_replay, test_candles, request.config)
+                result = await asyncio.to_thread(run_elliott_replay, test_candles, request.config, request.test_from)
                 result["dataset"]["timeframes"] = request.timeframes
                 result["dataset"]["execution_timeframe"] = request.config.elliott.entry_timeframe
                 result["dataset"]["structure_timeframe"] = request.config.elliott.structure_timeframe
                 result["dataset"]["macro_timeframe"] = request.config.elliott.macro_timeframe
             else:
-                result = await asyncio.to_thread(run_backtest, test_candles[request.timeframe], request.config)
+                result = await asyncio.to_thread(
+                    run_backtest, test_candles[request.timeframe], request.config, request.test_from,
+                )
             result.setdefault("dataset", {})
             result["dataset"].setdefault("timeframes", request.timeframes)
             result["dataset"].setdefault("test_candles", len(test_candles.get(request.timeframe, [])))
@@ -249,11 +255,12 @@ class BacktestService:
                     run_id, str(exc)[:2000],
                 )
 
-    async def load_candles(self, symbol, timeframes, start, end, limit):
+    async def load_candles(self, symbol, timeframes, start, end, limit, warmup_bars=0):
         bounded_limit = min(limit, self.settings.max_candles)
         result = {}
         async with self.db.acquire() as connection:
             for timeframe in timeframes:
+                query_start = None if start is None else max(0, start - TIMEFRAME_INTERVALS[timeframe] * warmup_bars)
                 rows = await connection.fetch(
                     """
                     SELECT symbol,timeframe,(extract(epoch FROM ts)*1000)::bigint AS timestamp,
@@ -264,7 +271,7 @@ class BacktestService:
                       AND ($4::bigint IS NULL OR ts<to_timestamp($4/1000.0))
                     ORDER BY ts DESC LIMIT $5
                     """,
-                    symbol, timeframe, start, end, bounded_limit,
+                    symbol, timeframe, query_start, end, bounded_limit,
                 )
                 result[timeframe] = [dict(row) for row in reversed(rows)]
         missing = [timeframe for timeframe, candles in result.items() if not candles]
@@ -277,11 +284,13 @@ class BacktestService:
             truncated = []
             for timeframe, candles in result.items():
                 step = TIMEFRAME_INTERVALS[timeframe]
+                evaluation = [item for item in candles if item["timestamp"] >= start]
                 latest_closed = (int(time.time() * 1000) // step - 1) * step
                 required_end = min(end, latest_closed)
-                if candles[0]["timestamp"] > start + step or candles[-1]["timestamp"] < required_end - step:
+                if not evaluation or evaluation[0]["timestamp"] > start + step \
+                        or evaluation[-1]["timestamp"] < required_end - step:
                     incomplete.append(timeframe)
-                if len(candles) == bounded_limit and candles[0]["timestamp"] > start + step:
+                if len(candles) == bounded_limit and (not evaluation or evaluation[0]["timestamp"] > start + step):
                     truncated.append(timeframe)
             if truncated:
                 raise ValueError(

@@ -362,7 +362,8 @@ def _round_trade_prices(entry: float, stop: float, targets: list[float], directi
     return entry, stop, targets
 
 
-def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestConfig) -> dict:
+def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestConfig,
+                       evaluation_start: int | None = None) -> dict:
     ec = config.elliott
     structure = sorted(candles_by_tf[ec.structure_timeframe], key=lambda item: item["timestamp"])
     entry = sorted(candles_by_tf[ec.entry_timeframe], key=lambda item: item["timestamp"])
@@ -432,6 +433,8 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
     for candle in entry:
         timestamp = int(candle["timestamp"])
         available_at = timestamp + TIMEFRAME_MILLISECONDS[ec.entry_timeframe]
+        if evaluation_start is not None and timestamp < evaluation_start:
+            continue
         high, low, close = float(candle["high"]), float(candle["low"]), float(candle["close"])
         had_position = position is not None
         if position:
@@ -605,6 +608,8 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
         finish(float(entry[-1]["close"]), end_time, "END_OF_DATA")
         # Include the actual final fill, fees and slippage in risk metrics.
         equity.append({"timestamp": end_time, "equity": capital})
+    evaluation_entry = [item for item in entry
+                        if evaluation_start is None or int(item["timestamp"]) >= evaluation_start]
     peak, drawdown = config.initial_capital, 0.0
     for item in equity:
         peak = max(peak, item["equity"])
@@ -629,7 +634,9 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
             "profit_factor": gross_profit / gross_loss if gross_loss else None, "total_trades": len(trades),
             "average_trade": (capital - config.initial_capital) / len(trades) if trades else 0,
             "sharpe_ratio": mean(returns) / pstdev(returns) * sqrt(periods_per_year) if len(returns) > 1 and pstdev(returns) else 0,
-            "benchmark_return_percent": (float(entry[-1]["close"]) / float(entry[0]["close"]) - 1) * 100,
+            "benchmark_return_percent": ((float(evaluation_entry[-1]["close"])
+                                           / float(evaluation_entry[0]["close"]) - 1) * 100
+                                          if evaluation_entry else 0),
             "trades": trades, "equity": equity, "decisions": [], "scenarios": [],
             "chart_candles": entry[-50000:],
             "chart_candles_by_timeframe": {key: sorted(value, key=lambda item: item["timestamp"])[-50000:] for key, value in candles_by_tf.items()},
@@ -647,8 +654,8 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
             "pattern_diagnostics": [], "template_distribution": {},
             "dataset": {
                 "candles_by_timeframe": {key: len(value) for key, value in candles_by_tf.items()},
-                "test_candles": len(entry),
-                "test_from": int(entry[0]["timestamp"]) if entry else None,
-                "test_to": int(entry[-1]["timestamp"]) if entry else None,
+                "test_candles": len(evaluation_entry),
+                "test_from": int(evaluation_entry[0]["timestamp"]) if evaluation_entry else None,
+                "test_to": int(evaluation_entry[-1]["timestamp"]) if evaluation_entry else None,
                 "closed_candles_only": True,
             }}

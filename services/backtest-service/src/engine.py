@@ -67,7 +67,7 @@ def signal_at(closes: list[float], index: int, config: BacktestConfig) -> tuple[
     return closes[index - 1] <= previous_lower and closes[index] > lower, closes[index - 1] >= previous_upper and closes[index] < upper
 
 
-def run_backtest(candles: list[dict], config: BacktestConfig) -> dict:
+def run_backtest(candles: list[dict], config: BacktestConfig, evaluation_start: int | None = None) -> dict:
     ordered = sorted(candles, key=lambda item: item["timestamp"])
     if len(ordered) <= config.slow_period + 2:
         raise ValueError("not enough candles for selected periods")
@@ -78,7 +78,9 @@ def run_backtest(candles: list[dict], config: BacktestConfig) -> dict:
     capital = config.initial_capital
     position: Position | None = None
     trades: list[dict] = []
-    equity: list[dict] = [{"timestamp": ordered[0]["timestamp"], "equity": capital}]
+    first_evaluation = next((item for item in ordered
+                             if evaluation_start is None or int(item["timestamp"]) >= evaluation_start), ordered[-1])
+    equity: list[dict] = [{"timestamp": first_evaluation["timestamp"], "equity": capital}]
     pending_signal: tuple[str, int] | None = None
 
     def price_tick(value: float, direction: str) -> float:
@@ -188,7 +190,8 @@ def run_backtest(candles: list[dict], config: BacktestConfig) -> dict:
             if not exited and signal_ready and pending_signal[0] != direction:
                 close(candle_open, timestamp, "SIGNAL")
         opened = False
-        if position is None and pending_signal and pending_signal[1] <= timestamp:
+        evaluation_active = evaluation_start is None or timestamp >= evaluation_start
+        if position is None and pending_signal and pending_signal[1] <= timestamp and evaluation_active:
             direction = pending_signal[0]
             allowed = ((direction == "LONG" and config.direction_mode != DirectionMode.SHORT)
                        or (direction == "SHORT" and config.direction_mode != DirectionMode.LONG))
@@ -204,7 +207,8 @@ def run_backtest(candles: list[dict], config: BacktestConfig) -> dict:
             unrealized = ((close_price - position.entry_price) * position.quantity
                           * (1 if position.direction == "LONG" else -1)
                           - position.entry_price * position.quantity * taker_rate - position.funding)
-        equity.append({"timestamp": timestamp, "equity": capital + unrealized})
+        if evaluation_active:
+            equity.append({"timestamp": timestamp, "equity": capital + unrealized})
 
     last = ordered[-1]
     if position:
@@ -220,7 +224,9 @@ def run_backtest(candles: list[dict], config: BacktestConfig) -> dict:
     returns = [(equity[index]["equity"] / equity[index - 1]["equity"] - 1) for index in range(1, len(equity))]
     sharpe = mean(returns) / pstdev(returns) * sqrt(252) if len(returns) > 1 and pstdev(returns) else 0
     net_profit = capital - config.initial_capital
-    benchmark = (closes[-1] / closes[0] - 1) * 100
+    evaluation_closes = [float(item["close"]) for item in ordered
+                         if evaluation_start is None or int(item["timestamp"]) >= evaluation_start]
+    benchmark = (evaluation_closes[-1] / evaluation_closes[0] - 1) * 100 if evaluation_closes else 0
     return {
         "initial_capital": config.initial_capital, "final_capital": capital, "net_profit": net_profit,
         "total_return_percent": net_profit / config.initial_capital * 100, "max_drawdown_percent": max_drawdown,

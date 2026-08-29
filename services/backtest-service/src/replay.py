@@ -275,6 +275,7 @@ def run_smc_replay(
     config: BacktestConfig,
     template_dir: str,
     model: TemplateModel | FrozenModel | None = None,
+    evaluation_start: int | None = None,
 ) -> dict:
     pipeline = AnalysisPipeline()
     manager = ScenarioManager(TemplateStore(template_dir))
@@ -378,6 +379,8 @@ def run_smc_replay(
         expired = [item for item in pending if item[3] < available_at]
         for item in expired: set_scenario_status(item[0].id, "EXPIRED")
         pending = [item for item in pending if item[3] >= available_at]
+        if evaluation_start is not None and candle.timestamp < evaluation_start:
+            continue
         had_position = position is not None
         if position:
             interval = config.funding_interval_hours * 3_600_000
@@ -534,7 +537,9 @@ def run_smc_replay(
         last = primary[max(primary)]
         close(last, last.close, "END_OF_DATA")
         equity.append({"timestamp": max(primary), "equity": capital})
-    report = _report(config, candles_by_tf[primary_timeframe], capital, trades, equity, decisions, model)
+    evaluation_candles = [item for item in candles_by_tf[primary_timeframe]
+                          if evaluation_start is None or int(item["timestamp"]) >= evaluation_start]
+    report = _report(config, evaluation_candles, capital, trades, equity, decisions, model)
     report["scenarios"] = scenarios
     report["pattern_diagnostics"] = manager.diagnostics
     report["chart_candles"] = _chart_candles(candles_by_tf[primary_timeframe])
