@@ -1,84 +1,35 @@
 "use client";
 
-import { Chip, MenuItem, Paper, Stack, TextField, Typography } from "@mui/material";
+import { Alert, Button, Checkbox, FormControlLabel, MenuItem, Paper, Stack, TextField, Typography } from "@mui/material";
 import { useEffect, useState } from "react";
-import { AssetManager } from "../../components/backtest/AssetManager";
-import { DatasetOverview } from "../../components/backtest/DatasetOverview";
-import { CandlestickChart } from "../../components/market/CandlestickChart";
-import { EmptyState } from "../../components/ui/EmptyState";
 import { SectionPage } from "../../components/layout/SectionPage";
-import { useApiResource } from "../../hooks/useApiResource";
 import { useTradingAssets } from "../../hooks/useTradingAssets";
-import { EventSocket } from "../../lib/socket";
-import type { CandlesResponse, MarketStructure, PlatformEvent } from "../../lib/types";
-import { useAuth } from "../../components/auth/AuthProvider";
+import { api } from "../../lib/api";
 
 const timeframes = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
-
 export default function MarketPage() {
-  const { roles } = useAuth();
-  const [events, setEvents] = useState<PlatformEvent[]>([]);
-  const [isLive, setIsLive] = useState(false);
-  const [symbol, setSymbol] = useState("");
-  const assetsResource = useTradingAssets();
-  const selectedSymbol = symbol || assetsResource.assets[0];
-  const [timeframe, setTimeframe] = useState("M15");
-  const query = `symbol=${encodeURIComponent(selectedSymbol)}&timeframe=${timeframe}`;
-  const candles = useApiResource<CandlesResponse>(`/api/v1/data/market/candles?${query}&limit=200`);
-  const structure = useApiResource<MarketStructure>(`/api/v1/smc/smart-money/structure?${query}`);
-
-  useEffect(() => {
-    const socket = new EventSocket();
-    socket.subscribeStatus(setIsLive);
-    socket.subscribe((event) => {
-      setEvents((current) => [event, ...current].slice(0, 50));
-    });
-    void socket.connect();
-    return () => socket.close();
-  }, []);
-
-  return (
-    <SectionPage
-      title="Рынок"
-      description="Свечной график, зоны Smart Money и события рынка в реальном времени."
-      error={candles.error || structure.error}
-      isLoading={candles.isLoading || structure.isLoading}
-      onReload={() => { candles.reload(); structure.reload(); }}
-    >
-      <AssetManager
-        addAsset={assetsResource.addAsset}
-        assets={assetsResource.assets}
-        removeAsset={assetsResource.removeAsset}
-        selectedAsset={selectedSymbol}
-        onSelect={setSymbol}
-        onAssetsChanged={assetsResource.reload}
-      />
-      <DatasetOverview assets={assetsResource.assets} canManage={roles.includes("admin")} selectedAsset={selectedSymbol} />
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mb: 2 }}>
-        <TextField
-          select
-          label="Таймфрейм"
-          value={timeframe}
-          onChange={(event) => setTimeframe(event.target.value)}
-          size="small"
-          sx={{ minWidth: 140 }}
-        >
-          {timeframes.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}
-        </TextField>
-        <Chip label={isLive ? "WebSocket подключён" : "WebSocket переподключается…"}
-          color={isLive ? "success" : "warning"} variant="outlined" />
-      </Stack>
-      <CandlestickChart candles={candles.data?.candles ?? []} structure={structure.data} />
-      <Typography variant="h5" sx={{ mt: 4, mb: 2 }}>Лента событий</Typography>
-      {events.length === 0 ? <EmptyState text="Ожидаем рыночные события" /> : <Stack spacing={1}>{events.map((event, index) => (
-        <Paper key={`${event.timestamp}-${index}`} variant="outlined" sx={{ p: 2 }}>
-          <Stack direction={{ xs: "column", sm: "row" }} sx={{ justifyContent: "space-between", gap: 1 }}>
-            <Typography sx={{ fontWeight: 650 }}>{event.event_type}</Typography>
-            <Typography variant="caption" color="text.secondary">{new Date(event.timestamp).toLocaleString("ru-RU")}</Typography>
-          </Stack>
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>{event.payload?.symbol ?? event.source ?? "Общее событие"}</Typography>
-        </Paper>
-      ))}</Stack>}
-    </SectionPage>
-  );
+  const assets = useTradingAssets(); const [symbol, setSymbol] = useState("");
+  const [strategy, setStrategy] = useState("ELLIOTT"); const [capital, setCapital] = useState(10000);
+  const [risk, setRisk] = useState(1); const [leverage, setLeverage] = useState(1);
+  const [frames, setFrames] = useState(["M15", "H1", "H4"]); const [saving, setSaving] = useState(false); const [message, setMessage] = useState("");
+  const selected = symbol || assets.assets[0] || "";
+  useEffect(() => { if (!symbol && assets.assets.length) setSymbol(assets.assets[0]); }, [assets.assets, symbol]);
+  const save = async () => { setSaving(true); setMessage(""); try {
+    if (!selected) throw new Error("Выберите актив");
+    await api(`/api/v1/backtest/assets`, { method: "POST", body: JSON.stringify({ symbol: selected, category: "crypto" }) }).catch((error: unknown) => { if (!(error instanceof Error) || !error.message.startsWith("409")) throw error; });
+    await api("/api/v1/execution/trading-configs", { method: "POST", body: JSON.stringify({ symbol: selected, mode: "SIMULATION", config: { strategy, initial_capital: capital, risk_per_trade_percent: risk, leverage, timeframes: frames } }) });
+    await api("/api/v1/exchange/exchange/reload-symbols", { method: "POST" }).catch(() => undefined); assets.reload();
+    setMessage(`Актив ${selected} добавлен в автономную симуляцию. Конфигурация сохранена в БД.`);
+  } catch (reason) { setMessage(reason instanceof Error ? reason.message : String(reason)); } finally { setSaving(false); } };
+  return <SectionPage title="Рынок" description="Активация автономной торговли без отправки реальных заявок."><Paper variant="outlined" sx={{ p: { xs: 2, md: 3 }, maxWidth: 760 }}><Stack spacing={2}>
+    <Typography variant="h6">Настройка торгового актива</Typography>
+    <TextField select label="Актив" value={selected} onChange={(e) => setSymbol(e.target.value)}>{assets.assets.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}</TextField>
+    <TextField select label="Стратегия" value={strategy} onChange={(e) => setStrategy(e.target.value)}><MenuItem value="ELLIOTT">Elliott Wave</MenuItem><MenuItem value="SMC">Smart Money Concept</MenuItem></TextField>
+    <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}><TextField fullWidth label="Начальный капитал" type="number" value={capital} onChange={(e) => setCapital(Number(e.target.value))} /><TextField fullWidth label="Риск на сделку, %" type="number" value={risk} onChange={(e) => setRisk(Number(e.target.value))} /><TextField fullWidth label="Плечо" type="number" value={leverage} onChange={(e) => setLeverage(Number(e.target.value))} /></Stack>
+    <Stack direction="row" useFlexGap sx={{ flexWrap: "wrap", gap: .5 }}>{timeframes.map((item) => <FormControlLabel key={item} label={item} control={<Checkbox checked={frames.includes(item)} onChange={(e) => setFrames((current) => e.target.checked ? [...current, item] : current.filter((x) => x !== item))} />} />)}</Stack>
+    <FormControlLabel control={<Checkbox checked disabled />} label="Симуляция торгов (paper) — реальные ордера не отправляются" />
+    <Alert severity="info">После запуска актив отслеживается автономно сервисами системы, даже если страница закрыта.</Alert>
+    <Button variant="contained" onClick={() => void save()} disabled={saving || !selected || !frames.length}>{saving ? "Сохраняем…" : "Запустить торговый актив"}</Button>
+    {message && <Typography color={message.includes("добавлен") ? "success.main" : "error.main"}>{message}</Typography>}
+  </Stack></Paper></SectionPage>;
 }

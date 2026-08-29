@@ -1,8 +1,15 @@
 from contextlib import asynccontextmanager
+import json
 from fastapi import FastAPI,HTTPException,Query
 from .models import *
 from .service import ExecutionService,decode_json
 from .settings import settings
+from pydantic import BaseModel
+
+class TradingConfigCreate(BaseModel):
+    symbol: str
+    mode: str = "SIMULATION"
+    config: dict
 
 service=ExecutionService(settings.database_url,settings.redis_url,settings.stream_group,settings.consumer_name,settings.execution_mode)
 @asynccontextmanager
@@ -46,6 +53,20 @@ async def cancel_post(order_id:str):return await cancel_order(order_id)
 async def positions():
     items=[x for x in service.positions.values() if x.status!="CLOSED"]
     return {"positions":[{**x.model_dump(),"unrealized_pnl":x.unrealized()} for x in items]}
+
+@app.get("/trading-configs")
+async def trading_configs():
+    rows=await service.db.fetch("SELECT symbol,mode,status,config,created_at,updated_at FROM trading_configs ORDER BY symbol")
+    return {"configs":[dict(row) for row in rows]}
+
+@app.post("/trading-configs",status_code=201)
+async def save_trading_config(request: TradingConfigCreate):
+    symbol=request.symbol.strip().upper()
+    if not symbol: raise HTTPException(422,"symbol must not be empty")
+    row=await service.db.fetchrow("""INSERT INTO trading_configs(symbol,mode,status,config) VALUES($1,$2,'ACTIVE',$3::jsonb)
+      ON CONFLICT(symbol) DO UPDATE SET mode=excluded.mode,status='ACTIVE',config=excluded.config,updated_at=now()
+      RETURNING symbol,mode,status,config,created_at,updated_at""",symbol,request.mode,json.dumps(request.config))
+    return dict(row)
 @app.get("/positions/{position_id}")
 async def position(position_id:str):
     item=service.positions.get(position_id)

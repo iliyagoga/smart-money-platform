@@ -20,6 +20,7 @@ class ExecutionService:
           CREATE TABLE IF NOT EXISTS positions(id uuid PRIMARY KEY,signal_id uuid,symbol text NOT NULL,status text NOT NULL,data jsonb NOT NULL,opened_at timestamptz NOT NULL,updated_at timestamptz NOT NULL DEFAULT now());
           CREATE TABLE IF NOT EXISTS position_state_history(id bigserial PRIMARY KEY,position_id uuid NOT NULL,from_state text,to_state text NOT NULL,trigger text NOT NULL,price numeric,created_at timestamptz NOT NULL DEFAULT now());
           CREATE TABLE IF NOT EXISTS closed_trades(id uuid PRIMARY KEY,position_id uuid NOT NULL,symbol text NOT NULL,pnl numeric NOT NULL,data jsonb NOT NULL,closed_at timestamptz NOT NULL);
+          CREATE TABLE IF NOT EXISTS trading_configs(symbol text PRIMARY KEY,mode text NOT NULL DEFAULT 'SIMULATION',status text NOT NULL DEFAULT 'ACTIVE',config jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now());
         """)
         for row in await self.db.fetch("SELECT data FROM orders WHERE status IN ('PENDING','OPEN')"):
             o=Order.model_validate(decode_json(row["data"]));self.orders[o.id]=o

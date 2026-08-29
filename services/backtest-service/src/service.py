@@ -413,7 +413,6 @@ class BacktestService:
                 symbol.strip().upper(),
             )
         return [dict(row) for row in rows]
-
     async def delete_dataset(self, symbol: str, timeframe: str | None = None):
         symbol = symbol.strip().upper()
         async with self.db.acquire() as connection:
