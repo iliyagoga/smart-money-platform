@@ -128,7 +128,10 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
       {" · "}close-time replay: {result.elliottDiagnostics.lookaheadSafe ? "без look-ahead" : "не подтверждено"}
       {" · "}{Object.entries(result.elliottDiagnostics.states).map(([state, count]) => `${state}: ${count}`).join("; ")}
       {result.elliottDiagnostics.riskPerTradePercent !== undefined
-        ? ` · риск-сайзинг: ${result.elliottDiagnostics.riskPerTradePercent}% до стопа` : ""}
+        ? result.elliottDiagnostics.riskPerTradePercent === 0
+          ? " · риск-сайзинг отключён"
+          : ` · риск-сайзинг: ${result.elliottDiagnostics.riskPerTradePercent}% до стопа`
+        : ""}
     </Alert>}
     {result.elliottDiagnostics?.selectionBiasWarning && <Alert severity="warning" sx={{ mt: 1.5 }}>
       После подбора параметров оценивайте результат на отдельном, ранее не просмотренном периоде.

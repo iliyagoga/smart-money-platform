@@ -131,7 +131,9 @@ class BacktestConfig(BaseModel):
     rsi_oversold: float = Field(default=30, ge=0, le=100)
     rsi_overbought: float = Field(default=70, ge=0, le=100)
     direction_mode: DirectionMode = DirectionMode.BOTH
-    risk_per_trade_percent: float = Field(default=1, gt=0, le=10)
+    # Zero disables stop-distance risk sizing; the position is then limited by
+    # available cash/margin and the configured leverage only.
+    risk_per_trade_percent: float = Field(default=1, ge=0)
     smc_min_stop_percent: float = Field(default=.3, gt=0, le=10)
     smc_min_target_rr: float = Field(default=1.5, gt=0, le=100)
     smc_max_target_rr: float = Field(default=8, gt=0, le=1000)

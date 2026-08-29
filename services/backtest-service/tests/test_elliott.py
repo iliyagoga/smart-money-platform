@@ -49,7 +49,7 @@ def test_margin_uses_the_whole_asset_capital_and_reinvestment_is_optional():
     assert _elliott_position_quantity(100, 100, 10, 9, 1, 100, True, 5, True, .01) == pytest.approx(1)
     assert _elliott_position_quantity(150, 100, 10, 9, 1, 100, True, 5, False, .01) == pytest.approx(1)
     assert _elliott_position_quantity(80, 100, 10, 9, 1, 100, True, 5, False, .01) == pytest.approx(.8)
-    assert _elliott_position_quantity(100, 100, 10, 9, 100, 25, False, 5, True, .01) == pytest.approx(2.5)
+    assert _elliott_position_quantity(100, 100, 10, 9, 100, 25, False, 5, True, .01) == pytest.approx(10)
 
 
 def test_prices_and_quantity_follow_exchange_steps():
@@ -64,6 +64,17 @@ def test_position_risk_is_capped_by_configured_percent():
     quantity = _elliott_position_quantity(10_000, 10_000, 100, 95, 1, 100, True, 3, True, .01)
     assert quantity == pytest.approx(20)
     assert quantity * (100 - 95) == pytest.approx(100)
+
+
+def test_zero_risk_disables_risk_cap_and_uses_margin_capacity():
+    # The generic 25% position-size default must not reduce Elliott capacity.
+    quantity = _elliott_position_quantity(10_000, 10_000, 100, 95, 0, 25, True, 3, True, .01)
+    assert quantity == pytest.approx(300)
+
+
+def test_risk_percent_has_no_artificial_upper_limit():
+    config = BacktestConfig(risk_per_trade_percent=250)
+    assert config.risk_per_trade_percent == 250
 
 
 @pytest.mark.parametrize("direction", ["LONG", "SHORT"])

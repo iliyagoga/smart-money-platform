@@ -350,9 +350,14 @@ def _elliott_position_quantity(capital: float, initial_capital: float, entry_pri
     unit_risk = abs(entry_price - stop_price)
     if unit_risk <= 0:
         return 0
-    risk_quantity = sizing_capital * risk_percent / 100 / unit_risk
-    allocation = sizing_capital * position_size_percent / 100
+    # Elliott owns the full capital assigned to the asset. The generic
+    # position_size_percent setting is not exposed for this strategy and must
+    # not silently reduce its margin capacity (its legacy default is 25%).
+    allocation = sizing_capital
     capacity_quantity = allocation * (leverage if use_margin else 1) / entry_price
+    if risk_percent == 0:
+        return floor((capacity_quantity / lot_size)) * lot_size
+    risk_quantity = sizing_capital * risk_percent / 100 / unit_risk
     return floor((min(risk_quantity, capacity_quantity) / lot_size)) * lot_size
 
 
