@@ -9,7 +9,6 @@ import { StatusDot } from "../ui/StatusDot";
 const navigation = [
   { label: "Обзор", href: "/" },
   { label: "Рынок", href: "/market" },
-  { label: "Сценарии", href: "/scenarios" },
   { label: "Сделки", href: "/trades" },
   { label: "Бэктест", href: "/backtest" },
   { label: "Replay", href: "/replay" },
