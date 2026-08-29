@@ -1,8 +1,10 @@
 from contextlib import asynccontextmanager
+import asyncio
 from fastapi import FastAPI,HTTPException,Query
 from .infrastructure import Infrastructure
 from .models import *
 from .service import SMCService
+from .elliott_live import normalize_config
 from .scenarios import ScenarioTemplate
 from .settings import settings
 
@@ -10,6 +12,9 @@ infra=Infrastructure(settings.database_url,settings.redis_url)
 service=SMCService(infra,settings.swing_lookback)
 class RebuildRequest(BaseModel):
     symbol:str;timeframes:list[Timeframe];limit:int=Field(default=500,ge=100,le=2000)
+class ElliottHistoryRequest(BaseModel):
+    symbol:str
+    candles_by_timeframe:dict[Timeframe,list[Candle]]
 
 @asynccontextmanager
 async def lifespan(app:FastAPI):
@@ -82,6 +87,24 @@ async def elliott_entries(symbol:str):
     symbol=symbol.strip().upper()
     items=service.elliott.latest_entries.get(symbol,[])
     return {"symbol":symbol,"entries":items,"total":len(items)}
+
+@app.post("/elliott/history")
+async def elliott_history(request:ElliottHistoryRequest):
+    from .elliott_live import ElliottLiveEngine
+    symbol=request.symbol.strip().upper()
+    config=await service.trading_config(symbol)
+    if not config:raise HTTPException(404,"Active trading config not found")
+    normalized=normalize_config(config);elliott=normalized.get("elliott",{})
+    try:entry_timeframe=Timeframe(elliott["entry_timeframe"])
+    except (KeyError,ValueError) as exc:raise HTTPException(422,"Invalid Elliott entry timeframe") from exc
+    mapping={(symbol,timeframe):items for timeframe,items in request.candles_by_timeframe.items()}
+    entry=mapping.get((symbol,entry_timeframe),[])
+    if not entry:raise HTTPException(422,"Entry timeframe candles are required")
+    engine=ElliottLiveEngine(live_signal_ids=set(service.elliott.live_signal_ids))
+    await asyncio.to_thread(engine.generate,symbol,entry[-1],mapping,config,False)
+    patterns=engine.latest_patterns.get(symbol,[]);entries=engine.latest_entries.get(symbol,[])
+    return {"symbol":symbol,"patterns":patterns,"entries":entries,
+            "patterns_total":len(patterns),"entries_total":len(entries)}
 
 @app.get("/scenarios")
 async def scenarios(symbol:str|None=None,status:str|None=None,limit:int=Query(100,ge=1,le=1000)):
