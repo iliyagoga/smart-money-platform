@@ -26,6 +26,53 @@ def normalize_config(value):
     return value
 
 
+def _strategy_levels(pattern, config, ec) -> dict:
+    side = 1 if pattern.direction == "LONG" else -1
+    p0, p1, p2 = pattern.points["P0"], pattern.points["P1"], pattern.points["P2"]
+    wave1 = abs(p1.price - p0.price)
+    retracement_a = p1.price - side * wave1 * ec.wave2_min_retracement
+    retracement_b = p1.price - side * wave1 * ec.wave2_max_retracement
+    levels = {
+        "wave1_break": p1.price,
+        "wave2_zone_low": min(retracement_a, retracement_b),
+        "wave2_zone_high": max(retracement_a, retracement_b),
+        "wave2_min_retracement": ec.wave2_min_retracement,
+        "wave2_max_retracement": ec.wave2_max_retracement,
+        "structure_from": p0.timestamp,
+        "structure_to": p2.confirmed_at,
+    }
+    if not pattern.signal_time:
+        return levels
+    entry_model = str(ec.entry_model)
+    if entry_model == "CHOCH_RETRACE":
+        choch = pattern.features["choch_level"]
+        close = pattern.features["choch_close"]
+        entry = choch + side * ec.entry_retracement * abs(close - choch)
+    elif entry_model == "WAVE1_BREAK_RETRACE":
+        entry = p1.price
+    else:
+        entry = pattern.features["choch_close"]
+    entry = round(entry / config.tick_size) * config.tick_size
+    stop = p2.price - side * ec.stop_buffer_atr * p2.atr
+    stop = (floor(stop / config.tick_size) if side == 1 else ceil(stop / config.tick_size)) * config.tick_size
+    risk = abs(entry - stop)
+    targets = [entry + side * risk * ec.take_profit_rr]
+    if ec.take_profit_count == 2:
+        targets.append(entry + side * risk * ec.second_take_profit_rr)
+    targets = [
+        (ceil(value / config.tick_size) if side == 1 else floor(value / config.tick_size)) * config.tick_size
+        for value in targets
+    ]
+    levels.update({
+        "choch": pattern.features.get("choch_level"),
+        "choch_close": pattern.features.get("choch_close"),
+        "entry": entry, "stop": stop, "targets": targets,
+        "trade_from": pattern.signal_time,
+        "trade_to": pattern.signal_time + ec.entry_expiry_bars * TIMEFRAME_MILLISECONDS[ec.entry_timeframe],
+    })
+    return levels
+
+
 @dataclass
 class ElliottLiveEngine:
     emitted: set[str] = field(default_factory=set)
@@ -62,6 +109,7 @@ class ElliottLiveEngine:
                 "invalid_reason": pattern.invalid_reason, "signal_time": pattern.signal_time,
                 "structure_timeframe": ec.structure_timeframe,
                 "entry_timeframe": ec.entry_timeframe,
+                "strategy_levels": _strategy_levels(pattern, config, ec),
                 "points": {
                     label: {
                         "timestamp": point.timestamp, "confirmed_at": point.confirmed_at,
@@ -91,6 +139,7 @@ class ElliottLiveEngine:
                 entry = pattern.features["choch_close"]
                 entry_type = "MARKET"
             entry = round(entry/config.tick_size)*config.tick_size
+            levels = _strategy_levels(pattern, config, ec)
             entries.append({
                 "id":pattern.id,"direction":pattern.direction,"setup_type":"ELLIOTT_WAVE3",
                 "status":"ACTIVE" if pattern.signal_time+expiry >= current.timestamp else "EXPIRED",
@@ -98,6 +147,7 @@ class ElliottLiveEngine:
                 "created_at":pattern.signal_time,"expires_at":pattern.signal_time+expiry,
                 "entry_model":entry_model,
                 "origin":"LIVE" if pattern.id in self.live_signal_ids else "HISTORICAL",
+                "stop_loss_price":levels.get("stop"),"take_profit_prices":levels.get("targets",[]),
             })
         self.latest_entries[symbol]=entries
         if not allow_live_emit:
