@@ -10,12 +10,14 @@ interface BacktestSettingsFormProps {
   progress: number;
   settings: BacktestSettings;
   templates: Array<{ id: string; name: string }>;
+  elliottOnly?: boolean;
+  submitLabel?: string;
 }
 
 const quarterSteps = (minimum: number, maximum: number) =>
   Array.from({ length: Math.round((maximum - minimum) / 0.25) + 1 }, (_, index) => minimum + index * 0.25);
 
-export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, settings, templates }: BacktestSettingsFormProps) {
+export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, settings, templates, elliottOnly = false, submitLabel = "Запустить бэктест" }: BacktestSettingsFormProps) {
   const updateNumber = (key: keyof BacktestSettings, value: string) => onChange({ ...settings, [key]: Number(value) });
   const isValid = settings.initialCapital > 0
     && (settings.strategy === "ELLIOTT"
@@ -51,13 +53,13 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
   return <Paper variant="outlined" sx={{ p: 3 }}>
     <Typography variant="h6">Параметры стратегии</Typography>
     <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 2.5 }}>
-      SMC или Elliott replay на сохранённых закрытых свечах без заглядывания вперёд.
+      {elliottOnly ? "Elliott Wave на сохранённых закрытых свечах." : "SMC или Elliott replay на сохранённых закрытых свечах без заглядывания вперёд."}
     </Typography>
     <Stack spacing={2}>
-      <TextField select label="Стратегия" value={settings.strategy}
+      {!elliottOnly && <TextField select label="Стратегия" value={settings.strategy}
         onChange={(event) => onChange({ ...settings, strategy: event.target.value as StrategyType })}>
         <MenuItem value="ELLIOTT">Elliott Wave</MenuItem><MenuItem value="SMC">Smart Money Concept</MenuItem>
-      </TextField>
+      </TextField>}
       <TextField
         select
         label="Направление"
@@ -250,7 +252,7 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
       {settings.strategy === "SMC" && settings.smcTargetMode === "FIXED" && <TextField fullWidth label="Фиксированный Risk/Reward" value={settings.smcTargetRr} type="number"
         slotProps={{ htmlInput: { min: 0.01, step: 0.1 } }} onChange={(event) => updateNumber("smcTargetRr", event.target.value)} />}
       <Typography variant="body2" color="text.secondary">
-        Stop Loss рассчитывается за структурной границей OB, тейк выставляется на указанном расстоянии Risk/Reward.
+        {elliottOnly ? "Stop Loss рассчитывается за структурной границей Elliott, тейки — по заданному Risk/Reward." : "Stop Loss рассчитывается за структурной границей OB, тейк выставляется на указанном расстоянии Risk/Reward."}
       </Typography>
       <Stack direction="row" spacing={1.5}>
         <TextField fullWidth label="Maker, %" value={settings.makerFeePercent} type="number"
@@ -285,10 +287,10 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
           onChange={(event) => updateNumber("liquidationFeePercent", event.target.value)} />
       </Stack>
       <Button variant="contained" size="large" disabled={!isValid || isRunning} onClick={onRun}>
-        {isRunning ? `Выполняем расчёт… ${progress}%` : "Запустить бэктест"}
+        {isRunning ? (progress > 0 ? `Выполняем расчёт… ${progress}%` : "Сохраняем…") : submitLabel}
       </Button>
       {!isValid && <Typography variant="caption" color="error.main">
-        Проверьте капитал, риск, Risk/Reward, размер позиции, параметры исполнения и выберите хотя бы один шаблон.
+        {elliottOnly ? "Проверьте капитал, риск и параметры Elliott/Risk-Reward." : "Проверьте капитал, риск, Risk/Reward, размер позиции, параметры исполнения и выберите хотя бы один шаблон."}
       </Typography>}
     </Stack>
   </Paper>;
