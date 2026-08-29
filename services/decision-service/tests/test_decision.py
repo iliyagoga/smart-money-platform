@@ -16,6 +16,9 @@ def test_conflict_selects_clear_winner():
 def test_risk_position_size():
     signal=ConflictResolver().signal(scenario("a","LONG",.7));decision=RiskManager().calculate(signal,10000,RiskConfig())
     assert decision.approved and decision.risk_amount==100 and decision.position_size==20
+def test_signal_preserves_scenario_entry_type():
+    item=scenario("market","LONG",.7).model_copy(update={"entry_type":"MARKET"})
+    assert ConflictResolver().signal(item).entry_type=="MARKET"
 def test_daily_loss_rejection():
     signal=ConflictResolver().signal(scenario("a","LONG",.7));decision=RiskManager().calculate(signal,10000,RiskConfig(),daily_pnl=-500)
     assert not decision.approved

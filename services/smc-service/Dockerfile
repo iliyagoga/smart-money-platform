@@ -4,6 +4,7 @@ WORKDIR /app
 COPY services/smc-service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY services/smc-service/src src
+COPY services/backtest-service/src backtest_core
 COPY config/scenario-templates default-scenario-templates
 RUN useradd --system --uid 10001 app && chown -R app /app
 USER app

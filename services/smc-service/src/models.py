@@ -68,6 +68,7 @@ class Scenario(BaseModel):
     stop_loss_price: float; take_profit_prices: list[float]; status: str = "ACTIVE"
     reasons: list[str] = []; objections: list[str] = []; objects_used: list[dict] = []
     target_allocations: list[float] = []
+    entry_type: str = "LIMIT"
     break_even_rule: str = "ONE_R"
     move_stop_to_break_even_after_target: int | None = 1
     one_trade_per_zone: bool = False; cooldown_bars_after_stop: int = 0

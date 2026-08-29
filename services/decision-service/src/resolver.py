@@ -15,6 +15,7 @@ class ConflictResolver:
         return best,rejected
     def signal(self,s:Scenario)->TradeSignal:
         return TradeSignal(scenario_id=s.id,symbol=s.symbol,direction=s.direction,entry_price=(s.entry_zone_low+s.entry_zone_high)/2,
+          entry_type=s.entry_type,
           stop_loss_price=s.stop_loss_price,take_profit_prices=s.take_profit_prices,confidence=s.confidence,
           target_allocations=s.target_allocations,
           break_even_rule=s.break_even_rule,

@@ -1,13 +1,15 @@
 from __future__ import annotations
 import asyncio,json,logging
+import asyncpg
 from .engines import AnalysisPipeline
 from .infrastructure import Infrastructure,resilient_loop
 from .models import *
 from .scenarios import ScenarioManager
+from .elliott_live import ElliottLiveEngine, normalize_config
 
 log=logging.getLogger(__name__)
 class SMCService:
-    def __init__(self,infra:Infrastructure,lookback:int=5):self.infra=infra;self.pipeline=AnalysisPipeline(lookback);self.scenarios=ScenarioManager();self.task=None
+    def __init__(self,infra:Infrastructure,lookback:int=5):self.infra=infra;self.pipeline=AnalysisPipeline(lookback);self.scenarios=ScenarioManager();self.elliott=ElliottLiveEngine();self.task=None
     async def start(self):
         await self.restore()
         self.task=asyncio.create_task(resilient_loop(self.subscribe))
@@ -57,6 +59,16 @@ class SMCService:
         before=len(self.scenarios.items)
         for row in rows:await self.process(Candle.model_validate(dict(row)),"history-rebuild")
         return {"symbol":symbol,"candles":len(rows),"scenarios_created":len(self.scenarios.items)-before}
+    async def trading_config(self,symbol:str):
+        try:
+            row=await self.infra.db.fetchrow(
+                "SELECT config FROM trading_configs WHERE symbol=$1 AND status='ACTIVE'",symbol,
+            )
+        except asyncpg.UndefinedTableError:
+            return None
+        if not row:return None
+        value=row["config"]
+        return json.loads(value) if isinstance(value,str) else value
     async def process(self,candle:Candle,correlation_id:str|None=None):
         result=self.pipeline.process(candle);key=(candle.symbol,candle.timeframe)
         mappings=[(result.swings,"swing","structure.update","swing.detected"),(result.changes,"structure_change","smc.update","structure.changed")]
@@ -74,8 +86,15 @@ class SMCService:
         await self.infra.cache("ob",candle.symbol,candle.timeframe,[x for x in self.pipeline.obs[key] if not x.is_broken])
         await self.infra.cache("fvg",candle.symbol,candle.timeframe,[x for x in self.pipeline.fvgs[key] if not x.is_filled])
         await self.infra.cache("liquidity",candle.symbol,candle.timeframe,[x for x in self.pipeline.liquidity[key] if not x.swept])
-        generated=self.scenarios.generate_top_down(candle.symbol,candle,self.pipeline)
+        trading_config=await self.trading_config(candle.symbol)
+        strategy=(normalize_config(trading_config or {}).get("strategy") if trading_config else None)
+        if strategy=="ELLIOTT":
+            try:generated=self.elliott.generate(candle.symbol,candle,self.pipeline.candles,trading_config)
+            except (ValueError,KeyError):
+                log.exception("Invalid Elliott live config for %s",candle.symbol);generated=[]
+        else:generated=self.scenarios.generate_top_down(candle.symbol,candle,self.pipeline)
         for scenario in generated:
+            self.scenarios.items[scenario.id]=scenario
             await self.infra.db.execute("INSERT INTO scenarios(id,symbol,status,data,created_at) VALUES($1::uuid,$2,$3,$4::jsonb,to_timestamp($5/1000.0)) ON CONFLICT(id) DO NOTHING",scenario.id,scenario.symbol,scenario.status,json.dumps(scenario.model_dump(mode="json")),scenario.created_at)
             await self.infra.publish("scenario.update","scenario.created",scenario,correlation_id)
         return result

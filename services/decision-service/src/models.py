@@ -14,6 +14,7 @@ class Scenario(BaseModel):
     entry_zone_low:float;entry_zone_high:float;stop_loss_price:float;take_profit_prices:list[float]
     status:str="ACTIVE";reasons:list[str]=[];objections:list[str]=[];objects_used:list[dict]=[]
     target_allocations:list[float]=[];break_even_rule:str="ONE_R";move_stop_to_break_even_after_target:int|None=1
+    entry_type:str="LIMIT"
     one_trade_per_zone:bool=False;cooldown_bars_after_stop:int=0;deduplication_key:str|None=None
     created_at:int=Field(default_factory=now_ms);expires_at:int
     @model_validator(mode="after")

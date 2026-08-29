@@ -11,6 +11,13 @@ class PositionManager:
         if reached:
             target=reached[0]
             target_index=p.take_profit_prices.index(target)
+            if p.break_even_rule=="AFTER_TARGET" and len(targets)>1:
+                p.take_profit_prices.remove(target)
+                if p.target_allocations:p.target_allocations.pop(target_index)
+                p.targets_hit+=1
+                p.stop_loss_price=p.entry_price;p.protected=True;p.status="PROTECTED"
+                events.append(("updated",{"stop_loss_price":p.entry_price,"status":"PROTECTED"}))
+                return events
             if len(targets)>1 and p.quantity>p.initial_quantity*.25:
                 allocation=(p.target_allocations[target_index] if len(p.target_allocations)==len(p.take_profit_prices)
                             else .5)
