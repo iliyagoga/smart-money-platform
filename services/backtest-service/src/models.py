@@ -61,6 +61,7 @@ class ElliottConfig(BaseModel):
     entry_expiry_bars: int = Field(default=4, ge=1, le=1000)
     choch_min_atr: float = Field(default=.5, ge=0, le=10)
     choch_min_body_ratio: float = Field(default=.5, ge=0, le=1)
+    require_strict_choch: bool = True
     macro_filter: ElliottMacroFilter = ElliottMacroFilter.STRUCTURE
     adx_period: int = Field(default=14, ge=2, le=200)
     adx_min: float = Field(default=0, ge=0, le=100)

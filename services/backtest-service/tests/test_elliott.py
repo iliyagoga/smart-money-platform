@@ -24,7 +24,7 @@ def loose_config():
         wave1_min_candles=1, wave1_max_candles=None, wave1_min_efficiency=0,
         require_bos=False, wave2_min_retracement=.1, wave2_max_retracement=.95,
         wave2_min_time_ratio=0, wave2_max_time_ratio=20, choch_min_atr=0,
-        choch_min_body_ratio=0, minimum_rr=.1,
+        choch_min_body_ratio=0, require_strict_choch=False, minimum_rr=.1,
     )
 
 
@@ -44,10 +44,12 @@ def test_fixed_rr_target_uses_actual_stop_distance():
 
 
 def test_margin_uses_the_whole_asset_capital_and_reinvestment_is_optional():
-    assert _elliott_position_quantity(100, 100, 10, True, 5, True, .01) == pytest.approx(50)
-    assert _elliott_position_quantity(150, 100, 10, True, 5, False, .01) == pytest.approx(50)
-    assert _elliott_position_quantity(80, 100, 10, True, 5, False, .01) == pytest.approx(40)
-    assert _elliott_position_quantity(100, 100, 10, False, 5, True, .01) == pytest.approx(10)
+    # A 1% risk budget with a one-unit stop permits one unit. Margin is a cap,
+    # never the primary sizing rule.
+    assert _elliott_position_quantity(100, 100, 10, 9, 1, 100, True, 5, True, .01) == pytest.approx(1)
+    assert _elliott_position_quantity(150, 100, 10, 9, 1, 100, True, 5, False, .01) == pytest.approx(1)
+    assert _elliott_position_quantity(80, 100, 10, 9, 1, 100, True, 5, False, .01) == pytest.approx(.8)
+    assert _elliott_position_quantity(100, 100, 10, 9, 100, 25, False, 5, True, .01) == pytest.approx(2.5)
 
 
 def test_prices_and_quantity_follow_exchange_steps():
@@ -55,7 +57,13 @@ def test_prices_and_quantity_follow_exchange_steps():
     assert entry == pytest.approx(100)
     assert stop == pytest.approx(98)
     assert targets == pytest.approx([103.1, 104.1])
-    assert _elliott_position_quantity(100, 100, 3, False, 1, True, .1) == pytest.approx(33.3)
+    assert _elliott_position_quantity(100, 100, 3, 2, 100, 100, False, 1, True, .1) == pytest.approx(33.3)
+
+
+def test_position_risk_is_capped_by_configured_percent():
+    quantity = _elliott_position_quantity(10_000, 10_000, 100, 95, 1, 100, True, 3, True, .01)
+    assert quantity == pytest.approx(20)
+    assert quantity * (100 - 95) == pytest.approx(100)
 
 
 @pytest.mark.parametrize("direction", ["LONG", "SHORT"])
@@ -267,7 +275,7 @@ def test_macro_filter_never_reads_an_unclosed_higher_timeframe_candle():
     macro = candles([100, 99, 120], 14_400_000)
 
     assert _macro_direction(macro, 36_000_000, "STRUCTURE", "H4") == "BOTH"
-    assert _macro_direction(macro, 43_200_000, "STRUCTURE", "H4") == "LONG"
+    assert _macro_direction(macro, 43_200_000, "STRUCTURE", "H4") == "BOTH"
 
 
 def test_wave2_invalidation_rule(monkeypatch):

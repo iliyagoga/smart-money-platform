@@ -247,7 +247,7 @@ export function BacktestOptimizer({
           <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
             {numberListField("Wave 1 efficiency", architecture.efficiency,
               (value) => setArchitecture({ ...architecture, efficiency: value }), 0, 1, [0, 0.25, 0.35, 0.45, 0.5, 0.6, 0.75, 1])}
-            {numberListField("Retracement входа", architecture.retracement,
+            {numberListField("Доля импульса от CHOCH (0 = ретест уровня)", architecture.retracement,
               (value) => setArchitecture({ ...architecture, retracement: value }), 0, 1, [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1])}
           </Stack>
         </Stack></Paper>

@@ -127,7 +127,7 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
             <MenuItem value="CHOCH_RETRACE"><Checkbox checked={settings.elliott.entryModel === "CHOCH_RETRACE"} /><ListItemText primary="CHOCH retrace" /></MenuItem>
             <MenuItem value="WAVE1_BREAK_RETRACE"><Checkbox checked={settings.elliott.entryModel === "WAVE1_BREAK_RETRACE"} /><ListItemText primary="P1 break + retrace" /></MenuItem>
           </TextField>
-          {elliottChoice("Retracement входа", "entryRetracement", [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1])}
+          {elliottChoice("Доля импульса от CHOCH (0 = ретест уровня)", "entryRetracement", [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1])}
           {elliottChoice("Ждать вход, свечей", "entryExpiryBars", [1, 2, 3, 4, 5, 8, 10, 15, 20, 50, 100])}
         </Stack>
         <Stack direction="row" spacing={1.5}>

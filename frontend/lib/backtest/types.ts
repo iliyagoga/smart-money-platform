@@ -72,7 +72,7 @@ export interface BacktestTrade {
   signalTimeframe?: string;
   structureTimeframe?: string;
   fees?: number;
-  reason: "SIGNAL" | "STOP_LOSS" | "TAKE_PROFIT" | "STRUCTURAL_STOP" | "ELLIOTT_EXTENSION"
+  reason: "SIGNAL" | "STOP_LOSS" | "TAKE_PROFIT" | "STRUCTURAL_STOP" | "ELLIOTT_EXTENSION" | "FIXED_RR_TARGET"
     | "BREAK_EVEN" | "LIQUIDATION" | "END_OF_DATA";
 }
 
@@ -112,7 +112,11 @@ export interface BacktestResult {
   scenarios: BacktestScenario[];
   patternDiagnostics: Record<string, Record<string, number>>;
   elliottPatterns: ElliottPattern[];
-  elliottDiagnostics?: { states: Record<string, number>; patterns: number; signals: number; tradedSignals: number; lookaheadSafe: boolean };
+  elliottDiagnostics?: {
+    states: Record<string, number>; patterns: number; signals: number; tradedSignals: number; lookaheadSafe: boolean;
+    strictChoch?: boolean; positionSizing?: string; riskPerTradePercent?: number; drawdownBasis?: string;
+    targetBasis?: string; selectionBiasWarning?: string;
+  };
   strategyConfig?: {
     leverage: number;
     positionSizePercent: number;

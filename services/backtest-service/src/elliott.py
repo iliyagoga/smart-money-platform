@@ -90,7 +90,7 @@ def atr_zigzag(candles: list[dict], config, timeframe: str | None = None) -> lis
     pivots: list[Pivot] = []
     candle_duration = TIMEFRAME_MILLISECONDS[timeframe or config.structure_timeframe]
 
-    def append(index: int, confirmed: int, kind: str):
+    def append(index: int, confirmed: int, kind: str) -> bool:
         price = float(candles[index]["high" if kind == "HIGH" else "low"])
         if pivots and (pivots[-1].kind == kind or index - pivots[-1].index < config.min_swing_candles):
             if pivots and pivots[-1].kind == kind:
@@ -100,17 +100,19 @@ def atr_zigzag(candles: list[dict], config, timeframe: str | None = None) -> lis
                         index, int(candles[index]["timestamp"]),
                         int(candles[confirmed]["timestamp"]) + candle_duration, price, kind, atrs[index],
                     )
-            return
+            return False
         if pivots:
             distance = abs(price - pivots[-1].price)
             if distance < config.min_swing_atr * max(atrs[index], 1e-12):
-                return
-            if config.max_swing_candles and index - pivots[-1].index > config.max_swing_candles:
-                return
+                return False
+            # Never reject a confirmed reversal merely because it took too
+            # long. Doing so leaves the state machine unable to alternate
+            # again. Duration belongs to the wave-pattern filter below.
         pivots.append(Pivot(
             index, int(candles[index]["timestamp"]),
             int(candles[confirmed]["timestamp"]) + candle_duration, price, kind, atrs[index],
         ))
+        return True
 
     for index in range(1, len(candles)):
         if float(candles[index]["high"]) >= float(candles[high_index]["high"]):
@@ -120,19 +122,19 @@ def atr_zigzag(candles: list[dict], config, timeframe: str | None = None) -> lis
         threshold = config.zigzag_reversal_atr * max(atrs[index], 1e-12)
         if direction == 0:
             if float(candles[high_index]["high"]) - float(candles[index]["low"]) >= threshold and high_index < index:
-                append(low_index if low_index < high_index else 0, high_index, "LOW")
-                append(high_index, index, "HIGH")
-                direction, low_index = -1, index
+                # The first confirmed fact is the high from which price
+                # reversed. Do not invent a synthetic opposite pivot at bar 0.
+                if append(high_index, index, "HIGH"):
+                    direction, low_index = -1, index
             elif float(candles[index]["high"]) - float(candles[low_index]["low"]) >= threshold and low_index < index:
-                append(high_index if high_index < low_index else 0, low_index, "HIGH")
-                append(low_index, index, "LOW")
-                direction, high_index = 1, index
+                if append(low_index, index, "LOW"):
+                    direction, high_index = 1, index
         elif direction == 1 and float(candles[high_index]["high"]) - float(candles[index]["low"]) >= threshold:
-            append(high_index, index, "HIGH")
-            direction, low_index = -1, index
+            if append(high_index, index, "HIGH"):
+                direction, low_index = -1, index
         elif direction == -1 and float(candles[index]["high"]) - float(candles[low_index]["low"]) >= threshold:
-            append(low_index, index, "LOW")
-            direction, high_index = 1, index
+            if append(low_index, index, "LOW"):
+                direction, high_index = 1, index
     return pivots
 
 
@@ -145,7 +147,7 @@ def _efficiency(candles: list[dict], left: int, right: int) -> float:
 def _macro_direction(candles: list[dict], timestamp: int, mode: ElliottMacroFilter, timeframe: str) -> str:
     duration = TIMEFRAME_MILLISECONDS[timeframe]
     available = [item for item in candles if int(item["timestamp"]) + duration <= timestamp]
-    required = 200 if mode in (ElliottMacroFilter.EMA200, ElliottMacroFilter.EMA_CROSS) else 3
+    required = 200 if mode in (ElliottMacroFilter.EMA200, ElliottMacroFilter.EMA_CROSS) else 5
     if mode == ElliottMacroFilter.OFF or len(available) < required:
         return "BOTH"
     closes = [float(item["close"]) for item in available]
@@ -153,7 +155,24 @@ def _macro_direction(candles: list[dict], timestamp: int, mode: ElliottMacroFilt
         return "LONG" if closes[-1] >= _ema(closes, 200)[-1] else "SHORT"
     if mode == ElliottMacroFilter.EMA_CROSS:
         return "LONG" if _ema(closes, 50)[-1] >= _ema(closes, 200)[-1] else "SHORT"
-    return "LONG" if closes[-1] >= closes[max(0, len(closes) - 3)] else "SHORT"
+    # STRUCTURE: use only confirmed fractals (two closed bars on the right),
+    # then require both highs and lows to agree. Mixed structure is neutral.
+    highs: list[float] = []
+    lows: list[float] = []
+    for index in range(2, len(available) - 2):
+        window = available[index - 2:index + 3]
+        high = float(available[index]["high"])
+        low = float(available[index]["low"])
+        if high == max(float(item["high"]) for item in window):
+            highs.append(high)
+        if low == min(float(item["low"]) for item in window):
+            lows.append(low)
+    if len(highs) >= 2 and len(lows) >= 2:
+        if highs[-1] > highs[-2] and lows[-1] > lows[-2]:
+            return "LONG"
+        if highs[-1] < highs[-2] and lows[-1] < lows[-2]:
+            return "SHORT"
+    return "BOTH"
 
 
 def detect_patterns(structure: list[dict], entry: list[dict], macro: list[dict], config) -> tuple[list[Pattern], list[Pivot], list[Pivot]]:
@@ -240,6 +259,16 @@ def detect_patterns(structure: list[dict], entry: list[dict], macro: list[dict],
             relevant = [pivot for pivot in prior_swings if pivot.kind == ("HIGH" if direction == "LONG" else "LOW")]
             if not relevant:
                 continue
+            # A CHOCH reverses an established local structure. A break of an
+            # arbitrary single pivot is a BOS/level break, not a CHOCH.
+            if config.require_strict_choch:
+                same_kind = relevant[-2:]
+                reversing_structure = len(same_kind) == 2 and (
+                    same_kind[-1].price < same_kind[-2].price if direction == "LONG"
+                    else same_kind[-1].price > same_kind[-2].price
+                )
+                if not reversing_structure:
+                    continue
             level = relevant[-1].price
             close, open_price = float(candle["close"]), float(candle["open"])
             crossed = close > level if direction == "LONG" else close < level
@@ -343,11 +372,17 @@ def _liquidation_price(position: dict, config: BacktestConfig, taker_fee: float)
 
 
 def _elliott_position_quantity(capital: float, initial_capital: float, entry_price: float,
+                               stop_price: float, risk_percent: float, position_size_percent: float,
                                use_margin: bool, leverage: float, reinvest_profits: bool,
                                lot_size: float) -> float:
     sizing_capital = capital if reinvest_profits else min(initial_capital, capital)
-    notional = sizing_capital * (leverage if use_margin else 1)
-    return floor((notional / entry_price) / lot_size) * lot_size
+    unit_risk = abs(entry_price - stop_price)
+    if unit_risk <= 0:
+        return 0
+    risk_quantity = sizing_capital * risk_percent / 100 / unit_risk
+    allocation = sizing_capital * position_size_percent / 100
+    capacity_quantity = allocation * (leverage if use_margin else 1) / entry_price
+    return floor((min(risk_quantity, capacity_quantity) / lot_size)) * lot_size
 
 
 def _round_trade_prices(entry: float, stop: float, targets: list[float], direction: str,
@@ -399,9 +434,9 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
         nonlocal capital, position
         side = 1 if position["direction"] == "LONG" else -1
         quantity = position["remaining"] if quantity is None else min(quantity, position["remaining"])
-        exit_price = raw_price if reason == "ELLIOTT_EXTENSION" else raw_price * (1 - slip * side)
+        exit_price = raw_price if reason == "FIXED_RR_TARGET" else raw_price * (1 - slip * side)
         gross = (exit_price - position["entry_price"]) * quantity * side
-        exit_fee_rate = maker_fee if reason == "ELLIOTT_EXTENSION" else taker_fee
+        exit_fee_rate = maker_fee if reason == "FIXED_RR_TARGET" else taker_fee
         fees = (position["entry_price"] * quantity * position["entry_fee_rate"]
                 + exit_price * quantity * exit_fee_rate)
         liquidation_fee = (exit_price * quantity * config.liquidation_fee_percent / 100
@@ -472,7 +507,7 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
                     allocation = position["target_allocations"].pop(target_index)
                     is_final = not position["targets"]
                     if is_final or ec.first_take_action.value == "PARTIAL_CLOSE":
-                        finish(target, timestamp, "ELLIOTT_EXTENSION",
+                        finish(target, timestamp, "FIXED_RR_TARGET",
                                position["remaining"] if is_final else position["quantity"] * allocation)
                     if position and not is_final and ec.first_take_action.value == "MOVE_TO_BREAK_EVEN":
                         position["stop"] = _fee_adjusted_break_even_stop(
@@ -546,7 +581,8 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
             if selected:
                 pattern, entry_price, entry_fee_rate, stop, risk, targets = selected
                 quantity = _elliott_position_quantity(
-                    capital, config.initial_capital, entry_price,
+                    capital, config.initial_capital, entry_price, stop,
+                    config.risk_per_trade_percent, config.position_size_percent,
                     ec.use_margin, config.leverage, ec.reinvest_profits, config.lot_size,
                 )
                 quantity = min(quantity, float(candle.get("volume", 0)) * config.volume_participation_percent / 100)
@@ -588,7 +624,7 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
                     allocation = position["target_allocations"].pop(target_index)
                     is_final = not position["targets"]
                     if is_final or ec.first_take_action.value == "PARTIAL_CLOSE":
-                        finish(target, timestamp, "ELLIOTT_EXTENSION",
+                        finish(target, timestamp, "FIXED_RR_TARGET",
                                position["remaining"] if is_final else position["quantity"] * allocation)
                     if position and not is_final and ec.first_take_action.value == "MOVE_TO_BREAK_EVEN":
                         position["stop"] = _fee_adjusted_break_even_stop(
@@ -603,6 +639,12 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
             - position["entry_price"] * position["remaining"] * position["entry_fee_rate"]
         )
         equity.append({"timestamp": timestamp, "equity": capital + unrealized})
+        if position:
+            side = 1 if position["direction"] == "LONG" else -1
+            adverse = low if side == 1 else high
+            adverse_equity = capital + (adverse - position["entry_price"]) * position["remaining"] * side \
+                - position["entry_price"] * position["remaining"] * position["entry_fee_rate"]
+            equity[-1]["intrabar_min_equity"] = min(capital + unrealized, adverse_equity)
     if position:
         end_time = int(entry[-1]["timestamp"]) + TIMEFRAME_MILLISECONDS[ec.entry_timeframe]
         finish(float(entry[-1]["close"]), end_time, "END_OF_DATA")
@@ -613,7 +655,8 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
     peak, drawdown = config.initial_capital, 0.0
     for item in equity:
         peak = max(peak, item["equity"])
-        drawdown = max(drawdown, (peak - item["equity"]) / peak * 100)
+        observed_equity = item.get("intrabar_min_equity", item["equity"])
+        drawdown = max(drawdown, (peak - observed_equity) / peak * 100)
     wins = [item for item in trades if item["pnl"] > 0]
     gross_profit = sum(item["pnl"] for item in wins)
     gross_loss = abs(sum(item["pnl"] for item in trades if item["pnl"] < 0))
@@ -646,6 +689,13 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
             "elliott_diagnostics": {"states": counts, "patterns": len(patterns), "signals": len(signals),
                                      "traded_signals": len(traded), "expired_signals": expired_signals,
                                      "lookahead_safe": True,
+                                     "pivot_algorithm": "CAUSAL_NON_REPAINTING",
+                                     "strict_choch": ec.require_strict_choch,
+                                     "position_sizing": "STOP_RISK_CAPPED_BY_MARGIN",
+                                     "risk_per_trade_percent": config.risk_per_trade_percent,
+                                     "drawdown_basis": "INTRABAR_ADVERSE_EXTREME",
+                                     "target_basis": "FIXED_RR",
+                                     "selection_bias_warning": "Use a later untouched validation period after optimization.",
                                      "availability_basis": "CANDLE_CLOSE",
                                      "pivot_confirmation_uses_close_time": True,
                                      "macro_filter_uses_closed_candles_only": True,

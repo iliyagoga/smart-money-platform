@@ -127,6 +127,11 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
       {" · "}{result.elliottDiagnostics.tradedSignals} обработано
       {" · "}close-time replay: {result.elliottDiagnostics.lookaheadSafe ? "без look-ahead" : "не подтверждено"}
       {" · "}{Object.entries(result.elliottDiagnostics.states).map(([state, count]) => `${state}: ${count}`).join("; ")}
+      {result.elliottDiagnostics.riskPerTradePercent !== undefined
+        ? ` · риск-сайзинг: ${result.elliottDiagnostics.riskPerTradePercent}% до стопа` : ""}
+    </Alert>}
+    {result.elliottDiagnostics?.selectionBiasWarning && <Alert severity="warning" sx={{ mt: 1.5 }}>
+      После подбора параметров оценивайте результат на отдельном, ранее не просмотренном периоде.
     </Alert>}
     <Paper variant="outlined" sx={{ mt: 1.5, p: 2.5 }}>
       <Typography variant="h6" sx={{ mb: 1.5 }}>Распределение по шаблонам</Typography>

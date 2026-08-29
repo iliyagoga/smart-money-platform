@@ -224,8 +224,8 @@ class BacktestService:
             result["strategy_config"] = {
                 "leverage": (request.config.leverage if request.config.strategy != StrategyType.ELLIOTT
                              or request.config.elliott.use_margin else 1),
-                "position_size_percent": (request.config.position_size_percent
-                                          if request.config.strategy != StrategyType.ELLIOTT else 100),
+                "position_size_percent": request.config.position_size_percent,
+                "risk_per_trade_percent": request.config.risk_per_trade_percent,
                 "use_margin": (request.config.elliott.use_margin
                                if request.config.strategy == StrategyType.ELLIOTT else True),
                 "reinvest_profits": (request.config.elliott.reinvest_profits

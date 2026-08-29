@@ -90,7 +90,11 @@ export interface BackendBacktestResult {
     points: Record<string, { timestamp: number; confirmed_at: number; price: number; kind: "HIGH" | "LOW" }>;
     features: Record<string, number | string>; structure_timeframe: string; entry_timeframe: string;
   }>;
-  elliott_diagnostics?: { states: Record<string, number>; patterns: number; signals: number; traded_signals: number; lookahead_safe: boolean };
+  elliott_diagnostics?: {
+    states: Record<string, number>; patterns: number; signals: number; traded_signals: number; lookahead_safe: boolean;
+    strict_choch?: boolean; position_sizing?: string; risk_per_trade_percent?: number; drawdown_basis?: string;
+    target_basis?: string; selection_bias_warning?: string;
+  };
   strategy_config?: {
     leverage: number;
     position_size_percent: number;
@@ -168,6 +172,12 @@ export function mapBacktestResult(result: BackendBacktestResult): BacktestResult
       states: result.elliott_diagnostics.states, patterns: result.elliott_diagnostics.patterns,
       signals: result.elliott_diagnostics.signals, tradedSignals: result.elliott_diagnostics.traded_signals,
       lookaheadSafe: result.elliott_diagnostics.lookahead_safe,
+      strictChoch: result.elliott_diagnostics.strict_choch,
+      positionSizing: result.elliott_diagnostics.position_sizing,
+      riskPerTradePercent: result.elliott_diagnostics.risk_per_trade_percent,
+      drawdownBasis: result.elliott_diagnostics.drawdown_basis,
+      targetBasis: result.elliott_diagnostics.target_basis,
+      selectionBiasWarning: result.elliott_diagnostics.selection_bias_warning,
     } : undefined,
     strategyConfig: result.strategy_config ? {
       leverage: result.strategy_config.leverage,
