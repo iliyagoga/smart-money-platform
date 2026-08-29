@@ -43,6 +43,8 @@ interface Props {
 }
 
 const availableTimeframes = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
+const quarterSteps = (minimum: number, maximum: number) =>
+  Array.from({ length: Math.round((maximum - minimum) / 0.25) + 1 }, (_, index) => minimum + index * 0.25);
 
 export function BacktestOptimizer({
   settings, assets, initialAsset, initialTimeframes, testFrom, testTo, onApply, runCandidate,
@@ -236,9 +238,9 @@ export function BacktestOptimizer({
           <Typography variant="subtitle2">ATR ZigZag и первая волна</Typography>
           <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
             {numberListField("Разворот ZigZag, ATR", architecture.zigzag,
-              (value) => setArchitecture({ ...architecture, zigzag: value }), 0.25, 10, [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 5, 10])}
+              (value) => setArchitecture({ ...architecture, zigzag: value }), 0.25, 10, quarterSteps(0.25, 10))}
             {numberListField("Минимальный swing, ATR", architecture.minSwing,
-              (value) => setArchitecture({ ...architecture, minSwing: value }), 0, 10, [0, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 5, 10])}
+              (value) => setArchitecture({ ...architecture, minSwing: value }), 0, 10, quarterSteps(0, 10))}
             {numberListField("Wave 1 минимум, ATR", architecture.wave1Atr,
               (value) => setArchitecture({ ...architecture, wave1Atr: value }), 0, 20, [0, 0.5, 1, 1.5, 2, 3, 5, 10, 20])}
           </Stack>

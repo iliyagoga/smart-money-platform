@@ -12,6 +12,9 @@ interface BacktestSettingsFormProps {
   templates: Array<{ id: string; name: string }>;
 }
 
+const quarterSteps = (minimum: number, maximum: number) =>
+  Array.from({ length: Math.round((maximum - minimum) / 0.25) + 1 }, (_, index) => minimum + index * 0.25);
+
 export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, settings, templates }: BacktestSettingsFormProps) {
   const updateNumber = (key: keyof BacktestSettings, value: string) => onChange({ ...settings, [key]: Number(value) });
   const isValid = settings.initialCapital > 0
@@ -100,8 +103,8 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
         </Stack>
         <Stack direction="row" spacing={1.5}>
           {elliottChoice("ATR период", "atrPeriod", [7, 10, 14, 20, 21, 28, 50, 100, 200])}
-          {elliottChoice("Разворот ZigZag, ATR", "zigzagReversalAtr", [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 5, 10])}
-          {elliottChoice("Мин. swing, ATR", "minSwingAtr", [0, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 5, 10])}
+          {elliottChoice("Разворот ZigZag, ATR", "zigzagReversalAtr", quarterSteps(0.25, 10))}
+          {elliottChoice("Мин. swing, ATR", "minSwingAtr", quarterSteps(0, 10))}
         </Stack>
         <Stack direction="row" spacing={1.5}>
           {elliottChoice("Wave 1 мин., ATR", "wave1MinAtr", [0, 0.5, 1, 1.5, 2, 3, 5, 10, 20])}
