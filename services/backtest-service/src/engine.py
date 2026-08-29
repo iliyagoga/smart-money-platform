@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import sqrt
+from math import ceil, floor, sqrt
 from statistics import mean, pstdev
 
 from .models import BacktestConfig, DirectionMode, StrategyType
@@ -15,6 +15,8 @@ class Position:
     quantity: float
     peak: float
     trough: float
+    funding: float = 0
+    last_funding_time: int = 0
 
 
 def sma(values: list[float], end: int, period: int) -> float:
@@ -70,7 +72,6 @@ def run_backtest(candles: list[dict], config: BacktestConfig) -> dict:
     if len(ordered) <= config.slow_period + 2:
         raise ValueError("not enough candles for selected periods")
     closes = [float(item["close"]) for item in ordered]
-    maker_rate = (config.maker_fee_percent if config.maker_fee_percent is not None else config.fee_percent) / 100
     taker_rate = (config.taker_fee_percent if config.taker_fee_percent is not None else config.fee_percent) / 100
     slippage_rate = config.slippage_percent / 100
     funding_rate = config.funding_percent_per_day / 100
@@ -78,40 +79,68 @@ def run_backtest(candles: list[dict], config: BacktestConfig) -> dict:
     position: Position | None = None
     trades: list[dict] = []
     equity: list[dict] = [{"timestamp": ordered[0]["timestamp"], "equity": capital}]
+    pending_signal: tuple[str, int] | None = None
+
+    def price_tick(value: float, direction: str) -> float:
+        scaled = value / config.tick_size
+        return (ceil(scaled) if direction == "UP" else floor(scaled)) * config.tick_size
+
+    def liquidation_price() -> float:
+        quantity, entry = position.quantity, position.entry_price
+        margin = entry * quantity / config.leverage
+        maintenance = entry * quantity * config.maintenance_margin_percent / 100
+        entry_fee = entry * quantity * taker_rate
+        exit_rate = taker_rate + config.liquidation_fee_percent / 100
+        if position.direction == "LONG":
+            return (entry * quantity - margin + maintenance + entry_fee + position.funding) / max(
+                quantity * (1 - exit_rate), 1e-12,
+            )
+        return (entry * quantity + margin - maintenance - entry_fee - position.funding) / max(
+            quantity * (1 + exit_rate), 1e-12,
+        )
 
     def close(raw_price: float, timestamp: int, reason: str):
         nonlocal capital, position
         if position is None:
             return
         exit_price = raw_price * (1 - slippage_rate if position.direction == "LONG" else 1 + slippage_rate)
+        exit_price = price_tick(exit_price, "DOWN" if position.direction == "LONG" else "UP")
         multiplier = 1 if position.direction == "LONG" else -1
         gross = (exit_price - position.entry_price) * position.quantity * multiplier
-        fees = position.entry_price * position.quantity * maker_rate + exit_price * position.quantity * taker_rate
-        days = max(0, timestamp - position.entry_time) / 86_400_000
-        funding = position.entry_price * position.quantity * funding_rate * days * multiplier
-        pnl = gross - fees - funding
+        fees = position.entry_price * position.quantity * taker_rate + exit_price * position.quantity * taker_rate
+        liquidation_fee = (exit_price * position.quantity * config.liquidation_fee_percent / 100
+                           if reason == "LIQUIDATION" else 0)
+        pnl = gross - fees - position.funding - liquidation_fee
         capital += pnl
         trades.append({
             "id": len(trades) + 1, "direction": position.direction, "entry_time": position.entry_time,
             "exit_time": timestamp, "entry_price": position.entry_price, "exit_price": exit_price,
             "quantity": position.quantity, "pnl": pnl,
             "pnl_percent": pnl / (position.entry_price * position.quantity / config.leverage) * 100,
-            "fees": fees, "funding": funding, "reason": reason,
+            "fees": fees + liquidation_fee, "funding": position.funding, "reason": reason,
         })
         position = None
 
-    def open_position(direction: str, raw_price: float, timestamp: int):
+    def open_position(direction: str, raw_price: float, timestamp: int, volume: float) -> bool:
         nonlocal position
         price = raw_price * (1 + slippage_rate if direction == "LONG" else 1 - slippage_rate)
+        price = price_tick(price, "UP" if direction == "LONG" else "DOWN")
         notional = capital * config.position_size_percent / 100 * config.leverage
-        position = Position(direction, price, timestamp, notional / price, price, price)
+        quantity = min(notional / price, volume * config.volume_participation_percent / 100)
+        quantity = floor(quantity / config.lot_size) * config.lot_size
+        if quantity < config.minimum_order_size:
+            return False
+        position = Position(direction, price, timestamp, quantity, price, price, last_funding_time=timestamp)
+        return True
 
     def apply_intrabar_exits(candle_open: float, high: float, low: float, timestamp: int) -> bool:
         """Apply conservative stop-before-target ordering to an open position."""
         if position is None:
             return False
-        position.peak = max(position.peak, high)
-        position.trough = min(position.trough, low)
+        liquidation = liquidation_price()
+        if config.leverage > 1 and (low <= liquidation if position.direction == "LONG" else high >= liquidation):
+            close(liquidation, timestamp, "LIQUIDATION")
+            return True
         if position.direction == "LONG":
             stop = position.entry_price * (1 - config.stop_loss_percent / 100)
             if config.trailing_stop_percent:
@@ -130,6 +159,9 @@ def run_backtest(candles: list[dict], config: BacktestConfig) -> dict:
                 close(max(candle_open, stop), timestamp, "STOP_LOSS")
             elif candle_open <= target or low <= target:
                 close(min(candle_open, target), timestamp, "TAKE_PROFIT")
+        if position:
+            position.peak = max(position.peak, high)
+            position.trough = min(position.trough, low)
         return position is None
 
     for index in range(config.slow_period + 1, len(ordered)):
@@ -137,26 +169,41 @@ def run_backtest(candles: list[dict], config: BacktestConfig) -> dict:
         timestamp = int(candle["timestamp"])
         candle_open, high, low, close_price = map(float, (candle["open"], candle["high"], candle["low"], candle["close"]))
         long_signal, short_signal = signal_at(closes, index - 1, config)
+        if long_signal:
+            pending_signal = ("LONG", timestamp + config.execution_latency_ms)
+        elif short_signal:
+            pending_signal = ("SHORT", timestamp + config.execution_latency_ms)
+        if position:
+            interval = config.funding_interval_hours * 3_600_000
+            events = max(0, timestamp // interval - position.last_funding_time // interval)
+            if events:
+                funding = (position.entry_price * position.quantity * funding_rate
+                           * config.funding_interval_hours / 24 * events)
+                position.funding += funding * (1 if position.direction == "LONG" else -1)
+                position.last_funding_time = timestamp
         if position:
             direction = position.direction
             exited = apply_intrabar_exits(candle_open, high, low, timestamp)
-            if not exited and ((direction == "LONG" and short_signal) or (direction == "SHORT" and long_signal)):
+            signal_ready = pending_signal and pending_signal[1] <= timestamp
+            if not exited and signal_ready and pending_signal[0] != direction:
                 close(candle_open, timestamp, "SIGNAL")
         opened = False
-        if position is None:
-            if long_signal and config.direction_mode != DirectionMode.SHORT:
-                open_position("LONG", candle_open, timestamp)
-                opened = True
-            elif short_signal and config.direction_mode != DirectionMode.LONG:
-                open_position("SHORT", candle_open, timestamp)
-                opened = True
+        if position is None and pending_signal and pending_signal[1] <= timestamp:
+            direction = pending_signal[0]
+            allowed = ((direction == "LONG" and config.direction_mode != DirectionMode.SHORT)
+                       or (direction == "SHORT" and config.direction_mode != DirectionMode.LONG))
+            if allowed:
+                opened = open_position(direction, candle_open, timestamp, float(candle.get("volume", 0)))
+            pending_signal = None
         # The signal is known before this candle opens. Its whole OHLC range is
         # therefore part of the position lifetime, including the entry candle.
         if opened:
             apply_intrabar_exits(candle_open, high, low, timestamp)
         unrealized = 0
         if position:
-            unrealized = (close_price - position.entry_price) * position.quantity * (1 if position.direction == "LONG" else -1)
+            unrealized = ((close_price - position.entry_price) * position.quantity
+                          * (1 if position.direction == "LONG" else -1)
+                          - position.entry_price * position.quantity * taker_rate - position.funding)
         equity.append({"timestamp": timestamp, "equity": capital + unrealized})
 
     last = ordered[-1]

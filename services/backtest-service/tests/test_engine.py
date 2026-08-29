@@ -1,3 +1,5 @@
+import pytest
+
 from src.engine import run_backtest
 from src.models import BacktestConfig, DirectionMode, StrategyType
 
@@ -72,3 +74,37 @@ def test_supported_strategies_return_finite_metrics():
         result = run_backtest(data, config(strategy=strategy, fast_period=5, slow_period=20))
         assert result["max_drawdown_percent"] >= 0
         assert "benchmark_return_percent" in result
+
+
+def test_execution_latency_defers_indicator_entry_to_a_later_open():
+    data = candles([10, 9, 10, 12, 14, 13, 11, 9, 8, 10])
+
+    immediate = run_backtest(data, config(stop_loss_percent=50, take_profit_percent=50))
+    delayed = run_backtest(data, config(
+        stop_loss_percent=50, take_profit_percent=50, execution_latency_ms=1,
+    ))
+
+    assert delayed["trades"][0]["entry_time"] > immediate["trades"][0]["entry_time"]
+
+
+def test_indicator_position_obeys_volume_and_lot_limits():
+    data = candles([10, 9, 10, 12, 14, 13, 11, 9, 8, 10])
+
+    result = run_backtest(data, config(
+        stop_loss_percent=50, take_profit_percent=50,
+        lot_size=2, minimum_order_size=2, volume_participation_percent=5,
+    ))
+
+    assert result["trades"][0]["quantity"] == pytest.approx(4)
+
+
+def test_indicator_margin_position_can_be_liquidated():
+    data = candles([10, 9, 10, 12, 14, 14, 14, 14, 14])
+    data[4]["low"] = 5
+
+    result = run_backtest(data, config(
+        leverage=5, stop_loss_percent=90, take_profit_percent=90,
+        liquidation_fee_percent=.5, direction_mode="LONG",
+    ))
+
+    assert result["trades"][0]["reason"] == "LIQUIDATION"
