@@ -21,6 +21,7 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
     && (settings.strategy === "ELLIOTT"
       || (settings.positionSizePercent > 0 && settings.positionSizePercent <= 100))
     && settings.riskPerTradePercent > 0
+    && settings.riskPerTradePercent <= 10
     && (settings.strategy !== "ELLIOTT" || (settings.elliott.takeProfitRr > 0
       && settings.elliott.wave2MinRetracement < settings.elliott.wave2MaxRetracement
       && (settings.elliott.takeProfitCount === 1 || settings.elliott.secondTakeProfitRr > settings.elliott.takeProfitRr)))
@@ -190,11 +191,16 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
           </TextField>
           {settings.elliott.useMargin && <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
             <TextField fullWidth label="Плечо" value={settings.leverage} type="number"
+              slotProps={{ htmlInput: { min: 1, max: 100, step: 1 } }}
               onChange={(event) => updateNumber("leverage", event.target.value)} />
           </Stack>}
+          <TextField fullWidth label="Собственный риск на сделку, %" value={settings.riskPerTradePercent} type="number"
+            helperText="Максимальный убыток до структурного стопа в процентах от капитала (от 0 до 10%)."
+            slotProps={{ htmlInput: { min: 0.01, max: 10, step: 0.1 } }}
+            onChange={(event) => updateNumber("riskPerTradePercent", event.target.value)} />
           <Typography variant="caption" color="text.secondary">
-            Весь капитал выделен этому активу. Без маржи номинал равен капиталу;
-            с маржой номинал равен капиталу × плечо. Комиссии считаются со всего номинала.
+            Размер позиции ограничен выбранным риском. Без маржи номинал не превышает капитал;
+            с маржой — капитал × плечо. Комиссии считаются со всего номинала.
           </Typography>
         </Stack>
       </Paper>}
@@ -206,6 +212,7 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
       </>}
       {settings.strategy !== "ELLIOTT" && <Stack direction="row" spacing={1.5}>
         <TextField fullWidth label="Риск на сделку, %" value={settings.riskPerTradePercent} type="number"
+          slotProps={{ htmlInput: { min: 0.01, max: 10, step: 0.1 } }}
           onChange={(event) => updateNumber("riskPerTradePercent", event.target.value)} />
         <TextField fullWidth label="Доля Kelly" value={settings.kellyFraction} type="number"
           onChange={(event) => updateNumber("kellyFraction", event.target.value)} />
