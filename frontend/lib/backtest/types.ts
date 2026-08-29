@@ -14,6 +14,7 @@ export interface ElliottSettings {
   entryModel: "CHOCH_MARKET" | "CHOCH_RETRACE" | "WAVE1_BREAK_RETRACE";
   entryRetracement: number; entryExpiryBars: number; chochMinAtr: number; chochMinBodyRatio: number;
   macroFilter: "OFF" | "STRUCTURE" | "EMA200" | "EMA_CROSS";
+  adxPeriod: number; adxMin: number; requireDiConfirmation: boolean;
   stopBufferAtr: number; takeProfitCount: 1 | 2; takeProfitRr: number; secondTakeProfitRr: number;
   minimumRr: number; breakEvenAtOneR: boolean;
   firstTakeAction: "PARTIAL_CLOSE" | "MOVE_TO_BREAK_EVEN";

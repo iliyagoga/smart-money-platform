@@ -217,37 +217,6 @@ services:
       timeout: 5s
       retries: 10
 
-  learning-service:
-    build:
-      context: ./services/learning-service
-      dockerfile: Dockerfile
-    container_name: smart-money-learning-service
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      REDIS_URL: ${REDIS_URL}
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-CHANGE_ME_MINIO}
-      MODEL_BUCKET: models
-      MINIMUM_TRAINING_SAMPLES: ${MINIMUM_TRAINING_SAMPLES:-20}
-    ports:
-      - "8060:8060"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
-      minio:
-        condition: service_started
-      execution-service:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8060/health')\""]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
   backtest-service:
     build:
       context: .
@@ -334,7 +303,6 @@ services:
       DECISION_SERVICE_URL: http://decision-service:8020
       EXECUTION_SERVICE_URL: http://execution-service:8030
       ANALYTICS_SERVICE_URL: http://analytics-service:8040
-      LEARNING_SERVICE_URL: http://learning-service:8060
       BACKTEST_SERVICE_URL: http://backtest-service:8080
       EXCHANGE_SERVICE_URL: http://exchange-gateway:8070
       REDIS_URL: ${REDIS_URL}
@@ -354,8 +322,6 @@ services:
       execution-service:
         condition: service_healthy
       analytics-service:
-        condition: service_healthy
-      learning-service:
         condition: service_healthy
       backtest-service:
         condition: service_healthy

@@ -134,6 +134,16 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
           {elliottChoice("CHOCH displacement, ATR", "chochMinAtr", [0, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 5, 10])}
           {elliottChoice("Мин. тело свечи", "chochMinBodyRatio", [0, 0.25, 0.35, 0.5, 0.6, 0.75, 1])}
         </Stack>
+        <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
+          {elliottChoice("Период ADX", "adxPeriod", [7, 10, 14, 20, 21, 28, 50, 100])}
+          <TextField fullWidth label="Минимальный ADX" type="number" value={settings.elliott.adxMin}
+            helperText="0 отключает фильтр силы тренда"
+            slotProps={{ htmlInput: { min: 0, max: 100, step: 0.5 } }}
+            onChange={(e) => updateElliottNumber("adxMin", e.target.value)} />
+          <FormControlLabel sx={{ minWidth: 250 }} control={<Checkbox checked={settings.elliott.requireDiConfirmation}
+            onChange={(e) => onChange({ ...settings, elliott: { ...settings.elliott, requireDiConfirmation: e.target.checked } })} />}
+            label="Требовать подтверждение +DI/-DI" />
+        </Stack>
         <Stack direction="row" spacing={1.5}>
           {elliottChoice("Буфер стопа, ATR", "stopBufferAtr", [0, 0.1, 0.2, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 5, 10])}
           <TextField fullWidth label="Минимальный RR" type="number" value={settings.elliott.minimumRr} onChange={(e) => updateElliottNumber("minimumRr", e.target.value)} />
