@@ -58,11 +58,16 @@ export function TradingViewChart({ candles, elliottPatterns = [] }: { candles: C
         .flatMap((label) => pattern.points[label] ? [{ label, ...pattern.points[label] }] : []);
       if (points.length < 2) return;
       const color = pattern.direction === "LONG" ? "#42a5f5" : "#ce93d8";
+      const waveData = [...new Map(points.map((point) => {
+        const time = chartTime(nearestTimestamp(orderedCandles, point.confirmed_at));
+        return [Number(time), { time, value: point.price }] as const;
+      })).values()].sort((left, right) => Number(left.time) - Number(right.time));
+      // Several lower-timeframe pivots can map to one H4/D1 candle. The chart
+      // requires strictly increasing timestamps, so collapsed waves are skipped.
+      if (waveData.length < 2) return;
       const wave = chart.addSeries(LineSeries, { color, lineWidth: 3, priceLineVisible: false,
-        lastValueVisible: false, title: `Elliott ${pattern.structure_timeframe}` });
-      wave.setData(points.map((point) => ({
-        time: chartTime(nearestTimestamp(orderedCandles, point.confirmed_at)), value: point.price,
-      })));
+        lastValueVisible: false, title: "" });
+      wave.setData(waveData);
       waveSeriesRef.current.push(wave);
       points.forEach((point) => markers.push({
         time: chartTime(nearestTimestamp(orderedCandles, point.confirmed_at)),

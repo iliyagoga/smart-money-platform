@@ -47,7 +47,7 @@ export interface PlatformEvent {
   event_type: string;
   timestamp: string;
   source?: string;
-  payload?: { symbol?: string };
+  payload?: { symbol?: string; timeframe?: string };
 }
 
 export interface ServicesResponse {
