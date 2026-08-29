@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from math import ceil, floor, sqrt
 from statistics import mean, pstdev
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid5
 
 from .models import BacktestConfig, DirectionMode, ElliottEntryModel, ElliottMacroFilter
 
@@ -145,7 +145,8 @@ def _efficiency(candles: list[dict], left: int, right: int) -> float:
 def _macro_direction(candles: list[dict], timestamp: int, mode: ElliottMacroFilter, timeframe: str) -> str:
     duration = TIMEFRAME_MILLISECONDS[timeframe]
     available = [item for item in candles if int(item["timestamp"]) + duration <= timestamp]
-    if mode == ElliottMacroFilter.OFF or len(available) < 3:
+    required = 200 if mode in (ElliottMacroFilter.EMA200, ElliottMacroFilter.EMA_CROSS) else 3
+    if mode == ElliottMacroFilter.OFF or len(available) < required:
         return "BOTH"
     closes = [float(item["close"]) for item in available]
     if mode == ElliottMacroFilter.EMA200:
@@ -182,7 +183,9 @@ def detect_patterns(structure: list[dict], entry: list[dict], macro: list[dict],
         efficiency = _efficiency(structure, p0.index, p1.index)
         features = {"wave1_atr": length / max(p1.atr, 1e-12), "wave1_efficiency": efficiency,
                     "wave1_candles": duration, "wave2_retracement": retracement, "wave2_time_ratio": time_ratio}
-        pattern = Pattern(str(uuid4()), direction, {"P0": p0, "P1": p1, "P2": p2}, "WAVE2_CONFIRMED", features)
+        identity = f"{direction}:{p0.timestamp}:{p1.timestamp}:{p2.timestamp}"
+        pattern = Pattern(str(uuid5(NAMESPACE_URL, identity)), direction,
+                          {"P0": p0, "P1": p1, "P2": p2}, "WAVE2_CONFIRMED", features)
         invalid = None
         if sign * (p2.price - p0.price) <= 0:
             invalid = "WAVE2_BEYOND_P0"
@@ -227,6 +230,8 @@ def detect_patterns(structure: list[dict], entry: list[dict], macro: list[dict],
         ]
         trigger = None
         for index, candle in candidates:
+            if index + 1 < max(config.atr_period, config.adx_period, config.volume_sma_period):
+                continue
             candle_available_at = int(candle["timestamp"]) + entry_duration
             prior_swings = [
                 pivot for pivot in entry_pivots
@@ -319,7 +324,9 @@ def _fee_adjusted_break_even_stop(entry_price: float, direction: str, maker_fee:
 
 def _liquidation_price(position: dict, config: BacktestConfig, taker_fee: float) -> float:
     """Price where remaining margin reaches maintenance margin after all costs."""
-    quantity = position["quantity"]
+    # After a partial take-profit the released quantity no longer consumes
+    # margin and must not dilute costs carried by the remaining position.
+    quantity = position.get("remaining", position["quantity"])
     entry = position["entry_price"]
     margin = entry * quantity / config.leverage
     maintenance = entry * quantity * config.maintenance_margin_percent / 100
@@ -360,6 +367,8 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
     structure = sorted(candles_by_tf[ec.structure_timeframe], key=lambda item: item["timestamp"])
     entry = sorted(candles_by_tf[ec.entry_timeframe], key=lambda item: item["timestamp"])
     macro = sorted(candles_by_tf[ec.macro_timeframe], key=lambda item: item["timestamp"])
+    if not entry:
+        raise ValueError(f"no Elliott entry candles for {ec.entry_timeframe}")
     patterns, structure_pivots, entry_pivots = detect_patterns(structure, entry, macro, ec)
     signals = sorted([item for item in patterns if item.signal_time], key=lambda item: item.signal_time)
     maker_fee = (config.maker_fee_percent if config.maker_fee_percent is not None else config.fee_percent) / 100
@@ -368,8 +377,22 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
     capital, trades, equity = config.initial_capital, [], []
     processed: set[str] = set()
     traded: set[str] = set()
+    wave1_broken: set[str] = set()
     expired_signals = 0
     position = None
+
+    def activate_one_r_break_even(candle_high: float, candle_low: float):
+        if not position or not ec.break_even_at_one_r or position["break_even_active"]:
+            return
+        side = 1 if position["direction"] == "LONG" else -1
+        one_r = position["entry_price"] + side * abs(position["entry_price"] - position["initial_stop"])
+        reached = candle_high >= one_r if side == 1 else candle_low <= one_r
+        if reached:
+            position["stop"] = _fee_adjusted_break_even_stop(
+                position["entry_price"], position["direction"], position["entry_fee_rate"],
+                taker_fee, slip, config.tick_size, position["funding"] / max(position["remaining"], 1e-12),
+            )
+            position["break_even_active"] = True
 
     def finish(raw_price: float, timestamp: int, reason: str, quantity: float | None = None):
         nonlocal capital, position
@@ -454,6 +477,7 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
                             taker_fee, slip, config.tick_size, position["funding"] / max(position["remaining"], 1e-12),
                         )
                         position["break_even_active"] = True
+                activate_one_r_break_even(high, low)
         if position is None and not had_position:
             expiry_ms = ec.entry_expiry_bars * TIMEFRAME_MILLISECONDS[ec.entry_timeframe]
             available = [
@@ -464,8 +488,7 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
                 processed.add(stale.id)
                 expired_signals += 1
             eligible = [item for item in available if item.id not in processed]
-            pattern = None
-            entry_price = entry_fee_rate = None
+            selected = None
             for candidate in eligible:
                 candidate_side = 1 if candidate.direction == "LONG" else -1
                 candidate_entry = float(candle["open"]) * (1 + slip * candidate_side)
@@ -478,54 +501,67 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
                     candidate_entry = round(candidate_entry / config.tick_size) * config.tick_size
                     candidate_fee = maker_fee
                     touched = timestamp >= candidate.signal_time and low <= candidate_entry <= high
-                if touched:
-                    pattern, entry_price, entry_fee_rate = candidate, candidate_entry, candidate_fee
-                    break
-            if pattern:
-                side = 1 if pattern.direction == "LONG" else -1
-                processed.add(pattern.id)
-                stop = pattern.points["P2"].price - side * ec.stop_buffer_atr * pattern.points["P2"].atr
+                elif ec.entry_model == ElliottEntryModel.WAVE1_BREAK_RETRACE:
+                    level = candidate.points["P1"].price
+                    candidate_entry = round(level / config.tick_size) * config.tick_size
+                    candidate_fee = maker_fee
+                    if candidate.id not in wave1_broken:
+                        broke = high > level if candidate_side == 1 else low < level
+                        if broke:
+                            wave1_broken.add(candidate.id)
+                        # Break and retrace order is unknowable inside one OHLC
+                        # candle, so a fill is allowed only on a later candle.
+                        continue
+                    touched = low <= candidate_entry <= high
+                if not touched:
+                    continue
+                processed.add(candidate.id)
+                stop = candidate.points["P2"].price - candidate_side * ec.stop_buffer_atr * candidate.points["P2"].atr
                 entry_price, stop, _ = _round_trade_prices(
-                    entry_price, stop, [], pattern.direction, config.tick_size,
+                    candidate_entry, stop, [], candidate.direction, config.tick_size,
                 )
                 risk = abs(entry_price - stop)
-                wave1 = abs(pattern.points["P1"].price - pattern.points["P0"].price)
-                wave_targets = [pattern.points["P2"].price + side * extension * wave1 for extension in ec.take_profit_extensions]
-                rr = side * (wave_targets[0] - entry_price) / max(risk, 1e-12)
-                targets = [_fixed_rr_target(entry_price, stop, pattern.direction, ec.take_profit_rr)]
+                targets = [_fixed_rr_target(entry_price, stop, candidate.direction, ec.take_profit_rr)]
                 if ec.take_profit_count == 2:
                     targets.append(_fixed_rr_target(
-                        entry_price, stop, pattern.direction, ec.second_take_profit_rr,
+                        entry_price, stop, candidate.direction, ec.second_take_profit_rr,
                     ))
                 _, _, targets = _round_trade_prices(
-                    entry_price, stop, targets, pattern.direction, config.tick_size,
+                    entry_price, stop, targets, candidate.direction, config.tick_size,
                 )
-                allowed = config.direction_mode == DirectionMode.BOTH or config.direction_mode.value == pattern.direction
+                # Validate the RR of the executable, tick-rounded first target,
+                # not an unused Elliott extension projection.
+                rr = candidate_side * (targets[0] - entry_price) / max(risk, 1e-12)
+                allowed = config.direction_mode == DirectionMode.BOTH or config.direction_mode.value == candidate.direction
                 # A structural stop must always be on the loss side of the entry.
                 # Reject malformed CHOCH retraces instead of producing a favorable
                 # price move labelled as a stop loss.
-                stop_on_loss_side = stop < entry_price if side == 1 else stop > entry_price
+                stop_on_loss_side = stop < entry_price if candidate_side == 1 else stop > entry_price
                 if risk > 0 and rr >= ec.minimum_rr and allowed and stop_on_loss_side:
-                    quantity = _elliott_position_quantity(
-                        capital, config.initial_capital, entry_price,
-                        ec.use_margin, config.leverage, ec.reinvest_profits, config.lot_size,
-                    )
-                    quantity = min(quantity, float(candle.get("volume", 0)) * config.volume_participation_percent / 100)
-                    quantity = floor(quantity / config.lot_size) * config.lot_size
-                    risk_capital = risk * quantity
-                    if quantity >= config.minimum_order_size:
-                        traded.add(pattern.id)
-                        position = {"pattern_id": pattern.id, "direction": pattern.direction, "entry_time": timestamp,
-                                    "entry_price": entry_price, "quantity": quantity, "stop": stop, "initial_stop": stop,
-                                    "targets": targets, "take_profit_prices": list(targets), "risk_capital": risk_capital,
-                                    "target_allocations": ([1.0] if ec.take_profit_count == 1
-                                                           else list(ec.take_profit_allocations)),
-                                    "remaining": quantity, "realized": 0.0, "fees": 0.0, "funding": 0.0, "exits": [],
-                                    "break_even_active": False,
-                                    "entry_fee_rate": entry_fee_rate,
-                                    "last_funding_time": timestamp,
-                                    "signal_timeframe": ec.entry_timeframe,
-                                    "structure_timeframe": ec.structure_timeframe}
+                    selected = candidate, entry_price, candidate_fee, stop, risk, targets
+                    break
+            if selected:
+                pattern, entry_price, entry_fee_rate, stop, risk, targets = selected
+                quantity = _elliott_position_quantity(
+                    capital, config.initial_capital, entry_price,
+                    ec.use_margin, config.leverage, ec.reinvest_profits, config.lot_size,
+                )
+                quantity = min(quantity, float(candle.get("volume", 0)) * config.volume_participation_percent / 100)
+                quantity = floor(quantity / config.lot_size) * config.lot_size
+                risk_capital = risk * quantity
+                if quantity >= config.minimum_order_size:
+                    traded.add(pattern.id)
+                    position = {"pattern_id": pattern.id, "direction": pattern.direction, "entry_time": timestamp,
+                                "entry_price": entry_price, "quantity": quantity, "stop": stop, "initial_stop": stop,
+                                "targets": targets, "take_profit_prices": list(targets), "risk_capital": risk_capital,
+                                "target_allocations": ([1.0] if ec.take_profit_count == 1
+                                                       else list(ec.take_profit_allocations)),
+                                "remaining": quantity, "realized": 0.0, "fees": 0.0, "funding": 0.0, "exits": [],
+                                "break_even_active": False,
+                                "entry_fee_rate": entry_fee_rate,
+                                "last_funding_time": timestamp,
+                                "signal_timeframe": ec.entry_timeframe,
+                                "structure_timeframe": ec.structure_timeframe}
         # Market entries occur at the candle open; retracement entries occur
         # inside this candle. Without lower-timeframe ordering, apply the
         # conservative stop-first rule to the entry candle as well.
@@ -557,6 +593,7 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
                             taker_fee, slip, config.tick_size,
                         )
                         position["break_even_active"] = True
+                activate_one_r_break_even(high, low)
         unrealized = 0 if not position else (
             (close - position["entry_price"]) * position["remaining"]
             * (1 if position["direction"] == "LONG" else -1)
@@ -564,7 +601,10 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
         )
         equity.append({"timestamp": timestamp, "equity": capital + unrealized})
     if position:
-        finish(float(entry[-1]["close"]), int(entry[-1]["timestamp"]), "END_OF_DATA")
+        end_time = int(entry[-1]["timestamp"]) + TIMEFRAME_MILLISECONDS[ec.entry_timeframe]
+        finish(float(entry[-1]["close"]), end_time, "END_OF_DATA")
+        # Include the actual final fill, fees and slippage in risk metrics.
+        equity.append({"timestamp": end_time, "equity": capital})
     peak, drawdown = config.initial_capital, 0.0
     for item in equity:
         peak = max(peak, item["equity"])

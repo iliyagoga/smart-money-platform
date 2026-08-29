@@ -7,7 +7,8 @@ from types import SimpleNamespace
 from smc_core.models import Timeframe
 from src.replay import (
     FrozenModel, TemplateModel, _execution_plan, _scenario_outcome,
-    _target_allocations, _template_stop_distance_allowed, run_smc_replay,
+    _smc_liquidation_price, _target_allocations, _template_stop_distance_allowed,
+    VirtualPosition, run_smc_replay,
 )
 
 
@@ -96,6 +97,19 @@ def test_template_stop_distance_band_is_checked_on_actual_fill():
 def test_template_target_allocations_are_used_only_when_they_match_targets():
     assert _target_allocations(SimpleNamespace(target_allocations=[.4, .6]), 2) == [.4, .6]
     assert _target_allocations(SimpleNamespace(target_allocations=[.4, .6]), 1) == [1]
+
+
+def test_smc_liquidation_includes_maintenance_fees_and_funding():
+    position = VirtualPosition(
+        "LONG", 100, 0, 5, 80, [], "scenario", "template", .9, 10, funding=5,
+    )
+    config = BacktestConfig(leverage=10, maintenance_margin_percent=.5, liquidation_fee_percent=.5)
+
+    price = _smc_liquidation_price(position, config, entry_fee_rate=.001, exit_fee_rate=.001)
+
+    exit_cost = price * 5 * (.001 + .005)
+    equity = 50 + (price - 100) * 5 - .5 - 5 - exit_cost
+    assert equity == pytest.approx(2.5)
 
 
 def test_scenario_outcome_cannot_use_the_signal_candle():

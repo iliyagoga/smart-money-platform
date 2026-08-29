@@ -153,6 +153,33 @@ def _target_allocations(template, target_count: int) -> list[float]:
     return [1 / target_count] * target_count if target_count else []
 
 
+def _smc_liquidation_price(position: VirtualPosition, config: BacktestConfig,
+                           entry_fee_rate: float, exit_fee_rate: float) -> float:
+    quantity = position.quantity
+    entry = position.entry_price
+    margin = entry * quantity / config.leverage
+    maintenance = entry * quantity * config.maintenance_margin_percent / 100
+    entry_cost = entry * quantity * entry_fee_rate
+    exit_cost = exit_fee_rate + config.liquidation_fee_percent / 100
+    if position.direction == "LONG":
+        return (entry * quantity - margin + maintenance + entry_cost + position.funding) / max(
+            quantity * (1 - exit_cost), 1e-12,
+        )
+    return (entry * quantity + margin - maintenance - entry_cost - position.funding) / max(
+        quantity * (1 + exit_cost), 1e-12,
+    )
+
+
+def _smc_break_even_price(position: VirtualPosition, entry_fee_rate: float, exit_fee_rate: float,
+                          slippage: float, tick_size: float) -> float:
+    funding_per_unit = position.funding / max(position.quantity, 1e-12)
+    if position.direction == "LONG":
+        raw = (position.entry_price * (1 + entry_fee_rate) + funding_per_unit) / (1 - exit_fee_rate)
+        return ceil(raw / (1 - slippage) / tick_size) * tick_size
+    raw = (position.entry_price * (1 - entry_fee_rate) - funding_per_unit) / (1 + exit_fee_rate)
+    return floor(raw / (1 + slippage) / tick_size) * tick_size
+
+
 def _scenario_zone_key(scenario) -> str | None:
     zone = next((item for item in getattr(scenario, "objects_used", []) if item.get("type") == "ORDER_BLOCK"), None)
     return f"{scenario.setup_type}:{zone['id']}" if zone else None
@@ -365,11 +392,7 @@ def run_smc_replay(
                 position.realized -= signed_funding
                 position.funding += signed_funding
                 position.last_funding_time += funding_events * interval
-            liquidation = position.entry_price * (
-                1 - 1 / config.leverage + config.maintenance_margin_percent / 100
-                if position.direction == "LONG"
-                else 1 + 1 / config.leverage - config.maintenance_margin_percent / 100
-            )
+            liquidation = _smc_liquidation_price(position, config, maker_rate, taker_rate)
             liquidated = config.leverage > 1 and (
                 candle.low <= liquidation if position.direction == "LONG" else candle.high >= liquidation
             )
@@ -381,19 +404,23 @@ def run_smc_replay(
                 gap_price = min(candle.open, position.stop) if position.direction == "LONG" else max(candle.open, position.stop)
                 close(candle, gap_price, "STOP_LOSS")
             elif reached:
-                target = reached[0]
-                target_index = position.targets.index(target)
-                position.targets.remove(target)
-                allocation = position.target_allocations.pop(target_index)
-                close(candle, target, "TAKE_PROFIT", min(
-                    position.quantity,
-                    position.initial_quantity * allocation if position.targets else position.quantity,
-                ))
+                for target in reached:
+                    if not position:
+                        break
+                    target_index = position.targets.index(target)
+                    position.targets.remove(target)
+                    allocation = position.target_allocations.pop(target_index)
+                    close(candle, target, "TAKE_PROFIT", min(
+                        position.quantity,
+                        position.initial_quantity * allocation if position.targets else position.quantity,
+                    ))
             if position and position.break_even_rule == "ONE_R":
                 initial_risk = abs(position.entry_price - position.stop)
                 one_r = position.entry_price + initial_risk * (1 if position.direction == "LONG" else -1)
                 if candle.high >= one_r if position.direction == "LONG" else candle.low <= one_r:
-                    position.stop = position.entry_price
+                    position.stop = _smc_break_even_price(
+                        position, maker_rate, taker_rate, slip, config.tick_size,
+                    )
         if position is None and not had_position:
             candidates = [item for item in pending if available_at > item[2] + config.execution_latency_ms
                           and candle.low <= item[0].entry_zone_high and candle.high >= item[0].entry_zone_low]
@@ -470,6 +497,34 @@ def run_smc_replay(
                     for item in pending:
                         if item[0].id != scenario.id: set_scenario_status(item[0].id, "SUPERSEDED")
                     pending.clear()
+        # A limit entry occurs inside the primary candle. With no lower-timeframe
+        # ordering available, apply conservative liquidation/stop-before-target
+        # handling to that same candle.
+        if position and not had_position:
+            liquidation = _smc_liquidation_price(position, config, maker_rate, taker_rate)
+            liquidated = config.leverage > 1 and (
+                candle.low <= liquidation if position.direction == "LONG" else candle.high >= liquidation
+            )
+            stop_hit = candle.low <= position.stop if position.direction == "LONG" else candle.high >= position.stop
+            if liquidated:
+                close(candle, liquidation, "LIQUIDATION")
+            elif stop_hit:
+                gap_price = min(candle.open, position.stop) if position.direction == "LONG" else max(candle.open, position.stop)
+                close(candle, gap_price, "STOP_LOSS")
+            else:
+                reached = ([target for target in position.targets if candle.high >= target]
+                           if position.direction == "LONG"
+                           else [target for target in position.targets if candle.low <= target])
+                for target in reached:
+                    if not position:
+                        break
+                    target_index = position.targets.index(target)
+                    position.targets.remove(target)
+                    allocation = position.target_allocations.pop(target_index)
+                    close(candle, target, "TAKE_PROFIT", min(
+                        position.quantity,
+                        position.initial_quantity * allocation if position.targets else position.quantity,
+                    ))
         unrealized = 0
         if position:
             unrealized = (candle.close - position.entry_price) * position.quantity * (1 if position.direction == "LONG" else -1)

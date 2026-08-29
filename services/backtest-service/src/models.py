@@ -99,6 +99,8 @@ class ElliottConfig(BaseModel):
             raise ValueError("take-profit allocations must be positive and sum to one")
         if self.take_profit_count == 2 and self.second_take_profit_rr <= self.take_profit_rr:
             raise ValueError("second take-profit RR must be greater than the first")
+        if self.take_profit_rr < self.minimum_rr:
+            raise ValueError("first take-profit RR must satisfy minimum RR")
         return self
 
 
@@ -166,6 +168,8 @@ class BacktestCreate(BaseModel):
     @model_validator(mode="after")
     def normalize(self):
         self.symbol = self.symbol.strip().upper()
+        if not self.symbol:
+            raise ValueError("symbol must not be empty")
         self.timeframe = self.timeframe.strip().upper()
         self.timeframes = list(dict.fromkeys(item.strip().upper() for item in self.timeframes))
         supported = {"M1", "M5", "M15", "M30", "H1", "H4", "D1"}

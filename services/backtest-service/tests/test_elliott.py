@@ -148,6 +148,114 @@ def test_liquidation_price_includes_maintenance_margin_fees_and_funding():
     assert equity == pytest.approx(5)
 
 
+def test_liquidation_after_partial_exit_uses_remaining_quantity():
+    position = {
+        "direction": "LONG", "entry_price": 100, "quantity": 10, "remaining": 5,
+        "entry_fee_rate": 0, "funding": 5,
+    }
+    config = BacktestConfig(
+        leverage=10, maintenance_margin_percent=0, liquidation_fee_percent=0,
+    )
+
+    assert _liquidation_price(position, config, taker_fee=0) == pytest.approx(91)
+
+
+def test_elliott_replay_rejects_empty_entry_dataset():
+    config = BacktestConfig(strategy="ELLIOTT", elliott=loose_config())
+
+    with pytest.raises(ValueError, match="no Elliott entry candles"):
+        run_elliott_replay({"H4": [], "H1": [], "M15": []}, config)
+
+
+def test_minimum_rr_is_checked_against_executable_fixed_target(monkeypatch):
+    with pytest.raises(ValueError, match="first take-profit RR must satisfy minimum RR"):
+        ElliottConfig(take_profit_count=1, take_profit_rr=1, minimum_rr=2)
+
+
+def test_wave1_break_retrace_waits_for_break_then_later_retest(monkeypatch):
+    pattern = Pattern(
+        "wave1", "LONG",
+        {"P0": Pivot(0, 0, 0, 90, "LOW", 1), "P1": Pivot(1, 0, 0, 105, "HIGH", 1),
+         "P2": Pivot(2, 0, 0, 98, "LOW", 1)},
+        "WAVE3_POTENTIAL", {"choch_level": 101, "choch_close": 102}, signal_time=1,
+    )
+    monkeypatch.setattr("src.elliott.detect_patterns", lambda *args: ([pattern], [], []))
+    entry = [
+        {"timestamp": 0, "open": 100, "high": 101, "low": 99, "close": 100, "volume": 100},
+        {"timestamp": 900_000, "open": 102, "high": 106, "low": 101, "close": 106, "volume": 100},
+        {"timestamp": 1_800_000, "open": 106, "high": 106, "low": 105, "close": 105.5, "volume": 100},
+        {"timestamp": 2_700_000, "open": 105.5, "high": 106, "low": 105, "close": 105.5, "volume": 100},
+    ]
+    elliott = loose_config().model_copy(update={
+        "entry_model": "WAVE1_BREAK_RETRACE", "take_profit_count": 1,
+    })
+    config = BacktestConfig(
+        strategy="ELLIOTT", fee_percent=0, slippage_percent=0,
+        tick_size=.1, lot_size=.01, minimum_order_size=.01, elliott=elliott,
+    )
+
+    result = run_elliott_replay({"H4": entry, "H1": entry, "M15": entry}, config)
+
+    assert result["trades"][0]["pattern_id"] == "wave1"
+    assert result["trades"][0]["entry_time"] == 1_800_000
+    assert result["trades"][0]["entry_price"] == pytest.approx(105)
+
+
+def test_break_even_at_one_r_closes_on_later_retrace(monkeypatch):
+    pattern = Pattern(
+        "one-r", "LONG",
+        {"P0": Pivot(0, 0, 0, 90, "LOW", 1), "P1": Pivot(1, 0, 0, 110, "HIGH", 1),
+         "P2": Pivot(2, 0, 0, 98, "LOW", 1)},
+        "WAVE3_POTENTIAL", {"choch_level": 99, "choch_close": 100}, signal_time=1,
+    )
+    monkeypatch.setattr("src.elliott.detect_patterns", lambda *args: ([pattern], [], []))
+    entry = [
+        {"timestamp": 0, "open": 100, "high": 101, "low": 99, "close": 100, "volume": 100},
+        {"timestamp": 900_000, "open": 100, "high": 102.5, "low": 99, "close": 102, "volume": 100},
+        {"timestamp": 1_800_000, "open": 102, "high": 102, "low": 99.9, "close": 100, "volume": 100},
+    ]
+    elliott = loose_config().model_copy(update={
+        "entry_model": "CHOCH_MARKET", "take_profit_count": 1,
+        "take_profit_rr": 3, "break_even_at_one_r": True,
+    })
+    config = BacktestConfig(
+        strategy="ELLIOTT", fee_percent=0, slippage_percent=0,
+        tick_size=.1, lot_size=.01, minimum_order_size=.01, elliott=elliott,
+    )
+
+    result = run_elliott_replay({"H4": entry, "H1": entry, "M15": entry}, config)
+
+    assert result["trades"][0]["reason"] == "BREAK_EVEN"
+    assert result["trades"][0]["exit_price"] == pytest.approx(100)
+
+
+def test_invalid_first_signal_does_not_block_next_valid_signal(monkeypatch):
+    def pattern(identifier, p2):
+        return Pattern(
+            identifier, "LONG",
+            {"P0": Pivot(0, 0, 0, 90, "LOW", 1), "P1": Pivot(1, 0, 0, 110, "HIGH", 1),
+             "P2": Pivot(2, 0, 0, p2, "LOW", 1)},
+            "WAVE3_POTENTIAL", {"choch_level": 99, "choch_close": 100}, signal_time=1,
+        )
+    monkeypatch.setattr(
+        "src.elliott.detect_patterns", lambda *args: ([pattern("invalid", 101), pattern("valid", 98)], [], []),
+    )
+    entry = [
+        {"timestamp": 0, "open": 100, "high": 101, "low": 99, "close": 100, "volume": 100},
+        {"timestamp": 900_000, "open": 100, "high": 101, "low": 99, "close": 100, "volume": 100},
+        {"timestamp": 1_800_000, "open": 100, "high": 101, "low": 99, "close": 100, "volume": 100},
+    ]
+    elliott = loose_config().model_copy(update={"entry_model": "CHOCH_MARKET", "take_profit_count": 1})
+    config = BacktestConfig(
+        strategy="ELLIOTT", fee_percent=0, slippage_percent=0,
+        tick_size=.1, lot_size=.01, minimum_order_size=.01, elliott=elliott,
+    )
+
+    result = run_elliott_replay({"H4": entry, "H1": entry, "M15": entry}, config)
+
+    assert result["trades"][0]["pattern_id"] == "valid"
+
+
 def test_atr_zigzag_confirmation_never_precedes_pivot():
     pivots = atr_zigzag(candles([100, 98, 95, 99, 105, 101, 97, 103, 110]), loose_config())
     assert len(pivots) >= 3
