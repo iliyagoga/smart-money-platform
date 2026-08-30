@@ -2,7 +2,7 @@
 
 import { Box, Button, Chip, Paper, Stack, Typography } from "@mui/material";
 import { CandlestickSeries, ColorType, LineSeries, createChart, createSeriesMarkers, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Candle } from "../../lib/types";
 
 export interface LiveElliottPoint { timestamp: number; confirmed_at: number; price: number; kind: "HIGH" | "LOW" }
@@ -35,9 +35,12 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
   const seriesRef = useRef<ReturnType<ReturnType<typeof createChart>["addSeries"]> | null>(null);
   const waveSeriesRef = useRef<ChartSeries[]>([]);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const pendingFocusRef = useRef<{ from:UTCTimestamp;to:UTCTimestamp } | null>(null);
   const hasDataRef = useRef(false);
   const [selectedEntryId,setSelectedEntryId] = useState("");
   const [isFullscreen,setIsFullscreen] = useState(false);
+  const [windowCenter,setWindowCenter] = useState<number | null>(null);
+  const chartCandles = useMemo(() => candleWindow(candles,windowCenter,5000),[candles,windowCenter]);
   useEffect(() => {
     const container = ref.current; if (!container) return;
     const chart = createChart(container, { width: container.clientWidth, height: container.clientHeight || 560,
@@ -73,21 +76,26 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
   };
   useEffect(() => {
     const series = seriesRef.current; const chart = chartRef.current;
-    if (!series || !chart || !candles.length) return;
-    series.setData([...candles].sort((a, b) => a.timestamp - b.timestamp).map((c) => ({
+    if (!series || !chart || !chartCandles.length) return;
+    series.setData(chartCandles.map((c) => ({
       time: Math.floor(c.timestamp / 1000) as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close,
     })));
     if (!hasDataRef.current) { chart.timeScale().fitContent(); hasDataRef.current = true; }
-  }, [candles]);
+    if (pendingFocusRef.current) {
+      chart.timeScale().setVisibleRange(pendingFocusRef.current);
+      pendingFocusRef.current=null;
+    }
+  }, [chartCandles]);
   useEffect(() => {
     const chart = chartRef.current; const candleSeries = seriesRef.current;
-    if (!chart || !candleSeries || !candles.length) return;
+    if (!chart || !candleSeries || !chartCandles.length) return;
     const staleSeries = waveSeriesRef.current;
     waveSeriesRef.current = [];
     staleSeries.forEach((series) => chart.removeSeries(series));
-    const orderedCandles = [...candles].sort((a, b) => a.timestamp - b.timestamp);
+    const orderedCandles = chartCandles;
+    const visibleFrom=orderedCandles[0].timestamp;const visibleTo=orderedCandles.at(-1)?.timestamp ?? visibleFrom;
     const markers: SeriesMarker<Time>[] = [];
-    elliottPatterns.filter((pattern) => pattern.state !== "INVALID").forEach((pattern) => {
+    elliottPatterns.filter((pattern) => pattern.state !== "INVALID" && patternOverlaps(pattern,visibleFrom,visibleTo)).forEach((pattern) => {
       const points = ["P0", "P1", "P2", "P3", "P4", "P5", "A", "B", "C"]
         .flatMap((label) => pattern.points[label] ? [{ label, ...pattern.points[label] }] : []);
       if (points.length < 2) return;
@@ -134,7 +142,8 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
         }
       }
     });
-    entryScenarios.filter((scenario) => scenario.setup_type === "ELLIOTT_WAVE3").forEach((scenario) => {
+    entryScenarios.filter((scenario) => scenario.setup_type === "ELLIOTT_WAVE3"
+      && scenario.expires_at >= visibleFrom && scenario.created_at <= visibleTo).forEach((scenario) => {
       const start = nearestTimestamp(orderedCandles,scenario.created_at);
       const end = nearestTimestamp(orderedCandles,Math.min(scenario.expires_at,orderedCandles.at(-1)?.timestamp ?? scenario.expires_at));
       if (start === end) return;
@@ -155,7 +164,7 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
     const sortedMarkers = markers.sort((left, right) => Number(left.time) - Number(right.time));
     if (!markersRef.current) markersRef.current = createSeriesMarkers(candleSeries, sortedMarkers);
     else markersRef.current.setMarkers(sortedMarkers);
-  }, [candles, elliottPatterns, entryScenarios, selectedEntryId]);
+  }, [chartCandles, elliottPatterns, entryScenarios, selectedEntryId]);
   const validPatterns = elliottPatterns.filter((pattern) => pattern.state !== "INVALID").length;
   const entries = entryScenarios.filter((scenario) => scenario.setup_type === "ELLIOTT_WAVE3")
     .sort((left,right) => right.created_at-left.created_at);
@@ -184,10 +193,16 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
         const focus = () => {
           setSelectedEntryId(scenario.id);
           const duration = Math.max(60_000,scenario.expires_at-scenario.created_at);
-          chartRef.current?.timeScale().setVisibleRange({
+          const range={
             from: chartTime(scenario.created_at-duration*.5),
             to: chartTime(scenario.expires_at+duration*.5),
-          });
+          };
+          const first=chartCandles[0]?.timestamp;const last=chartCandles.at(-1)?.timestamp;
+          if (first != null && last != null && scenario.created_at >= first && scenario.created_at <= last) {
+            chartRef.current?.timeScale().setVisibleRange(range);
+          } else {
+            pendingFocusRef.current=range;setWindowCenter(scenario.created_at);
+          }
         };
         return <Stack key={scenario.id} direction={{ xs: "column", sm: "row" }} role="button" tabIndex={0}
           onClick={focus} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") focus(); }}
@@ -240,6 +255,21 @@ function addLevel(chart: ReturnType<typeof createChart>, collection: ChartSeries
 function waveLegend(label: string) {
   return ({ P0: "Старт Wave 1", P1: "Wave 1", P2: "Wave 2", P3: "Wave 3",
     P4: "Wave 4", P5: "Wave 5", A: "Коррекция A", B: "Коррекция B", C: "Коррекция C" } as Record<string, string>)[label] ?? "";
+}
+
+function candleWindow(candles:Candle[],center:number|null,limit:number) {
+  const ordered=[...candles].sort((left,right) => left.timestamp-right.timestamp);
+  if (ordered.length <= limit) return ordered;
+  if (center == null) return ordered.slice(-limit);
+  let index=ordered.findIndex((item) => item.timestamp >= center);
+  if (index < 0) index=ordered.length-1;
+  const start=Math.max(0,Math.min(ordered.length-limit,index-Math.floor(limit/2)));
+  return ordered.slice(start,start+limit);
+}
+
+function patternOverlaps(pattern:LiveElliottPattern,from:number,to:number) {
+  const timestamps=Object.values(pattern.points).map((point) => point.timestamp);
+  return Boolean(timestamps.length && Math.max(...timestamps) >= from && Math.min(...timestamps) <= to);
 }
 
 function nearestTimestamp(candles: Candle[], timestamp: number) {

@@ -76,6 +76,11 @@ export interface ClosedTrade {
   exit_price: number;
   quantity: number;
   pnl: number;
+  pnl_percent?: number;
+  initial_stop_loss_price?: number;
+  r_multiple?: number;
+  duration_seconds?: number;
+  max_unrealized_pnl?: number;
   reason: string;
   closed_at: number;
 }
@@ -85,6 +90,10 @@ export interface TradesResponse {
   total: number;
 }
 
+export interface TradeAssetsResponse {
+  assets: Array<{ symbol: string; trades_count: number }>;
+}
+
 export interface TradeStatistics {
   total_trades: number;
   win_rate: number;
@@ -92,6 +101,38 @@ export interface TradeStatistics {
   avg_profit: number;
   avg_loss: number;
   max_drawdown: number;
+}
+
+export interface TradeAnalysisMetrics {
+  total_trades: number;
+  net_pnl: number;
+  win_rate: number;
+  profit_factor?: number;
+  expectancy: number;
+  payoff_ratio?: number;
+  average_r?: number;
+  average_duration_seconds: number;
+}
+
+export interface EntryPointAnalysis {
+  position_id: string;
+  symbol: string;
+  direction: string;
+  entry_price: number;
+  exit_price: number;
+  initial_stop_loss_price?: number;
+  pnl: number;
+  pnl_percent: number;
+  r_multiple?: number;
+  capture_rate?: number;
+  duration_seconds: number;
+  reason: string;
+  closed_at: number;
+}
+
+export interface TradeAnalysisResponse {
+  metrics: TradeAnalysisMetrics;
+  entry_points: EntryPointAnalysis[];
 }
 
 export interface Scenario {

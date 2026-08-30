@@ -25,7 +25,7 @@ class DecisionService:
           CREATE TABLE IF NOT EXISTS risk_decisions(id bigserial PRIMARY KEY,signal_id uuid NOT NULL,approved boolean NOT NULL,data jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now());
           CREATE TABLE IF NOT EXISTS decision_log(id bigserial PRIMARY KEY,scenario_id uuid NOT NULL,decision text NOT NULL,reason text,created_at timestamptz NOT NULL DEFAULT now());
         """)
-        rows=await self.db.fetch("SELECT data FROM scenarios WHERE status='ACTIVE'")
+        rows=await self.db.fetch("SELECT data FROM scenarios WHERE status='ACTIVE' AND data->>'setup_type'='ELLIOTT_WAVE3'")
         for row in rows:
             try:
                 s=Scenario.model_validate(row["data"]);self.scenarios[s.id]=s
@@ -54,6 +54,8 @@ class DecisionService:
             except asyncio.CancelledError:await pubsub.aclose();raise
             except Exception:log.exception("Scenario listener failed");await pubsub.aclose();await asyncio.sleep(2)
     async def evaluate(self,scenario:Scenario):
+        if scenario.setup_type != "ELLIOTT_WAVE3":
+            return None
         if scenario.expires_at <= int(time()*1000):
             return None
         preference=await self.bandit_preference(scenario);score=self.probability.calculate(self.probability.scenario_features(scenario),scenario,preference);scenario.confidence=score.confidence

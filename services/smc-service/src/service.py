@@ -113,7 +113,7 @@ class SMCService:
                                                 allow_live_emit=correlation_id != "history-rebuild")
             except (ValueError,KeyError):
                 log.exception("Invalid Elliott live config for %s",candle.symbol);generated=[]
-        else:generated=self.scenarios.generate_top_down(candle.symbol,candle,self.pipeline)
+        else:generated=[]
         for scenario in generated:
             self.scenarios.items[scenario.id]=scenario
             await self.infra.db.execute("INSERT INTO scenarios(id,symbol,status,data,created_at) VALUES($1::uuid,$2,$3,$4::jsonb,to_timestamp($5/1000.0)) ON CONFLICT(id) DO NOTHING",scenario.id,scenario.symbol,scenario.status,json.dumps(scenario.model_dump(mode="json")),scenario.created_at)

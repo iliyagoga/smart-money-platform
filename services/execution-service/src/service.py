@@ -72,7 +72,8 @@ class ExecutionService:
     async def on_approved(self,payload):
         signal_id=payload["signal_id"]
         if any(x.signal_id==signal_id for x in self.orders.values()):return
-        row=await self.db.fetchrow("SELECT data FROM trade_signals WHERE id=$1::uuid",signal_id)
+        row=await self.db.fetchrow("""SELECT ts.data FROM trade_signals ts JOIN scenarios s ON s.id=ts.scenario_id
+          WHERE ts.id=$1::uuid AND s.data->>'setup_type'='ELLIOTT_WAVE3'""",signal_id)
         if not row:raise ValueError(f"Signal {signal_id} not found")
         s=decode_json(row["data"]);order=Order(symbol=s["symbol"],side="BUY" if s["direction"]=="LONG" else "SELL",type=s["entry_type"],price=s["entry_price"],quantity=payload["position_size"],stop_loss_price=s["stop_loss_price"],take_profit_prices=s["take_profit_prices"],signal_id=signal_id,target_allocations=s.get("target_allocations",[]),break_even_rule=s.get("break_even_rule","ONE_R"),move_stop_to_break_even_after_target=s.get("move_stop_to_break_even_after_target",1),deduplication_key=s.get("deduplication_key"))
         await self.create_order(order)
@@ -93,8 +94,10 @@ class ExecutionService:
         event={"order_id":o.id,"signal_id":o.signal_id,"exchange_order_id":o.exchange_order_id,"symbol":o.symbol,"side":o.side,"price":price,"quantity":o.quantity,"filled_price":price,"filled_quantity":o.quantity,"status":"FILLED","executed_at":o.filled_at};await self.publish("order.executed",event)
         scenario_id=None
         if o.signal_id:
-            row=await self.db.fetchrow("SELECT scenario_id FROM trade_signals WHERE id=$1::uuid",o.signal_id);scenario_id=str(row["scenario_id"]) if row else None
-        p=Position(signal_id=o.signal_id,scenario_id=scenario_id,order_id=o.id,symbol=o.symbol,direction="LONG" if o.side=="BUY" else "SHORT",entry_price=price,current_price=price,quantity=o.quantity,initial_quantity=o.quantity,stop_loss_price=o.stop_loss_price,take_profit_prices=list(o.take_profit_prices),target_allocations=list(o.target_allocations),break_even_rule=o.break_even_rule,move_stop_to_break_even_after_target=o.move_stop_to_break_even_after_target)
+            row=await self.db.fetchrow("""SELECT ts.scenario_id FROM trade_signals ts JOIN scenarios s ON s.id=ts.scenario_id
+              WHERE ts.id=$1::uuid AND s.data->>'setup_type'='ELLIOTT_WAVE3'""",o.signal_id);scenario_id=str(row["scenario_id"]) if row else None
+            if not scenario_id:raise ValueError("Only Elliott signals can be executed")
+        p=Position(signal_id=o.signal_id,scenario_id=scenario_id,order_id=o.id,strategy="ELLIOTT",setup_type="ELLIOTT_WAVE3",symbol=o.symbol,direction="LONG" if o.side=="BUY" else "SHORT",entry_price=price,current_price=price,quantity=o.quantity,initial_quantity=o.quantity,stop_loss_price=o.stop_loss_price,initial_stop_loss_price=o.stop_loss_price,take_profit_prices=list(o.take_profit_prices),target_allocations=list(o.target_allocations),break_even_rule=o.break_even_rule,move_stop_to_break_even_after_target=o.move_stop_to_break_even_after_target)
         self.positions[p.id]=p;await self.redis.sadd("positions:open",p.id);await self.save_position(p,None,"OPENED","ORDER_EXECUTED")
         await self.publish("position.opened",{"position_id":p.id,"signal_id":p.signal_id,"symbol":p.symbol,"direction":p.direction,"entry_price":p.entry_price,"quantity":p.quantity,"leverage":p.leverage,"stop_loss_price":p.stop_loss_price,"take_profit_prices":p.take_profit_prices,"opened_at":p.opened_at})
     async def save_position(self,p,old,new,trigger):
@@ -123,6 +126,7 @@ class ExecutionService:
             await self.publish("position.partial_closed",{"position_id":p.id,"closed_quantity":qty,"closing_price":price,"remaining_quantity":p.quantity,"realized_pnl":pnl,"new_stop_loss_price":p.stop_loss_price,"timestamp":int(time()*1000)})
         else:
             old=p.status;p.status="CLOSED";p.closed_at=int(time()*1000);await self.redis.srem("positions:open",p.id);await self.save_position(p,old,"CLOSED",reason)
-            duration=max(0,(p.closed_at-p.opened_at)//1000);payload={"position_id":p.id,"signal_id":p.signal_id,"scenario_id":p.scenario_id,"symbol":p.symbol,"direction":p.direction,"entry_price":p.entry_price,"exit_price":price,"quantity":p.initial_quantity,"pnl":p.realized_pnl,"pnl_percent":p.realized_pnl/max(p.entry_price*p.initial_quantity,1e-12)*100,"reason":reason,"duration_seconds":duration,"max_unrealized_pnl":p.max_unrealized_pnl,"max_unrealized_loss":p.max_unrealized_loss,"closed_at":p.closed_at}
+            duration=max(0,(p.closed_at-p.opened_at)//1000);risk_per_unit=abs(p.entry_price-p.initial_stop_loss_price) if p.initial_stop_loss_price is not None else 0;initial_risk=risk_per_unit*p.initial_quantity
+            payload={"position_id":p.id,"signal_id":p.signal_id,"scenario_id":p.scenario_id,"strategy":p.strategy,"setup_type":p.setup_type,"symbol":p.symbol,"direction":p.direction,"entry_price":p.entry_price,"initial_stop_loss_price":p.initial_stop_loss_price,"exit_price":price,"quantity":p.initial_quantity,"pnl":p.realized_pnl,"pnl_percent":p.realized_pnl/max(p.entry_price*p.initial_quantity,1e-12)*100,"r_multiple":p.realized_pnl/initial_risk if initial_risk>0 else None,"reason":reason,"duration_seconds":duration,"max_unrealized_pnl":p.max_unrealized_pnl,"max_unrealized_loss":p.max_unrealized_loss,"closed_at":p.closed_at}
             await self.db.execute("INSERT INTO closed_trades(id,position_id,symbol,pnl,data,closed_at) VALUES($1::uuid,$2::uuid,$3,$4,$5::jsonb,to_timestamp($6/1000.0)) ON CONFLICT(id) DO NOTHING",str(uuid4()),p.id,p.symbol,p.realized_pnl,json.dumps(payload),p.closed_at);await self.publish("position.closed",payload)
         return qty,p.quantity,pnl

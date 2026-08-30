@@ -108,7 +108,7 @@ export default function MarketPage() {
       <AccordionDetails><Stack spacing={2}><TextField fullWidth label="Актив" placeholder="BTC-USDT-SWAP" value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())} /><Alert severity="info">Параметры ниже полностью совпадают с Elliott-настройками бэктеста и сохраняются в конфигурации автоторговли.</Alert><BacktestSettingsForm isRunning={saving} onChange={setSettings} onRun={() => void save()} progress={0} settings={settings} templates={[]} elliottOnly submitLabel="Зарегистрировать актив" /><Button variant="outlined" onClick={() => void pasteConfig()} disabled={saving}>Вставить скопированную конфигурацию</Button></Stack></AccordionDetails>
     </Accordion>
     {message && <Alert severity={message.includes("зарегистрирован") || message.includes("вставлена") || message.includes("удалён") ? "success" : "error"}>{message}</Alert>}
-    <Paper variant="outlined" sx={{ p: { xs: 2, md: 3 }, width: "100%" }}><Stack spacing={1.5}><Typography variant="h6">Состояние актива</Typography><Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}><TextField fullWidth select label="Актив для просмотра" value={viewed} onChange={(e) => { setHistoricalElliott(null); setViewSymbol(e.target.value); }}>{activeAssets.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}</TextField><TextField fullWidth select label="Просматриваемый таймфрейм" value={selectedTf} onChange={(e) => setSelectedTf(e.target.value)} disabled={!availableTimeframes.length}>{availableTimeframes.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}</TextField><Button color="error" variant="contained" disabled={!viewed || saving} onClick={() => void removeLiveAsset()} sx={{ minWidth: 190, alignSelf: "center", borderRadius: 1, px: 2.5, py: .5, boxShadow: "none", textTransform: "none", fontWeight: 700, "&:hover": { boxShadow: "0 4px 12px rgba(211,47,47,.2)" } }}>Удалить актив</Button></Stack>{viewed ? <TradingViewChart candles={candles.data?.candles ?? []} elliottPatterns={historicalElliott?.patterns ?? elliottPatterns.data?.patterns ?? []} entryScenarios={historicalElliott?.entries ?? liveEntries.data?.entries ?? []} /> : <Typography color="text.secondary">Нет активных активов для просмотра.</Typography>}</Stack></Paper>
+    <Paper variant="outlined" sx={{ p: { xs: 2, md: 3 }, width: "100%" }}><Stack spacing={1.5}><Typography variant="h6">Состояние актива</Typography><Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}><TextField fullWidth select label="Актив для просмотра" value={viewed} onChange={(e) => { setHistoricalElliott(null); setViewSymbol(e.target.value); }}>{activeAssets.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}</TextField><TextField fullWidth select label="Просматриваемый таймфрейм" value={selectedTf} onChange={(e) => setSelectedTf(e.target.value)} disabled={!availableTimeframes.length}>{availableTimeframes.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}</TextField><Button color="error" variant="contained" disabled={!viewed || saving} onClick={() => void removeLiveAsset()} sx={{ minWidth: 190, alignSelf: "center", borderRadius: 1, px: 2.5, py: .5, boxShadow: "none", textTransform: "none", fontWeight: 700, "&:hover": { boxShadow: "0 4px 12px rgba(211,47,47,.2)" } }}>Удалить актив</Button></Stack>{viewed ? <TradingViewChart key={`${viewed}:${selectedTf}`} candles={candles.data?.candles ?? []} elliottPatterns={historicalElliott?.patterns ?? elliottPatterns.data?.patterns ?? []} entryScenarios={historicalElliott?.entries ?? liveEntries.data?.entries ?? []} /> : <Typography color="text.secondary">Нет активных активов для просмотра.</Typography>}</Stack></Paper>
   </Stack></SectionPage>;
 }
 
@@ -158,6 +158,42 @@ function timeframeWindowLimit(selected: string, macro: string): number {
 
 const candleCache = new Map<string, Candle[]>();
 const historicalAnalysisCache = new Map<string,ElliottHistoryResponse>();
+const browserCacheTimers = new Map<string,number>();
+
+function openCandleCache():Promise<IDBDatabase> {
+  return new Promise((resolve,reject) => {
+    const request=indexedDB.open("smart-money-market-cache",1);
+    request.onupgradeneeded=() => request.result.createObjectStore("candles");
+    request.onsuccess=() => resolve(request.result);
+    request.onerror=() => reject(request.error);
+  });
+}
+
+async function readBrowserCandles(key:string):Promise<Candle[]> {
+  try {
+    const database=await openCandleCache();
+    return await new Promise((resolve,reject) => {
+      const request=database.transaction("candles","readonly").objectStore("candles").get(key);
+      request.onsuccess=() => resolve(Array.isArray(request.result) ? request.result as Candle[] : []);
+      request.onerror=() => reject(request.error);
+    });
+  } catch { return []; }
+}
+
+function scheduleBrowserCandleWrite(key:string,candles:Candle[]) {
+  const previous=browserCacheTimers.get(key);if (previous) window.clearTimeout(previous);
+  browserCacheTimers.set(key,window.setTimeout(() => {
+    browserCacheTimers.delete(key);
+    const write=async () => {
+      try {
+        const database=await openCandleCache();
+        database.transaction("candles","readwrite").objectStore("candles").put(candles,key);
+      } catch { /* Browser storage can be unavailable in private mode. */ }
+    };
+    if ("requestIdleCallback" in window) window.requestIdleCallback(() => void write(),{ timeout:3000 });
+    else void write();
+  },1500));
+}
 
 function candleFingerprint(candles:Candle[]) {
   const first=candles[0];const last=candles.at(-1);
@@ -187,7 +223,11 @@ function useOkxCandles(symbol: string, timeframe: string, limit: number) {
     const load = async () => {
       setLoading(true);
       try {
-      let collected = cacheRef.current.get(key) ?? [];
+      let collected = cacheRef.current.get(key) ?? await readBrowserCandles(key);
+      if (collected.length) {
+        cacheRef.current.set(key,collected);
+        if (!cancelled) setData({ symbol,timeframe,candles:collected.slice(-limit) });
+      }
       const first = await api<CandlesResponse>(
         `/api/v1/exchange/exchange/market-candles?symbol=${encodeURIComponent(symbol)}`
         + `&timeframe=${timeframe}&limit=${Math.min(300,limit)}`,
@@ -213,6 +253,7 @@ function useOkxCandles(symbol: string, timeframe: string, limit: number) {
       }
       const result = collected.slice(-limit);
       cacheRef.current.set(key,result);
+      scheduleBrowserCandleWrite(key,result);
       if (!cancelled) setData({ symbol, timeframe, candles: result });
       } finally { if (!cancelled) setLoading(false); }
     };
