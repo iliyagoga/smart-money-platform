@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { keycloak } from "../../lib/auth";
+import { initializeAuth, keycloak } from "../../lib/auth";
 
 interface AuthContextValue {
   error: string;
@@ -20,8 +20,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    keycloak()
-      .init({ onLoad: "check-sso", pkceMethod: "S256", checkLoginIframe: false })
+    initializeAuth()
       .then(setIsAuthenticated)
       .catch((reason: unknown) => setError(String(reason)))
       .finally(() => setIsReady(true));
