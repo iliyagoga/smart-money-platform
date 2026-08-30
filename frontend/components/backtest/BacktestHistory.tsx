@@ -7,8 +7,8 @@ interface BacktestHistoryProps {
   onDelete: (runs: BacktestRunSummary[]) => void;
   onExport: (run: BacktestRunSummary, format: "csv" | "json") => void;
   onOpen: (run: BacktestRunSummary) => void;
-  onPaste: () => void;
   onRepeat: (run: BacktestRunSummary) => void;
+  onSaveConfiguration: (run: BacktestRunSummary) => void;
   onCompare: (ids: string[]) => void;
   busy: boolean;
   loading: boolean;
@@ -27,7 +27,7 @@ const statusColor = (status: BacktestRunSummary["status"]) => {
 };
 
 export function BacktestHistory({ busy, loading, onCompare, onCopy, onDelete, onExport, onOpen, onPageChange,
-  onPaste, onRepeat, onRowsPerPageChange, page, rowsPerPage, runs, total }: BacktestHistoryProps) {
+  onRepeat, onSaveConfiguration, onRowsPerPageChange, page, rowsPerPage, runs, total }: BacktestHistoryProps) {
   const [selected, setSelected] = useState<string[]>([]);
   const pageRuns = runs;
   const selectedRuns = runs.filter((run) => selected.includes(run.id));
@@ -38,7 +38,6 @@ export function BacktestHistory({ busy, loading, onCompare, onCopy, onDelete, on
     <Stack direction={{ xs: "column", md: "row" }} sx={{ alignItems: { md: "center" }, justifyContent: "space-between", mb: 2, gap: 1 }}>
       <Typography variant="h6">Сохранённые запуски</Typography>
       <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap" }}>
-        <Button disabled={busy} onClick={onPaste}>Вставить конфигурацию</Button>
         <Button disabled={busy || comparableIds.length < 2} onClick={() => onCompare(comparableIds)}>Сравнить ({comparableIds.length})</Button>
         <Button color="error" disabled={busy || !selectedRuns.length} onClick={() => onDelete(selectedRuns)}>
           Удалить выбранные ({selectedRuns.length})
@@ -72,6 +71,7 @@ export function BacktestHistory({ busy, loading, onCompare, onCopy, onDelete, on
       <Button disabled={busy || run.status !== "COMPLETED"} onClick={() => onOpen(run)}>Открыть</Button>
       <Button disabled={busy || run.status !== "COMPLETED"} onClick={() => onRepeat(run)}>Повторить</Button>
       <Button disabled={busy || run.status !== "COMPLETED"} onClick={() => onCopy(run)}>Копировать конфиг</Button>
+      <Button disabled={busy || run.status !== "COMPLETED"} onClick={() => onSaveConfiguration(run)}>Сохранить конфигурацию</Button>
       <Button disabled={busy || run.status !== "COMPLETED"} onClick={() => onExport(run, "csv")}>CSV</Button>
       <Button disabled={busy || run.status !== "COMPLETED"} onClick={() => onExport(run, "json")}>JSON</Button>
       <Button color="error" disabled={busy || run.status === "QUEUED" || run.status === "RUNNING"} onClick={() => onDelete([run])}>Удалить</Button>

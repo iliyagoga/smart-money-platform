@@ -10,6 +10,7 @@ import { api } from "../../lib/api";
 import { EventSocket } from "../../lib/socket";
 import { defaultBacktestSettings } from "../../lib/backtest/defaultSettings";
 import type { BacktestSettings } from "../../lib/backtest/types";
+import { mergeSettingsConfig } from "../../lib/backtest/configClipboard";
 import type { Candle, CandlesResponse } from "../../lib/types";
 
 const allTimeframes = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
@@ -105,11 +106,8 @@ export default function MarketPage() {
   };
   const pasteConfig = async () => {
     try {
-      const parsed = JSON.parse(await navigator.clipboard.readText()) as { symbol?: string; config?: Record<string, unknown> };
-      if (!parsed.config || typeof parsed.config !== "object") throw new Error("В буфере нет конфигурации бэктеста");
-      const normalized = snakeToCamel(parsed.config) as Partial<BacktestSettings>;
-      setSettings((current) => ({ ...current, ...normalized, strategy: "ELLIOTT", elliott: { ...current.elliott, ...(normalized.elliott as Partial<BacktestSettings["elliott"]> ?? {}) } }));
-      if (parsed.symbol) setSymbol(parsed.symbol);
+      const parsed = JSON.parse(await navigator.clipboard.readText()) as unknown;
+      setSettings((current) => mergeSettingsConfig(current, parsed));
       setMessage("Конфигурация вставлена из буфера обмена.");
     } catch (reason) { setMessage(reason instanceof Error ? reason.message : String(reason)); }
   };

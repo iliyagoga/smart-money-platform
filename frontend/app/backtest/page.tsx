@@ -16,7 +16,9 @@ import { useTradingAssets } from "../../hooks/useTradingAssets";
 import { mapBacktestResult } from "../../lib/backtest/apiTypes";
 import type { BacktestCreateResponse, BacktestRun, BacktestRunsResponse, SavedBacktestRequest } from "../../lib/backtest/apiTypes";
 import type { BacktestResult, BacktestSettings } from "../../lib/backtest/types";
+import { mergeSettingsConfig } from "../../lib/backtest/configClipboard";
 import { useAuth } from "../../components/auth/AuthProvider";
+import { useRouter } from "next/navigation";
 
 const defaultSettings: BacktestSettings = {
   initialCapital: 10_000,
@@ -149,6 +151,7 @@ interface ScenarioTemplatesResponse {
 }
 
 export default function BacktestPage() {
+  const router=useRouter();
   const { roles } = useAuth();
   const [asset, setAsset] = useState("");
   const { addAsset, assetDetails, assets, reload: reloadAssets, removeAsset } = useTradingAssets();
@@ -381,7 +384,8 @@ export default function BacktestPage() {
       const runDetails = await api<BacktestRun>(`/api/v1/backtest/backtests/${runId}`);
       const request = runDetails.result?.request_config;
       if (!request) throw new Error("В этом отчёте отсутствует сохранённая конфигурация");
-      await navigator.clipboard.writeText(JSON.stringify(request, null, 2));
+      const config=mergeSettingsConfig(defaultSettings,request.config);
+      await navigator.clipboard.writeText(JSON.stringify(config, null, 2));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally { setHistoryBusy(false); }
@@ -391,25 +395,27 @@ export default function BacktestPage() {
     setError("");
     setHistoryBusy(true);
     try {
-      const parsed = JSON.parse(await navigator.clipboard.readText()) as SavedBacktestRequest;
-      if (!parsed || typeof parsed.symbol !== "string" || !parsed.config || typeof parsed.config !== "object") {
-        throw new Error("В буфере обмена нет корректной конфигурации бэктеста");
-      }
-      restoredConfig.current = parsed.config;
-      restoredModelVersion.current = parsed.model_version;
-      setAsset(parsed.symbol);
-      setSelectedTimeframes(parsed.timeframes?.length ? parsed.timeframes : [parsed.timeframe]);
-      setCandleLimit(parsed.candle_limit);
-      if (typeof parsed.train_from === "number") setTrainFrom(savedDate(parsed.train_from));
-      if (typeof parsed.train_to === "number") setTrainTo(savedDate(parsed.train_to));
-      if (typeof parsed.test_from === "number") setTestFrom(savedDate(parsed.test_from));
-      if (typeof parsed.test_to === "number") setTestTo(savedDate(parsed.test_to));
-      setSettings((current) => restoreSettings(parsed, current));
+      const parsed = JSON.parse(await navigator.clipboard.readText()) as unknown;
+      setSettings((current) => mergeSettingsConfig(current, parsed));
       setProgress(0);
       setWorkspaceTab(1);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally { setHistoryBusy(false); }
+  };
+  const saveRunConfiguration = async (runId:string) => {
+    setError("");setHistoryBusy(true);
+    try {
+      const runDetails=await api<BacktestRun>(`/api/v1/backtest/backtests/${runId}`);
+      const request=runDetails.result?.request_config;
+      if (!request) throw new Error("В этом прогоне отсутствует сохранённая конфигурация");
+      sessionStorage.setItem("configuration-import",JSON.stringify({
+        name:`${request.symbol} Elliott ${new Date(runDetails.created_at).toLocaleDateString("ru-RU")}`,
+        description:`Из бэктеста ${request.symbol} · ${request.timeframes?.join(", ") || request.timeframe}`,
+        request,
+      }));
+      router.push("/configurations");
+    } catch(reason) { setError(reason instanceof Error ? reason.message:String(reason));setHistoryBusy(false); }
   };
 
   const deleteRuns = async (runs: BacktestRun[]) => {
@@ -503,6 +509,9 @@ export default function BacktestPage() {
     {workspaceTab === 1 && <Box sx={{ p: { xs: 1, md: 2 }, borderRadius: 2, bgcolor: "action.hover" }}>
       <Grid container spacing={2}>
       <Grid size={{ xs: 12, xl: 5 }}>
+        <Button variant="outlined" disabled={isRunning || historyBusy} onClick={() => void pasteRunConfig()} sx={{ mb: 1.5 }}>
+          Вставить конфигурацию в настройки
+        </Button>
         <BacktestSettingsForm
           settings={settings}
           onChange={setSettings}
@@ -546,8 +555,8 @@ export default function BacktestPage() {
       onCopy={(runItem) => void copyRunConfig(runItem.id)}
       onDelete={(runItems) => void deleteRuns(runItems)}
       onOpen={(runItem) => void openRun(runItem.id)}
-      onPaste={() => void pasteRunConfig()}
       onRepeat={(runItem) => void repeatRun(runItem.id)}
+      onSaveConfiguration={(runItem) => void saveRunConfiguration(runItem.id)}
       onExport={(runItem, format) => void exportRun(runItem.id, format)}
       onCompare={(ids) => void compareRuns(ids)}
     />

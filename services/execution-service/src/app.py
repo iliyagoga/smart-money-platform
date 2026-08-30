@@ -1,10 +1,12 @@
 from contextlib import asynccontextmanager
 import json
-from fastapi import FastAPI,HTTPException,Query
+import asyncpg
+from fastapi import FastAPI,Header,HTTPException,Query
 from .models import *
 from .service import ExecutionService,decode_json
 from .settings import settings
-from pydantic import BaseModel
+from pydantic import BaseModel,Field
+from uuid import UUID,uuid4
 
 def analyze_trades(items: list[dict]):
     total=len(items);wins=[item for item in items if item.get("pnl",0)>0];losses=[item for item in items if item.get("pnl",0)<0]
@@ -34,6 +36,17 @@ class TradingConfigCreate(BaseModel):
     config: dict
     @property
     def normalized_mode(self):return self.mode.strip().upper()
+
+class StrategyConfigurationWrite(BaseModel):
+    name:str=Field(min_length=1,max_length=120)
+    description:str=Field(default="",max_length=1000)
+    config:dict
+
+def configuration_record(row):
+    value=dict(row);value["id"]=str(value["id"])
+    value["config"]=decode_json(value["config"])
+    value["created_at"]=value["created_at"].isoformat();value["updated_at"]=value["updated_at"].isoformat()
+    return value
 
 service=ExecutionService(settings.database_url,settings.redis_url,settings.stream_group,settings.consumer_name,settings.execution_mode)
 @asynccontextmanager
@@ -99,6 +112,40 @@ async def delete_trading_config(symbol: str):
     removed=await service.db.fetchval("DELETE FROM trading_configs WHERE symbol=$1 RETURNING symbol",symbol)
     if not removed:raise HTTPException(404,"Trading asset not found")
     return {"success":True,"symbol":removed}
+@app.get("/configuration-library")
+async def configuration_library(x_user_id:str=Header(default="local")):
+    rows=await service.db.fetch("SELECT id,name,description,config,created_at,updated_at FROM strategy_configurations WHERE owner_id=$1 ORDER BY updated_at DESC",x_user_id)
+    return {"configurations":[configuration_record(row) for row in rows]}
+@app.post("/configuration-library",status_code=201)
+async def create_configuration(request:StrategyConfigurationWrite,x_user_id:str=Header(default="local")):
+    name=request.name.strip();description=request.description.strip()
+    if not name:raise HTTPException(422,"name must not be empty")
+    try:
+        row=await service.db.fetchrow("""INSERT INTO strategy_configurations(id,owner_id,name,description,config)
+          VALUES($1::uuid,$2,$3,$4,$5::jsonb) RETURNING id,name,description,config,created_at,updated_at""",
+          str(uuid4()),x_user_id,name,description,json.dumps(request.config))
+    except Exception as exc:
+        if isinstance(exc,asyncpg.UniqueViolationError):raise HTTPException(409,"Configuration name already exists") from exc
+        raise
+    return configuration_record(row)
+@app.put("/configuration-library/{configuration_id}")
+async def update_configuration(configuration_id:UUID,request:StrategyConfigurationWrite,x_user_id:str=Header(default="local")):
+    name=request.name.strip();description=request.description.strip()
+    if not name:raise HTTPException(422,"name must not be empty")
+    try:
+        row=await service.db.fetchrow("""UPDATE strategy_configurations SET name=$3,description=$4,config=$5::jsonb,updated_at=now()
+          WHERE id=$1 AND owner_id=$2 RETURNING id,name,description,config,created_at,updated_at""",
+          configuration_id,x_user_id,name,description,json.dumps(request.config))
+    except Exception as exc:
+        if isinstance(exc,asyncpg.UniqueViolationError):raise HTTPException(409,"Configuration name already exists") from exc
+        raise
+    if not row:raise HTTPException(404,"Configuration not found")
+    return configuration_record(row)
+@app.delete("/configuration-library/{configuration_id}")
+async def delete_configuration(configuration_id:UUID,x_user_id:str=Header(default="local")):
+    removed=await service.db.fetchval("DELETE FROM strategy_configurations WHERE id=$1 AND owner_id=$2 RETURNING id",configuration_id,x_user_id)
+    if not removed:raise HTTPException(404,"Configuration not found")
+    return {"success":True,"id":str(removed)}
 @app.get("/positions/{position_id}")
 async def position(position_id:str):
     item=service.positions.get(position_id)
