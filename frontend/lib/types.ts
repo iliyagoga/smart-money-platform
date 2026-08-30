@@ -68,6 +68,17 @@ export interface OrderDraft {
   take_profit_prices: number[];
 }
 
+export interface TradingOrder extends OrderDraft {
+  id: string;
+  status: string;
+  exchange_order_id?: string;
+  created_at: number;
+  filled_at?: number;
+  filled_price?: number;
+}
+
+export interface OrdersResponse { orders: TradingOrder[]; total: number }
+
 export interface ClosedTrade {
   position_id: string;
   symbol: string;

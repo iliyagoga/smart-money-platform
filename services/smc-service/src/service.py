@@ -70,13 +70,19 @@ class SMCService:
     async def trading_config(self,symbol:str):
         try:
             row=await self.infra.db.fetchrow(
-                "SELECT config FROM trading_configs WHERE symbol=$1 AND status='ACTIVE'",symbol,
+                """SELECT tc.config,ta.tick_size,ta.lot_size,ta.minimum_order_size,
+                  ta.maker_fee_rate,ta.taker_fee_rate,ta.funding_rate
+                  FROM trading_configs tc JOIN trading_assets ta ON ta.symbol=tc.symbol
+                  WHERE tc.symbol=$1 AND tc.status='ACTIVE' AND ta.validation_status='ACTIVE'""",symbol,
             )
         except asyncpg.UndefinedTableError:
             return None
         if not row:return None
-        value=row["config"]
-        return json.loads(value) if isinstance(value,str) else value
+        value=row["config"];value=json.loads(value) if isinstance(value,str) else dict(value)
+        value={**value,"tickSize":row["tick_size"],"lotSize":row["lot_size"],
+          "minimumOrderSize":row["minimum_order_size"],"makerFeePercent":abs(row["maker_fee_rate"] or 0)*100,
+          "takerFeePercent":abs(row["taker_fee_rate"] or 0)*100,"fundingPercentPerDay":(row["funding_rate"] or 0)*300}
+        return value
     async def restore_elliott_patterns(self):
         try:rows=await self.infra.db.fetch("SELECT symbol,config FROM trading_configs WHERE status='ACTIVE'")
         except asyncpg.UndefinedTableError:return

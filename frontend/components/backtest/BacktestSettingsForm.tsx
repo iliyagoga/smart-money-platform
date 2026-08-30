@@ -254,7 +254,7 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
       <Typography variant="body2" color="text.secondary">
         {elliottOnly ? "Stop Loss рассчитывается за структурной границей Elliott, тейки — по заданному Risk/Reward." : "Stop Loss рассчитывается за структурной границей OB, тейк выставляется на указанном расстоянии Risk/Reward."}
       </Typography>
-      <Stack direction="row" spacing={1.5}>
+      {!elliottOnly && <><Stack direction="row" spacing={1.5}>
         <TextField fullWidth label="Maker, %" value={settings.makerFeePercent} type="number"
           onChange={(event) => updateNumber("makerFeePercent", event.target.value)} />
         <TextField fullWidth label="Taker, %" value={settings.takerFeePercent} type="number"
@@ -285,7 +285,7 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
           onChange={(event) => updateNumber("minimumOrderSize", event.target.value)} />
         <TextField fullWidth label="Ликвидация, %" value={settings.liquidationFeePercent} type="number"
           onChange={(event) => updateNumber("liquidationFeePercent", event.target.value)} />
-      </Stack>
+      </Stack></>}
       <Button variant="contained" size="large" disabled={!isValid || isRunning} onClick={onRun}>
         {isRunning ? (progress > 0 ? `Выполняем расчёт… ${progress}%` : "Сохраняем…") : submitLabel}
       </Button>

@@ -8,15 +8,18 @@ import { SectionPage } from "../../components/layout/SectionPage";
 import { TradeHistory } from "../../components/trades/TradeHistory";
 import { TradeStatisticsGrid } from "../../components/trades/TradeStatisticsGrid";
 import { TradeAnalyzer } from "../../components/trades/TradeAnalyzer";
+import { OrdersPanel } from "../../components/trades/OrdersPanel";
 import { useApiResource } from "../../hooks/useApiResource";
 import { api } from "../../lib/api";
-import type { Position, PositionsResponse, TradeAnalysisResponse, TradeAssetsResponse, TradeStatistics, TradesResponse } from "../../lib/types";
+import type { OrdersResponse, Position, PositionsResponse, TradeAnalysisResponse, TradeAssetsResponse, TradeStatistics, TradesResponse, TradingOrder } from "../../lib/types";
 
 export default function TradesPage() {
   const [symbol, setSymbol] = useState("");
+  const [direction, setDirection] = useState<"LONG" | "SHORT">("LONG");
   const symbolQuery = symbol ? `?symbol=${encodeURIComponent(symbol)}&limit=1000` : "?limit=1000";
   const positionsResource = useApiResource<PositionsResponse | Position[]>("/api/v1/execution/positions");
   const assetsResource = useApiResource<TradeAssetsResponse>("/api/v1/execution/trades/assets");
+  const ordersResource = useApiResource<OrdersResponse>("/api/v1/execution/orders?limit=100");
   const historyResource = useApiResource<TradesResponse>(`/api/v1/execution/trades/history${symbolQuery}`);
   const statisticsResource = useApiResource<TradeStatistics>(`/api/v1/execution/trades/statistics${symbol ? `?symbol=${encodeURIComponent(symbol)}` : ""}`);
   const analysisResource = useApiResource<TradeAnalysisResponse>(`/api/v1/execution/trades/analysis${symbol ? `?symbol=${encodeURIComponent(symbol)}` : ""}`);
@@ -24,6 +27,7 @@ export default function TradesPage() {
   const [actionError, setActionError] = useState("");
   const [closingPosition, setClosingPosition] = useState<Position>();
   const [isClosing, setIsClosing] = useState(false);
+  const [isSimulating, setIsSimulating] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
   const positions = Array.isArray(positionsResource.data)
     ? positionsResource.data
@@ -39,6 +43,24 @@ export default function TradesPage() {
     statisticsResource.reload();
     analysisResource.reload();
     assetsResource.reload();
+    ordersResource.reload();
+  };
+  const simulateSignal = async () => {
+    if (!symbol) return;
+    setIsSimulating(true);setActionError("");
+    try {
+      const result = await api<{ approved: boolean }>("/api/v1/decision/signals/simulate-elliott", {
+        method: "POST", body: JSON.stringify({ symbol, direction }),
+      });
+      setSuccessMessage(result.approved ? "Elliott-сигнал принят и отправлен на исполнение" : "Сигнал создан, но отклонён риск-контуром");
+      reloadTradingData();
+    } catch (reason) { setActionError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setIsSimulating(false); }
+  };
+  const cancelOrder = async (order: TradingOrder) => {
+    setActionError("");
+    try { await api(`/api/v1/execution/orders/${order.id}/cancel`, { method: "POST" }); setSuccessMessage("Отмена ордера отправлена"); reloadTradingData(); }
+    catch (reason) { setActionError(reason instanceof Error ? reason.message : String(reason)); }
   };
 
   const closePosition = async () => {
@@ -60,7 +82,7 @@ export default function TradesPage() {
     }
   };
 
-  const errors = actionError || positionsResource.error || assetsResource.error || historyResource.error
+  const errors = actionError || positionsResource.error || assetsResource.error || ordersResource.error || historyResource.error
     || statisticsResource.error || analysisResource.error;
 
   return (
@@ -73,11 +95,16 @@ export default function TradesPage() {
     >
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mb: 1.5, justifyContent: "space-between", alignItems: { sm: "center" } }}>
         <Typography variant="body2" color="text.secondary">Показаны {symbol ? `сделки по ${symbol}` : "сделки по всем активам"}</Typography>
-        <FormControl size="small" sx={{ minWidth: 220 }}><InputLabel>Актив</InputLabel><Select value={symbol} label="Актив" onChange={(event) => setSymbol(event.target.value)}>
+        <Stack direction="row" spacing={1}><FormControl size="small" sx={{ minWidth: 220 }}><InputLabel>Актив</InputLabel><Select value={symbol} label="Актив" onChange={(event) => setSymbol(event.target.value)}>
           <MenuItem value="">Все активы</MenuItem>{symbols.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}
-        </Select></FormControl>
+        </Select></FormControl><Select size="small" value={direction} onChange={(event) => setDirection(event.target.value as "LONG" | "SHORT")}>
+          <MenuItem value="LONG">LONG</MenuItem><MenuItem value="SHORT">SHORT</MenuItem>
+        </Select><Button variant="contained" disabled={!canTrade || !symbol || isSimulating} onClick={() => void simulateSignal()}>
+          {isSimulating ? "Создаём…" : "Имитировать сигнал"}
+        </Button></Stack>
       </Stack>
       <TradeStatisticsGrid statistics={statisticsResource.data} />
+      <OrdersPanel orders={ordersResource.data?.orders ?? []} canCancel={canTrade} onCancel={(order) => void cancelOrder(order)} />
       <Grid container spacing={1.5} sx={{ mt: 0 }}>
         <Grid size={{ xs: 12 }}>
           <PositionsPanel positions={positions} canClose={canTrade} onClose={setClosingPosition} />

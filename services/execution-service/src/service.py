@@ -46,6 +46,7 @@ class ExecutionService:
                         try:
                             event=json.loads(fields["data"])
                             if event["event_type"]=="risk.approved":await self.on_approved(event["payload"])
+                            elif event["event_type"]=="exchange.order_updated":await self.on_exchange_order(event["payload"])
                             await self.redis.xack("trading.command",self.group,message_id)
                         except Exception:log.exception("Command %s failed",message_id)
             except asyncio.CancelledError:raise
@@ -59,6 +60,7 @@ class ExecutionService:
                     try:
                         event=json.loads(fields["data"])
                         if event["event_type"]=="risk.approved":await self.on_approved(event["payload"])
+                        elif event["event_type"]=="exchange.order_updated":await self.on_exchange_order(event["payload"])
                         await self.redis.xack("trading.command",self.group,message_id)
                     except Exception:log.exception("Pending command %s failed",message_id);return
     async def listen_candles(self):
@@ -72,10 +74,13 @@ class ExecutionService:
     async def on_approved(self,payload):
         signal_id=payload["signal_id"]
         if any(x.signal_id==signal_id for x in self.orders.values()):return
-        row=await self.db.fetchrow("""SELECT ts.data FROM trade_signals ts JOIN scenarios s ON s.id=ts.scenario_id
+        row=await self.db.fetchrow("""SELECT ts.data,tc.config FROM trade_signals ts JOIN scenarios s ON s.id=ts.scenario_id
+          JOIN trading_configs tc ON tc.symbol=ts.symbol AND tc.status='ACTIVE'
           WHERE ts.id=$1::uuid AND s.data->>'setup_type'='ELLIOTT_WAVE3'""",signal_id)
         if not row:raise ValueError(f"Signal {signal_id} not found")
-        s=decode_json(row["data"]);order=Order(symbol=s["symbol"],side="BUY" if s["direction"]=="LONG" else "SELL",type=s["entry_type"],price=s["entry_price"],quantity=payload["position_size"],stop_loss_price=s["stop_loss_price"],take_profit_prices=s["take_profit_prices"],signal_id=signal_id,target_allocations=s.get("target_allocations",[]),break_even_rule=s.get("break_even_rule","ONE_R"),move_stop_to_break_even_after_target=s.get("move_stop_to_break_even_after_target",1),deduplication_key=s.get("deduplication_key"))
+        s=decode_json(row["data"]);config=decode_json(row["config"]);elliott=config.get("elliott",{});use_margin=elliott.get("useMargin",elliott.get("use_margin",False))
+        leverage=int(config.get("leverage",payload.get("leverage",1))) if use_margin else 1
+        order=Order(symbol=s["symbol"],side="BUY" if s["direction"]=="LONG" else "SELL",type=s["entry_type"],price=s["entry_price"],quantity=payload["position_size"],stop_loss_price=s["stop_loss_price"],take_profit_prices=s["take_profit_prices"],signal_id=signal_id,target_allocations=s.get("target_allocations",[]),break_even_rule=s.get("break_even_rule","ONE_R"),move_stop_to_break_even_after_target=s.get("move_stop_to_break_even_after_target",1),deduplication_key=s.get("deduplication_key"),leverage=leverage,margin_mode=config.get("marginMode",config.get("margin_mode","cross")))
         await self.create_order(order)
     async def create_order(self,order:Order):
         existing=next((x for x in self.orders.values() if order.signal_id and x.signal_id==order.signal_id),None)
@@ -84,13 +89,15 @@ class ExecutionService:
         active_position=any(x.status!="CLOSED" for x in self.positions.values())
         if active_order or active_position:raise ValueError("Another trade is still active")
         self.orders[order.id]=order;await self.save_order(order);await self.stream("order.request",order.model_dump(mode="json"))
-        if order.type=="MARKET":await self.fill(order,order.price or 0)
-        else:order.status="OPEN";await self.save_order(order)
+        if self.mode=="paper":
+            if order.type=="MARKET":await self.fill(order,order.price or 0)
+            else:order.status="OPEN";await self.save_order(order)
+        else:order.status="SUBMITTING";await self.save_order(order)
         return order
     async def save_order(self,o):await self.db.execute("INSERT INTO orders(id,signal_id,symbol,status,data,created_at) VALUES($1::uuid,$2::uuid,$3,$4,$5::jsonb,to_timestamp($6/1000.0)) ON CONFLICT(id) DO UPDATE SET status=excluded.status,data=excluded.data,updated_at=now()",o.id,o.signal_id,o.symbol,o.status,json.dumps(o.model_dump(mode="json")),o.created_at)
-    async def fill(self,o:Order,price:float):
+    async def fill(self,o:Order,price:float,exchange_order_id:str|None=None):
         if o.status=="FILLED":return
-        o.status="FILLED";o.filled_at=int(time()*1000);o.filled_price=price;o.exchange_order_id=f"paper-{o.id}";await self.save_order(o)
+        o.status="FILLED";o.filled_at=int(time()*1000);o.filled_price=price;o.exchange_order_id=exchange_order_id or f"paper-{o.id}";await self.save_order(o)
         event={"order_id":o.id,"signal_id":o.signal_id,"exchange_order_id":o.exchange_order_id,"symbol":o.symbol,"side":o.side,"price":price,"quantity":o.quantity,"filled_price":price,"filled_quantity":o.quantity,"status":"FILLED","executed_at":o.filled_at};await self.publish("order.executed",event)
         scenario_id=None
         if o.signal_id:
@@ -105,7 +112,7 @@ class ExecutionService:
         if old!=new:await self.db.execute("INSERT INTO position_state_history(position_id,from_state,to_state,trigger,price) VALUES($1::uuid,$2,$3,$4,$5)",p.id,old,new,trigger,p.current_price)
     async def on_candle(self,c:Candle):
         for o in list(self.orders.values()):
-            if o.status=="OPEN" and o.symbol==c.symbol and o.price is not None and c.low<=o.price<=c.high:await self.fill(o,o.price)
+            if self.mode=="paper" and o.status=="OPEN" and o.symbol==c.symbol and o.price is not None and c.low<=o.price<=c.high:await self.fill(o,o.price)
         for p in list(self.positions.values()):
             if p.status=="CLOSED" or p.symbol!=c.symbol:continue
             old=p.status
@@ -130,3 +137,20 @@ class ExecutionService:
             payload={"position_id":p.id,"signal_id":p.signal_id,"scenario_id":p.scenario_id,"strategy":p.strategy,"setup_type":p.setup_type,"symbol":p.symbol,"direction":p.direction,"entry_price":p.entry_price,"initial_stop_loss_price":p.initial_stop_loss_price,"exit_price":price,"quantity":p.initial_quantity,"pnl":p.realized_pnl,"pnl_percent":p.realized_pnl/max(p.entry_price*p.initial_quantity,1e-12)*100,"r_multiple":p.realized_pnl/initial_risk if initial_risk>0 else None,"reason":reason,"duration_seconds":duration,"max_unrealized_pnl":p.max_unrealized_pnl,"max_unrealized_loss":p.max_unrealized_loss,"closed_at":p.closed_at}
             await self.db.execute("INSERT INTO closed_trades(id,position_id,symbol,pnl,data,closed_at) VALUES($1::uuid,$2::uuid,$3,$4,$5::jsonb,to_timestamp($6/1000.0)) ON CONFLICT(id) DO NOTHING",str(uuid4()),p.id,p.symbol,p.realized_pnl,json.dumps(payload),p.closed_at);await self.publish("position.closed",payload)
         return qty,p.quantity,pnl
+    async def on_exchange_order(self,payload):
+        order=self.orders.get(payload.get("order_id"))
+        if not order:return
+        status=payload.get("status","").upper();order.exchange_order_id=payload.get("exchange_order_id") or order.exchange_order_id
+        if status=="FILLED" and order.status!="FILLED":
+            price=float(payload.get("filled_price") or order.price or 0)
+            if price<=0:raise ValueError("Filled order has no execution price")
+            await self.fill(order,price,order.exchange_order_id)
+        elif status in {"OPEN","PARTIALLY_FILLED","CANCELLED","REJECTED"}:
+            order.status=status;await self.save_order(order)
+    async def request_cancel(self,order:Order):
+        if order.status=="FILLED":raise ValueError("Filled order cannot be cancelled")
+        if self.mode=="paper":order.status="CANCELLED";await self.save_order(order)
+        else:
+            order.status="CANCEL_REQUESTED";await self.save_order(order)
+            await self.stream("order.cancel_requested",{"order_id":order.id,"symbol":order.symbol,"exchange_order_id":order.exchange_order_id})
+        return order

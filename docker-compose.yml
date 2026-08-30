@@ -261,10 +261,13 @@ services:
       OKX_REST_URL: ${OKX_REST_URL:-https://www.okx.com}
       OKX_PUBLIC_WS_URL: ${OKX_PUBLIC_WS_URL:-wss://ws.okx.com:8443/ws/v5/public}
       OKX_BUSINESS_WS_URL: ${OKX_BUSINESS_WS_URL:-wss://ws.okx.com:8443/ws/v5/business}
+      OKX_PRIVATE_WS_URL: ${OKX_PRIVATE_WS_URL:-wss://wspap.okx.com:8443/ws/v5/private}
       OKX_API_KEY: ${OKX_API_KEY:-}
       OKX_SECRET_KEY: ${OKX_SECRET_KEY:-}
       OKX_PASSPHRASE: ${OKX_PASSPHRASE:-}
       OKX_DEMO: ${OKX_DEMO:-true}
+      TRADING_ENABLED: ${OKX_TRADING_ENABLED:-false}
+      MARGIN_MODE: ${OKX_MARGIN_MODE:-cross}
       MARKET_DATA_ENABLED: ${OKX_LIVE_MARKET_ENABLED:-true}
       EXCHANGE_SYMBOLS: ${EXCHANGE_SYMBOLS:-BTC-USDT-SWAP}
       SYMBOLS: ${EXCHANGE_SYMBOLS:-BTC-USDT-SWAP}
@@ -272,6 +275,7 @@ services:
       DATA_SERVICE_URL: http://data-service:8000
       SMC_SERVICE_URL: http://smc-service:8010
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: ${REDIS_URL}
       HISTORY_CONCURRENCY: ${HISTORY_CONCURRENCY:-2}
     ports:
       - "8070:8070"
@@ -282,6 +286,8 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8070/health')\""]
       interval: 10s

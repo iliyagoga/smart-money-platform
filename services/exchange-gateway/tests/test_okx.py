@@ -1,7 +1,11 @@
-from src.okx import auth_headers,book,candle,trade
+from src.okx import auth_headers,book,candle,trade,ws_login
 from src.service import incremental_start,instrument_spec
 def test_signature_matches_known_hmac():
     h=auth_headers("k","s","p","GET","/api/v5/account/balance",stamp="2020-01-01T00:00:00.000Z");assert h["OK-ACCESS-SIGN"]=="3+YzNZYq3N3si/o/YkbHvC4RpV8WeOY5ZpO7abfFcYA=";assert h["x-simulated-trading"]=="1"
+def test_private_websocket_login_signature():
+    value=ws_login("k","s","p",stamp="1538054050")
+    assert value["op"]=="login" and value["args"][0]["timestamp"]=="1538054050"
+    assert value["args"][0]["sign"]=="4wFKSrXaG6EYOdbv/KEKJIOMEzKwShv8qgkR1OcPdvE="
 def test_normalizers():
     assert candle(["1","2","4","1","3","9","0","0","1"],"BTC-USDT","M1")["is_closed"]
     assert trade({"instId":"BTC-USDT","tradeId":"7","ts":"1","px":"2","sz":"3","side":"buy"})["side"]=="buy"

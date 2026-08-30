@@ -1,4 +1,4 @@
-import base64,hashlib,hmac,json
+import base64,hashlib,hmac,json,time
 from datetime import datetime,timezone
 from urllib.parse import urlencode
 
@@ -13,6 +13,10 @@ def auth_headers(key,secret,passphrase,method,path,body="",demo=True,stamp=None)
     stamp=stamp or timestamp(); result={"OK-ACCESS-KEY":key,"OK-ACCESS-SIGN":signature(secret,stamp,method,path,body),"OK-ACCESS-TIMESTAMP":stamp,"OK-ACCESS-PASSPHRASE":passphrase,"Content-Type":"application/json"}
     if demo: result["x-simulated-trading"]="1"
     return result
+def ws_login(key,secret,passphrase,stamp=None):
+    stamp=stamp or str(int(time.time()))
+    sign=signature(secret,stamp,"GET","/users/self/verify")
+    return {"op":"login","args":[{"apiKey":key,"passphrase":passphrase,"timestamp":stamp,"sign":sign}]}
 def candle(item,symbol,timeframe):
     return {"symbol":symbol,"timeframe":timeframe,"timestamp":int(item[0]),"open":float(item[1]),"high":float(item[2]),"low":float(item[3]),"close":float(item[4]),"volume":float(item[5]),"is_closed":item[8]=="1"}
 def trade(item):

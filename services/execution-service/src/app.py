@@ -59,8 +59,9 @@ async def order(order_id:str):
 async def cancel_order(order_id:str):
     item=service.orders.get(order_id)
     if not item:raise HTTPException(404,"Order not found")
-    if item.status=="FILLED":raise HTTPException(409,"Filled order cannot be cancelled")
-    item.status="CANCELLED";await service.save_order(item);await service.publish("order.cancelled",{"order_id":item.id,"signal_id":item.signal_id,"reason":"MANUAL","timestamp":now_ms()});return {"success":True,"order_id":item.id}
+    try:await service.request_cancel(item)
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
+    return {"success":True,"order_id":item.id,"status":item.status}
 @app.delete("/orders/{order_id}")
 async def cancel_delete(order_id:str):return await cancel_order(order_id)
 @app.post("/orders/{order_id}/cancel")

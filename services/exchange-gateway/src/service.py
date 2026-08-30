@@ -1,8 +1,9 @@
 import asyncio,json,random
-from time import monotonic
+from time import monotonic,time
 import asyncpg,httpx,websockets
 from decimal import Decimal
-from .okx import TIMEFRAMES,REVERSE_TIMEFRAMES,auth_headers,book,candle,trade
+from redis.asyncio import Redis
+from .okx import TIMEFRAMES,REVERSE_TIMEFRAMES,auth_headers,book,candle,trade,ws_login
 
 TIMEFRAME_MILLISECONDS={"M1":60_000,"M5":300_000,"M15":900_000,"M30":1_800_000,"H1":3_600_000,"H4":14_400_000,"D1":86_400_000}
 
@@ -16,16 +17,18 @@ def instrument_spec(item):
         "tick_size":float(tick),"lot_size":float(lot),"minimum_order_size":float(minimum),
         "contract_value":float(contract_value),"price_precision":max(0,-tick.normalize().as_tuple().exponent),
         "quantity_precision":max(0,-lot.normalize().as_tuple().exponent),
+        "instrument_family":item.get("instFamily"),"fee_group_id":item.get("groupId"),"state":item.get("state"),
     }
 
 class ExchangeGateway:
     def __init__(self,s):
-        self.s=s;self.client=None;self.db=None;self.tasks=set();self.connected={"public":False,"business":False};self.last_error=None
+        self.s=s;self.client=None;self.db=None;self.redis=None;self.tasks=set();self.connected={"public":False,"business":False,"private":False};self.last_error=None
         self.history_semaphore=asyncio.Semaphore(s.history_concurrency);self.running_history=set()
-        self.active_symbols=[];self.websockets={};self.market_page_cache={};self.market_page_locks={}
+        self.active_symbols=[];self.websockets={};self.market_page_cache={};self.market_page_locks={};self.private_ready=asyncio.Event();self.pending={}
     async def start(self):
         self.client=httpx.AsyncClient(timeout=20)
         self.db=await asyncpg.create_pool(self.s.database_url,min_size=1,max_size=5)
+        self.redis=Redis.from_url(self.s.redis_url,decode_responses=True);await self.redis.ping()
         await self.db.execute("""
           CREATE TABLE IF NOT EXISTS exchange_history_jobs(
             id uuid PRIMARY KEY,status text NOT NULL,symbol text NOT NULL,timeframes jsonb NOT NULL,
@@ -42,6 +45,14 @@ class ExchangeGateway:
         await self.db.execute("ALTER TABLE trading_assets ADD COLUMN IF NOT EXISTS tick_size double precision")
         await self.db.execute("ALTER TABLE trading_assets ADD COLUMN IF NOT EXISTS lot_size double precision")
         await self.db.execute("ALTER TABLE trading_assets ADD COLUMN IF NOT EXISTS contract_value double precision NOT NULL DEFAULT 1")
+        await self.db.execute("ALTER TABLE trading_assets ADD COLUMN IF NOT EXISTS maker_fee_rate double precision")
+        await self.db.execute("ALTER TABLE trading_assets ADD COLUMN IF NOT EXISTS taker_fee_rate double precision")
+        await self.db.execute("ALTER TABLE trading_assets ADD COLUMN IF NOT EXISTS funding_rate double precision")
+        await self.db.execute("ALTER TABLE trading_assets ADD COLUMN IF NOT EXISTS next_funding_time bigint")
+        await self.db.execute("ALTER TABLE trading_assets ADD COLUMN IF NOT EXISTS exchange_metadata jsonb NOT NULL DEFAULT '{}'")
+        await self.db.execute("""CREATE TABLE IF NOT EXISTS exchange_orders(
+          local_order_id uuid PRIMARY KEY,cl_ord_id text UNIQUE NOT NULL,exchange_order_id text,symbol text NOT NULL,
+          status text NOT NULL,payload jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now())""")
         await self.db.execute("UPDATE exchange_history_jobs SET status='QUEUED' WHERE status='RUNNING'")
         await self.db.execute("""UPDATE exchange_history_jobs SET timeframe_status=(
           SELECT coalesce(jsonb_object_agg(key,CASE WHEN value->>'status'='RUNNING'
@@ -52,10 +63,16 @@ class ExchangeGateway:
             self.schedule_history(row["id"])
         if self.s.market_data_enabled:
             self.add_task(self.loop("public",self.s.okx_public_ws_url));self.add_task(self.loop("business",self.s.okx_business_ws_url))
+        if self.s.trading_enabled:
+            if not all((self.s.okx_api_key,self.s.okx_secret_key,self.s.okx_passphrase)):
+                self.last_error="Private trading enabled but OKX credentials are not configured"
+            else:
+                self.add_task(self.private_loop());self.add_task(self.consume_orders())
     async def stop(self):
         for task in self.tasks:task.cancel()
         await asyncio.gather(*self.tasks,return_exceptions=True)
         if self.client:await self.client.aclose()
+        if self.redis:await self.redis.aclose()
         if self.db:await self.db.close()
     def add_task(self,coroutine):
         task=asyncio.create_task(coroutine);self.tasks.add(task);task.add_done_callback(self.tasks.discard);return task
@@ -95,13 +112,25 @@ class ExchangeGateway:
                 )
                 response.raise_for_status();body=response.json();items=body.get("data") or []
                 if body.get("code")!="0" or not items:continue
-                spec=instrument_spec(items[0])
+                instrument=items[0];spec=instrument_spec(instrument)
+                funding_response=await self.client.get(self.s.okx_rest_url+"/api/v5/public/funding-rate",params={"instId":symbol})
+                funding_body=funding_response.json();funding=(funding_body.get("data") or [{}])[0]
+                maker=taker=None
+                if all((self.s.okx_api_key,self.s.okx_secret_key,self.s.okx_passphrase)) and spec["fee_group_id"]:
+                    try:
+                        fees=await self.private("GET",f"/api/v5/account/trade-fee?instType=SWAP&groupId={spec['fee_group_id']}")
+                        groups=(fees[0].get("feeGroup") if fees else []) or []
+                        group=next((item for item in groups if item.get("groupId")==spec["fee_group_id"]),None)
+                        if group:maker=float(group["maker"]);taker=float(group["taker"])
+                    except Exception as exc:self.last_error=f"fee metadata {symbol}: {type(exc).__name__}: {exc}"[:500]
                 await self.db.execute(
                     """UPDATE trading_assets SET tick_size=$2,lot_size=$3,minimum_order_size=$4,
                        price_precision=$5,quantity_precision=$6,contract_value=$7,validation_status='ACTIVE',updated_at=now()
+                       ,maker_fee_rate=$8,taker_fee_rate=$9,funding_rate=$10,next_funding_time=$11,exchange_metadata=$12::jsonb
                        WHERE symbol=$1""",
                     symbol,spec["tick_size"],spec["lot_size"],spec["minimum_order_size"],spec["price_precision"],
-                    spec["quantity_precision"],spec["contract_value"],
+                    spec["quantity_precision"],spec["contract_value"],maker,taker,float(funding.get("fundingRate") or 0),
+                    int(funding.get("nextFundingTime") or 0),json.dumps({"source":"OKX","instrument":instrument,"funding":funding}),
                 )
             except Exception as exc:
                 self.last_error=f"instrument metadata {symbol}: {type(exc).__name__}: {exc}"[:500]
@@ -121,6 +150,106 @@ class ExchangeGateway:
             if channel.startswith("candle"):await self.ingest("/internal/ingest/candles",candle(item,symbol,REVERSE_TIMEFRAMES[channel[6:]]))
             elif channel=="trades":await self.ingest("/internal/ingest/ticks",trade(item))
             elif channel=="books5":await self.ingest("/internal/ingest/orderbook",book(item,symbol))
+    async def private_loop(self):
+        delay=1
+        while True:
+            try:
+                async with websockets.connect(self.s.okx_private_ws_url,ping_interval=20,ping_timeout=10,max_size=2**22) as ws:
+                    self.websockets["private"]=ws;self.connected["private"]=True
+                    await ws.send(json.dumps(ws_login(self.s.okx_api_key,self.s.okx_secret_key,self.s.okx_passphrase)))
+                    async for raw in ws:
+                        msg=json.loads(raw)
+                        if msg.get("event")=="login" and msg.get("code")=="0":
+                            await ws.send(json.dumps({"op":"subscribe","args":[{"channel":"orders","instType":"ANY"}]}));self.private_ready.set();delay=1;continue
+                        await self.handle_private(msg)
+            except asyncio.CancelledError:raise
+            except Exception as exc:
+                self.last_error=f"private: {type(exc).__name__}: {exc}"[:500]
+            finally:
+                self.private_ready.clear();self.connected["private"]=False;self.websockets.pop("private",None)
+            await asyncio.sleep(delay+random.random());delay=min(delay*2,60)
+    async def handle_private(self,msg):
+        request_id=msg.get("id")
+        if request_id and request_id in self.pending:
+            future=self.pending.pop(request_id)
+            if not future.done():future.set_result(msg)
+        if msg.get("arg",{}).get("channel")!="orders":return
+        for item in msg.get("data",[]):
+            cl_ord_id=item.get("clOrdId","")
+            if item.get("tag")!="SMPELLIOTT" or not cl_ord_id.startswith("SMP"):continue
+            row=await self.db.fetchrow("SELECT local_order_id FROM exchange_orders WHERE cl_ord_id=$1",cl_ord_id)
+            if not row:continue
+            state=item.get("state","").upper();mapping={"LIVE":"OPEN","PARTIALLY_FILLED":"PARTIALLY_FILLED","FILLED":"FILLED","CANCELED":"CANCELLED","MMP_CANCELED":"CANCELLED"};status=mapping.get(state,state)
+            await self.db.execute("UPDATE exchange_orders SET exchange_order_id=$2,status=$3,payload=$4::jsonb,updated_at=now() WHERE cl_ord_id=$1",cl_ord_id,item.get("ordId"),status,json.dumps(item))
+            await self.redis.xadd("trading.command",{"data":json.dumps({"event_type":"exchange.order_updated","payload":{"order_id":str(row["local_order_id"]),"exchange_order_id":item.get("ordId"),"status":status,"filled_price":float(item.get("avgPx") or item.get("fillPx") or 0),"filled_quantity":float(item.get("accFillSz") or 0),"raw_state":state}})},maxlen=100000,approximate=True)
+    async def ws_request(self,op,args,request_id):
+        await asyncio.wait_for(self.private_ready.wait(),timeout=15);ws=self.websockets.get("private")
+        if not ws:raise ValueError("OKX private WebSocket is unavailable")
+        future=asyncio.get_running_loop().create_future();self.pending[request_id]=future
+        await ws.send(json.dumps({"id":request_id,"op":op,"expTime":str(int(time()*1000)+10_000),"args":[args]}))
+        try:response=await asyncio.wait_for(future,timeout=15)
+        finally:self.pending.pop(request_id,None)
+        data=(response.get("data") or [{}])[0]
+        if response.get("code") not in (None,"0") or data.get("sCode","0")!="0":raise ValueError(data.get("sMsg") or response.get("msg") or "OKX rejected request")
+        return data
+    async def consume_orders(self):
+        group="exchange-gateway"
+        try:await self.redis.xgroup_create("execution.command",group,id="0",mkstream=True)
+        except Exception:pass
+        while True:
+            batches=await self.redis.xreadgroup(group,"exchange-1",{"execution.command":">"},count=10,block=2000)
+            for _,messages in batches:
+                for message_id,fields in messages:
+                    try:
+                        event=json.loads(fields["data"]);payload=event.get("payload",{})
+                        if event.get("event_type")=="order.request":await self.place_order(payload)
+                        elif event.get("event_type")=="order.cancel_requested":await self.cancel_order(payload["order_id"])
+                        await self.redis.xack("execution.command",group,message_id)
+                    except asyncio.CancelledError:raise
+                    except Exception as exc:
+                        self.last_error=f"order command: {type(exc).__name__}: {exc}"[:500]
+                        payload=(json.loads(fields["data"]).get("payload") or {})
+                        if payload.get("id"):
+                            await self.redis.xadd("trading.command",{"data":json.dumps({"event_type":"exchange.order_updated","payload":{"order_id":payload["id"],"status":"REJECTED","reason":str(exc)}})},maxlen=100000,approximate=True)
+                        await self.redis.xack("execution.command",group,message_id)
+    async def instrument_order_spec(self,symbol):
+        row=await self.db.fetchrow("SELECT contract_value,lot_size,minimum_order_size,validation_status FROM trading_assets WHERE symbol=$1",symbol)
+        if not row or row["validation_status"]!="ACTIVE":raise ValueError("Exchange instrument metadata is unavailable")
+        return row
+    async def place_order(self,payload):
+        spec=await self.instrument_order_spec(payload["symbol"]);contract=Decimal(str(spec["contract_value"]));base_qty=Decimal(str(payload["quantity"]))
+        contracts=base_qty/contract;lot_contracts=Decimal(str(spec["lot_size"]))/contract
+        contracts=(contracts//lot_contracts)*lot_contracts
+        minimum=Decimal(str(spec["minimum_order_size"]))/contract
+        if contracts<minimum:raise ValueError("Order quantity is below OKX minSz")
+        leverage=int(payload.get("leverage",1));margin_mode=payload.get("margin_mode") or self.s.margin_mode
+        if leverage>1:await self.private("POST","/api/v5/account/set-leverage",{"instId":payload["symbol"],"lever":str(leverage),"mgnMode":margin_mode})
+        local_id=payload["id"];cl_ord_id="SMP"+local_id.replace("-","")[:29]
+        args={"instId":payload["symbol"],"tdMode":margin_mode,"side":payload["side"].lower(),"ordType":payload["type"].lower(),"sz":format(contracts,"f"),"clOrdId":cl_ord_id,"tag":"SMPELLIOTT"}
+        if payload.get("price") is not None and payload["type"]!="MARKET":args["px"]=str(payload["price"])
+        attached={}
+        if payload.get("stop_loss_price") is not None:attached.update({"slTriggerPx":str(payload["stop_loss_price"]),"slOrdPx":"-1"})
+        if payload.get("take_profit_prices"):attached.update({"tpTriggerPx":str(payload["take_profit_prices"][0]),"tpOrdPx":"-1"})
+        if attached:args["attachAlgoOrds"]=[attached]
+        await self.db.execute("INSERT INTO exchange_orders(local_order_id,cl_ord_id,symbol,status,payload) VALUES($1::uuid,$2,$3,'SUBMITTING',$4::jsonb) ON CONFLICT(local_order_id) DO NOTHING",local_id,cl_ord_id,payload["symbol"],json.dumps(args))
+        ack=await self.ws_request("order",args,cl_ord_id)
+        await self.db.execute("UPDATE exchange_orders SET exchange_order_id=$2,status='ACCEPTED',updated_at=now() WHERE local_order_id=$1::uuid",local_id,ack.get("ordId"))
+        await self.redis.xadd("trading.command",{"data":json.dumps({"event_type":"exchange.order_updated","payload":{"order_id":local_id,"exchange_order_id":ack.get("ordId"),"status":"OPEN"}})},maxlen=100000,approximate=True)
+        return {"order_id":local_id,"exchange_order_id":ack.get("ordId"),"status":"ACCEPTED"}
+    async def cancel_order(self,local_order_id):
+        row=await self.db.fetchrow("SELECT cl_ord_id,symbol,status FROM exchange_orders WHERE local_order_id=$1::uuid",local_order_id)
+        if not row:raise ValueError("Order is not owned by this system")
+        if row["status"] in {"FILLED","CANCELLED"}:raise ValueError("Order is already final")
+        await self.ws_request("cancel-order",{"instId":row["symbol"],"clOrdId":row["cl_ord_id"]},"C"+row["cl_ord_id"][:31])
+        return {"order_id":local_order_id,"status":"CANCEL_REQUESTED"}
+    async def exchange_orders(self,limit=100):
+        rows=await self.db.fetch("SELECT local_order_id,cl_ord_id,exchange_order_id,symbol,status,payload,created_at,updated_at FROM exchange_orders ORDER BY created_at DESC LIMIT $1",limit)
+        return [{**dict(row),"local_order_id":str(row["local_order_id"]),"created_at":row["created_at"].isoformat(),"updated_at":row["updated_at"].isoformat()} for row in rows]
+    async def instruments(self):
+        rows=await self.db.fetch("""SELECT symbol,tick_size,lot_size,minimum_order_size,contract_value,
+          maker_fee_rate,taker_fee_rate,funding_rate,next_funding_time,validation_status,updated_at
+          FROM trading_assets WHERE enabled ORDER BY symbol""")
+        return [{**dict(row),"updated_at":row["updated_at"].isoformat()} for row in rows]
     async def history(self,symbol,timeframe,limit=100):
         params={"instId":symbol,"bar":TIMEFRAMES[timeframe],"limit":min(limit,300)};r=await self.client.get(self.s.okx_rest_url+"/api/v5/market/history-candles",params=params);r.raise_for_status();body=r.json()
         if body.get("code")!="0":raise ValueError(body.get("msg","OKX error"))
