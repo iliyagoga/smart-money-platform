@@ -1,5 +1,5 @@
 "use client";
-import { Accordion, AccordionDetails, AccordionSummary, Alert, Button, MenuItem, Paper, Stack, TextField, Typography } from "@mui/material";
+import { Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, Chip, MenuItem, Paper, Stack, TextField, Typography } from "@mui/material";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BacktestSettingsForm } from "../../components/backtest/BacktestSettingsForm";
 import { SectionPage } from "../../components/layout/SectionPage";
@@ -13,7 +13,8 @@ import type { BacktestSettings } from "../../lib/backtest/types";
 import type { Candle, CandlesResponse } from "../../lib/types";
 
 const allTimeframes = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
-type TradingConfig = { symbol: string; mode: string; status: string; config?: BacktestSettings | string };
+type TradingMode = "PAPER" | "DEMO" | "PRODUCTION";
+type TradingConfig = { symbol: string; mode: TradingMode; status: string; config?: BacktestSettings | string };
 type TradingConfigsResponse = { configs: TradingConfig[] };
 type ElliottPatternsResponse = { symbol: string; patterns: LiveElliottPattern[]; total: number };
 type LiveEntriesResponse = { symbol: string; entries: LiveEntryScenario[]; total: number };
@@ -24,6 +25,7 @@ type ElliottHistoryResponse = {
 export default function MarketPage() {
   const assets = useTradingAssets(); const [symbol, setSymbol] = useState("");
   const [viewSymbol, setViewSymbol] = useState("");
+  const [tradingMode, setTradingMode] = useState<TradingMode>("PAPER");
   const [settings, setSettings] = useState<BacktestSettings>(() => ({ ...defaultBacktestSettings, elliott: { ...defaultBacktestSettings.elliott } }));
   const [saving, setSaving] = useState(false); const [message, setMessage] = useState(""); const [selectedTf, setSelectedTf] = useState("M15");
   const tradingConfigs = useApiResource<TradingConfigsResponse>("/api/v1/execution/trading-configs");
@@ -79,7 +81,16 @@ export default function MarketPage() {
   const reloadPatterns = elliottPatterns.reload;
   const reloadScenarios = liveEntries.reload;
   useEffect(() => { const socket = new EventSocket(["candle.*","scenario.*"]); const unsubscribe = socket.subscribe((event) => { if (event.payload?.symbol === viewed) { if (!event.payload.timeframe || event.payload.timeframe === selectedTf) reloadCandles(); reloadPatterns(); reloadScenarios(); } }); void socket.connect(); const timer = window.setInterval(() => { reloadCandles(); reloadPatterns(); reloadScenarios(); }, 15_000); return () => { unsubscribe(); socket.close(); window.clearInterval(timer); }; }, [viewed, selectedTf, reloadCandles, reloadPatterns, reloadScenarios]);
-  const save = async () => { setSaving(true); setMessage(""); try { if (!selected) throw new Error("Введите актив"); const elliottTimeframes = [settings.elliott.entryTimeframe, settings.elliott.structureTimeframe, settings.elliott.macroTimeframe]; const dataset = await api<{ timeframes: Array<{ timeframe: string; candles: number }> }>(`/api/v1/backtest/datasets/${encodeURIComponent(selected)}`).catch(() => ({ timeframes: [] })); const missing = elliottTimeframes.filter((timeframe) => !dataset.timeframes.some((item) => item.timeframe === timeframe && item.candles > 0)); if (missing.length) { await api("/api/v1/exchange/exchange/history", { method: "POST", body: JSON.stringify({ symbol: selected, timeframes: missing, from_timestamp: Date.now() - 180 * 86400000, to_timestamp: Date.now(), incremental: false, backfill: false }) }); setMessage(`Для ${selected} запрошены свечи: ${missing.join(", ")}. Конфигурация сохраняется.`); } await api(`/api/v1/backtest/assets`, { method: "POST", body: JSON.stringify({ symbol: selected, category: "crypto" }) }).catch((error: unknown) => { if (!(error instanceof Error) || !error.message.startsWith("409")) throw error; }); await api("/api/v1/exchange/exchange/reload-symbols", { method: "POST" }); await api("/api/v1/execution/trading-configs", { method: "POST", body: JSON.stringify({ symbol: selected, mode: "SIMULATION", config: settings }) }); assets.reload(); tradingConfigs.reload(); setMessage(`Актив ${selected} зарегистрирован в автономной симуляции.`); } catch (reason) { setMessage(reason instanceof Error ? reason.message : String(reason)); } finally { setSaving(false); } };
+  const save = async () => { setSaving(true); setMessage(""); try { if (!selected) throw new Error("Введите актив"); const elliottTimeframes = [settings.elliott.entryTimeframe, settings.elliott.structureTimeframe, settings.elliott.macroTimeframe]; const dataset = await api<{ timeframes: Array<{ timeframe: string; candles: number }> }>(`/api/v1/backtest/datasets/${encodeURIComponent(selected)}`).catch(() => ({ timeframes: [] })); const missing = elliottTimeframes.filter((timeframe) => !dataset.timeframes.some((item) => item.timeframe === timeframe && item.candles > 0)); if (missing.length) { await api("/api/v1/exchange/exchange/history", { method: "POST", body: JSON.stringify({ symbol: selected, timeframes: missing, from_timestamp: Date.now() - 180 * 86400000, to_timestamp: Date.now(), incremental: false, backfill: false }) }); setMessage(`Для ${selected} запрошены свечи: ${missing.join(", ")}. Конфигурация сохраняется.`); } await api(`/api/v1/backtest/assets`, { method: "POST", body: JSON.stringify({ symbol: selected, category: "crypto" }) }).catch((error: unknown) => { if (!(error instanceof Error) || !error.message.startsWith("409")) throw error; }); await api("/api/v1/exchange/exchange/reload-symbols", { method: "POST" }); await api("/api/v1/execution/trading-configs", { method: "POST", body: JSON.stringify({ symbol: selected, mode: tradingMode, config: settings }) }); setViewSymbol(selected); assets.reload(); tradingConfigs.reload(); setMessage(`Конфигурация ${selected} сохранена в режиме ${tradingMode}.`); } catch (reason) { setMessage(reason instanceof Error ? reason.message : String(reason)); } finally { setSaving(false); } };
+  const editActiveConfig = () => {
+    if (!selectedConfig?.config) return;
+    const raw=typeof selectedConfig.config === "string" ? JSON.parse(selectedConfig.config) as Record<string,unknown> : selectedConfig.config;
+    const normalized=snakeToCamel(raw) as Partial<BacktestSettings>;
+    setSettings((current) => ({ ...current,...normalized,strategy:"ELLIOTT",
+      elliott:{ ...current.elliott,...(normalized.elliott as Partial<BacktestSettings["elliott"]> ?? {}) } }));
+    setSymbol(selectedConfig.symbol);setTradingMode(selectedConfig.mode);setMessage(`Конфигурация ${selectedConfig.symbol} загружена в форму.`);
+    window.scrollTo({ top:0,behavior:"smooth" });
+  };
   const removeLiveAsset = async () => {
     if (!viewed || !window.confirm(`Удалить ${viewed} из live trading?`)) return;
     setSaving(true); setMessage("");
@@ -105,10 +116,11 @@ export default function MarketPage() {
   return <SectionPage title="Рынок" description="Регистрация Elliott-активов и отдельный просмотр их состояния."><Stack spacing={2}>
     <Accordion defaultExpanded disableGutters sx={{ width: "100%", border: 1, borderColor: "divider", "&:before": { display: "none" } }}>
       <AccordionSummary expandIcon={<Typography component="span" sx={{ fontSize: 22 }}>⌄</Typography>}><Typography variant="h6">Регистрация торгового актива</Typography></AccordionSummary>
-      <AccordionDetails><Stack spacing={2}><TextField fullWidth label="Актив" placeholder="BTC-USDT-SWAP" value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())} /><Alert severity="info">Параметры ниже полностью совпадают с Elliott-настройками бэктеста и сохраняются в конфигурации автоторговли.</Alert><BacktestSettingsForm isRunning={saving} onChange={setSettings} onRun={() => void save()} progress={0} settings={settings} templates={[]} elliottOnly submitLabel="Зарегистрировать актив" /><Button variant="outlined" onClick={() => void pasteConfig()} disabled={saving}>Вставить скопированную конфигурацию</Button></Stack></AccordionDetails>
+      <AccordionDetails><Stack spacing={2}><Stack direction={{ xs:"column",md:"row" }} spacing={1.5}><TextField fullWidth label="Актив" placeholder="BTC-USDT-SWAP" value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())} /><TextField fullWidth select label="Режим торговли" value={tradingMode} onChange={(e) => setTradingMode(e.target.value as TradingMode)}><MenuItem value="PAPER">Paper — локальная имитация</MenuItem><MenuItem value="DEMO">OKX Demo</MenuItem><MenuItem value="PRODUCTION">OKX Production</MenuItem></TextField></Stack><Alert severity={tradingMode === "PRODUCTION" ? "warning" : "info"}>{tradingMode === "PAPER" ? "Ордера исполняются локально и не отправляются на OKX." : tradingMode === "DEMO" ? "Ордера отправляются в демонстрационный контур OKX." : "Реальные ордера. Gateway должен быть подключён к production OKX и явно разрешён для торговли."}</Alert><BacktestSettingsForm isRunning={saving} onChange={setSettings} onRun={() => void save()} progress={0} settings={settings} templates={[]} elliottOnly submitLabel={activeConfigs.some((item) => item.symbol === selected) ? "Сохранить изменения" : "Зарегистрировать актив"} /><Button variant="outlined" onClick={() => void pasteConfig()} disabled={saving}>Вставить скопированную конфигурацию</Button></Stack></AccordionDetails>
     </Accordion>
-    {message && <Alert severity={message.includes("зарегистрирован") || message.includes("вставлена") || message.includes("удалён") ? "success" : "error"}>{message}</Alert>}
+    {message && <Alert severity={message.includes("сохранена") || message.includes("загружена") || message.includes("вставлена") || message.includes("удалён") ? "success" : "error"}>{message}</Alert>}
     <Paper variant="outlined" sx={{ p: { xs: 2, md: 3 }, width: "100%" }}><Stack spacing={1.5}><Typography variant="h6">Состояние актива</Typography><Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}><TextField fullWidth select label="Актив для просмотра" value={viewed} onChange={(e) => { setHistoricalElliott(null); setViewSymbol(e.target.value); }}>{activeAssets.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}</TextField><TextField fullWidth select label="Просматриваемый таймфрейм" value={selectedTf} onChange={(e) => setSelectedTf(e.target.value)} disabled={!availableTimeframes.length}>{availableTimeframes.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}</TextField><Button color="error" variant="contained" disabled={!viewed || saving} onClick={() => void removeLiveAsset()} sx={{ minWidth: 190, alignSelf: "center", borderRadius: 1, px: 2.5, py: .5, boxShadow: "none", textTransform: "none", fontWeight: 700, "&:hover": { boxShadow: "0 4px 12px rgba(211,47,47,.2)" } }}>Удалить актив</Button></Stack>{viewed ? <TradingViewChart key={`${viewed}:${selectedTf}`} candles={candles.data?.candles ?? []} elliottPatterns={historicalElliott?.patterns ?? elliottPatterns.data?.patterns ?? []} entryScenarios={historicalElliott?.entries ?? liveEntries.data?.entries ?? []} /> : <Typography color="text.secondary">Нет активных активов для просмотра.</Typography>}</Stack></Paper>
+    {selectedConfig && <Paper variant="outlined" sx={{ p:{ xs:2,md:3 } }}><Stack spacing={2}><Stack direction="row" sx={{ alignItems:"center",justifyContent:"space-between" }}><Stack direction="row" spacing={1} sx={{ alignItems:"center" }}><Typography variant="h6">Конфигурация {selectedConfig.symbol}</Typography><Chip label={selectedConfig.mode} color={selectedConfig.mode === "PRODUCTION" ? "error" : selectedConfig.mode === "DEMO" ? "warning" : "default"} /></Stack><Button variant="contained" onClick={editActiveConfig}>Редактировать</Button></Stack><ConfigSummary value={selectedConfig.config} /><Accordion disableGutters><AccordionSummary expandIcon={<Typography>⌄</Typography>}><Typography>Полная конфигурация</Typography></AccordionSummary><AccordionDetails><Box component="pre" sx={{ m:0,p:2,overflow:"auto",bgcolor:"action.hover",fontSize:12 }}>{JSON.stringify(parseConfig(selectedConfig.config),null,2)}</Box></AccordionDetails></Accordion></Stack></Paper>}
   </Stack></SectionPage>;
 }
 
@@ -118,6 +130,25 @@ function snakeToCamel(value: unknown): unknown {
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [
     key.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase()), snakeToCamel(item),
   ]));
+}
+
+function parseConfig(value?:BacktestSettings|string):Record<string,unknown> {
+  if (!value) return {};
+  return typeof value === "string" ? JSON.parse(value) as Record<string,unknown> : value as unknown as Record<string,unknown>;
+}
+
+function ConfigSummary({ value }:{ value?:BacktestSettings|string }) {
+  const normalized=snakeToCamel(parseConfig(value)) as Partial<BacktestSettings>;
+  const elliott=normalized.elliott as Partial<BacktestSettings["elliott"]> | undefined;
+  const items=[
+    ["Направление",normalized.directionMode ?? "—"],
+    ["Таймфреймы",`${elliott?.macroTimeframe ?? "—"} / ${elliott?.structureTimeframe ?? "—"} / ${elliott?.entryTimeframe ?? "—"}`],
+    ["Модель входа",elliott?.entryModel ?? "—"],
+    ["Риск",`${normalized.riskPerTradePercent ?? 0}%`],
+    ["Маржа",elliott?.useMargin ? `×${normalized.leverage ?? 1}` : "Без маржи"],
+    ["Тейки",`${elliott?.takeProfitCount ?? 1} · TP1 ${elliott?.takeProfitRr ?? "—"}R`],
+  ];
+  return <Stack direction={{ xs:"column",md:"row" }} spacing={1.5}>{items.map(([label,item]) => <Paper key={String(label)} variant="outlined" sx={{ p:1.5,flex:1 }}><Typography variant="caption" color="text.secondary">{label}</Typography><Typography sx={{ mt:.5,fontWeight:600 }}>{item}</Typography></Paper>)}</Stack>;
 }
 
 const timeframeMinutes: Record<string, number> = {

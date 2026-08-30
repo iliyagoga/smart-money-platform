@@ -10,6 +10,7 @@ class OrderCreate(BaseModel):
     target_allocations:list[float]=[];break_even_rule:str="ONE_R";move_stop_to_break_even_after_target:int|None=1
     deduplication_key:str|None=None
     leverage:int=Field(default=1,ge=1,le=125);margin_mode:str="cross"
+    execution_mode:str="PAPER"
     @model_validator(mode="after")
     def valid(self):
         self.symbol=self.symbol.strip().upper();self.side=self.side.upper();self.type=self.type.upper()
@@ -18,6 +19,8 @@ class OrderCreate(BaseModel):
         if self.type!="MARKET" and self.price is None:raise ValueError("price is required")
         self.margin_mode=self.margin_mode.lower()
         if self.margin_mode not in {"cross","isolated"}:raise ValueError("unsupported margin mode")
+        self.execution_mode=self.execution_mode.upper()
+        if self.execution_mode not in {"PAPER","DEMO","PRODUCTION"}:raise ValueError("unsupported execution mode")
         return self
 class Order(OrderCreate):
     id:str=Field(default_factory=lambda:str(uuid4()));status:str="PENDING";exchange_order_id:str|None=None

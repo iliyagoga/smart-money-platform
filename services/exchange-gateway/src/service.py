@@ -194,7 +194,7 @@ class ExchangeGateway:
         return data
     async def consume_orders(self):
         group="exchange-gateway"
-        try:await self.redis.xgroup_create("execution.command",group,id="0",mkstream=True)
+        try:await self.redis.xgroup_create("execution.command",group,id="$",mkstream=True)
         except Exception:pass
         while True:
             batches=await self.redis.xreadgroup(group,"exchange-1",{"execution.command":">"},count=10,block=2000)
@@ -217,6 +217,9 @@ class ExchangeGateway:
         if not row or row["validation_status"]!="ACTIVE":raise ValueError("Exchange instrument metadata is unavailable")
         return row
     async def place_order(self,payload):
+        requested_mode=str(payload.get("execution_mode","")).upper();gateway_mode="DEMO" if self.s.okx_demo else "PRODUCTION"
+        if requested_mode not in {"DEMO","PRODUCTION"}:raise ValueError("Only exchange execution modes can reach OKX")
+        if requested_mode!=gateway_mode:raise ValueError(f"Asset mode {requested_mode} does not match OKX gateway mode {gateway_mode}")
         spec=await self.instrument_order_spec(payload["symbol"]);contract=Decimal(str(spec["contract_value"]));base_qty=Decimal(str(payload["quantity"]))
         contracts=base_qty/contract;lot_contracts=Decimal(str(spec["lot_size"]))/contract
         contracts=(contracts//lot_contracts)*lot_contracts

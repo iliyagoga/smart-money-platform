@@ -32,6 +32,8 @@ class TradingConfigCreate(BaseModel):
     symbol: str
     mode: str = "SIMULATION"
     config: dict
+    @property
+    def normalized_mode(self):return self.mode.strip().upper()
 
 service=ExecutionService(settings.database_url,settings.redis_url,settings.stream_group,settings.consumer_name,settings.execution_mode)
 @asynccontextmanager
@@ -80,9 +82,11 @@ async def trading_configs():
 async def save_trading_config(request: TradingConfigCreate):
     symbol=request.symbol.strip().upper()
     if not symbol: raise HTTPException(422,"symbol must not be empty")
+    mode=request.normalized_mode
+    if mode not in {"PAPER","DEMO","PRODUCTION"}:raise HTTPException(422,"mode must be PAPER, DEMO or PRODUCTION")
     row=await service.db.fetchrow("""INSERT INTO trading_configs(symbol,mode,status,config) VALUES($1,$2,'ACTIVE',$3::jsonb)
       ON CONFLICT(symbol) DO UPDATE SET mode=excluded.mode,status='ACTIVE',config=excluded.config,updated_at=now()
-      RETURNING symbol,mode,status,config,created_at,updated_at""",symbol,request.mode,json.dumps(request.config))
+      RETURNING symbol,mode,status,config,created_at,updated_at""",symbol,mode,json.dumps(request.config))
     return dict(row)
 @app.delete("/trading-configs/{symbol}")
 async def delete_trading_config(symbol: str):
