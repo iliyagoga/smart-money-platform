@@ -11,6 +11,7 @@ const navigation = [
   { label: "Рынок", href: "/market" },
   { label: "Сделки", href: "/trades" },
   { label: "Конфигурации", href: "/configurations" },
+  { label: "Портфели", href: "/portfolios" },
   { label: "Бэктест", href: "/backtest" },
   { label: "Replay", href: "/replay" },
 ];

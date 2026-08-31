@@ -24,6 +24,9 @@ class ExecutionService:
           CREATE TABLE IF NOT EXISTS strategy_configurations(id uuid PRIMARY KEY,owner_id text NOT NULL,name text NOT NULL,
             description text NOT NULL DEFAULT '',config jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),
             updated_at timestamptz NOT NULL DEFAULT now(),UNIQUE(owner_id,name));
+          CREATE TABLE IF NOT EXISTS portfolios(id uuid PRIMARY KEY,owner_id text NOT NULL,name text NOT NULL,
+            description text NOT NULL DEFAULT '',assets jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),
+            updated_at timestamptz NOT NULL DEFAULT now(),UNIQUE(owner_id,name));
         """)
         await self.db.execute("UPDATE trading_configs SET mode='PAPER' WHERE mode IN ('SIMULATION','paper')")
         for row in await self.db.fetch("SELECT data FROM orders WHERE status IN ('PENDING','OPEN')"):

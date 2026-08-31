@@ -42,9 +42,27 @@ class StrategyConfigurationWrite(BaseModel):
     description:str=Field(default="",max_length=1000)
     config:dict
 
+class PortfolioAssetWrite(BaseModel):
+    symbol:str=Field(min_length=1,max_length=80)
+    configuration_id:UUID
+    allocation_percent:float=Field(gt=0,le=100)
+
+class PortfolioWrite(BaseModel):
+    name:str=Field(min_length=1,max_length=120)
+    description:str=Field(default="",max_length=1000)
+    assets:list[PortfolioAssetWrite]=Field(min_length=1,max_length=100)
+
+class PortfolioLiveRequest(BaseModel):
+    mode:str="PAPER"
+
 def configuration_record(row):
     value=dict(row);value["id"]=str(value["id"])
     value["config"]=decode_json(value["config"])
+    value["created_at"]=value["created_at"].isoformat();value["updated_at"]=value["updated_at"].isoformat()
+    return value
+
+def portfolio_record(row):
+    value=dict(row);value["id"]=str(value["id"]);value["assets"]=decode_json(value["assets"])
     value["created_at"]=value["created_at"].isoformat();value["updated_at"]=value["updated_at"].isoformat()
     return value
 
@@ -112,6 +130,63 @@ async def delete_trading_config(symbol: str):
     removed=await service.db.fetchval("DELETE FROM trading_configs WHERE symbol=$1 RETURNING symbol",symbol)
     if not removed:raise HTTPException(404,"Trading asset not found")
     return {"success":True,"symbol":removed}
+
+@app.get("/portfolios")
+async def portfolios(x_user_id:str=Header(default="local")):
+    rows=await service.db.fetch("SELECT id,name,description,assets,created_at,updated_at FROM portfolios WHERE owner_id=$1 ORDER BY updated_at DESC",x_user_id)
+    return {"portfolios":[portfolio_record(row) for row in rows]}
+
+async def validated_portfolio_assets(request:PortfolioWrite,x_user_id:str):
+    symbols=[item.symbol.strip().upper() for item in request.assets]
+    if len(set(symbols))!=len(symbols):raise HTTPException(422,"Portfolio symbols must be unique")
+    if sum(item.allocation_percent for item in request.assets)>100.000001:raise HTTPException(422,"Total allocation must not exceed 100%")
+    ids=[item.configuration_id for item in request.assets]
+    rows=await service.db.fetch("SELECT id,config FROM strategy_configurations WHERE owner_id=$1 AND id=ANY($2::uuid[])",x_user_id,ids)
+    configs={row["id"]:decode_json(row["config"]) for row in rows}
+    if len(configs)!=len(set(ids)):raise HTTPException(422,"One or more configurations are unavailable")
+    return [{"symbol":symbol,"configuration_id":str(item.configuration_id),"allocation_percent":item.allocation_percent,
+             "config":configs[item.configuration_id]} for symbol,item in zip(symbols,request.assets)]
+
+@app.post("/portfolios",status_code=201)
+async def create_portfolio(request:PortfolioWrite,x_user_id:str=Header(default="local")):
+    assets=await validated_portfolio_assets(request,x_user_id);name=request.name.strip()
+    if not name:raise HTTPException(422,"name must not be empty")
+    try:row=await service.db.fetchrow("""INSERT INTO portfolios(id,owner_id,name,description,assets) VALUES($1::uuid,$2,$3,$4,$5::jsonb)
+      RETURNING id,name,description,assets,created_at,updated_at""",str(uuid4()),x_user_id,name,request.description.strip(),json.dumps(assets))
+    except asyncpg.UniqueViolationError as exc:raise HTTPException(409,"Portfolio name already exists") from exc
+    return portfolio_record(row)
+
+@app.put("/portfolios/{portfolio_id}")
+async def update_portfolio(portfolio_id:UUID,request:PortfolioWrite,x_user_id:str=Header(default="local")):
+    assets=await validated_portfolio_assets(request,x_user_id);name=request.name.strip()
+    try:row=await service.db.fetchrow("""UPDATE portfolios SET name=$3,description=$4,assets=$5::jsonb,updated_at=now()
+      WHERE id=$1 AND owner_id=$2 RETURNING id,name,description,assets,created_at,updated_at""",
+      portfolio_id,x_user_id,name,request.description.strip(),json.dumps(assets))
+    except asyncpg.UniqueViolationError as exc:raise HTTPException(409,"Portfolio name already exists") from exc
+    if not row:raise HTTPException(404,"Portfolio not found")
+    return portfolio_record(row)
+
+@app.delete("/portfolios/{portfolio_id}")
+async def delete_portfolio(portfolio_id:UUID,x_user_id:str=Header(default="local")):
+    removed=await service.db.fetchval("DELETE FROM portfolios WHERE id=$1 AND owner_id=$2 RETURNING id",portfolio_id,x_user_id)
+    if not removed:raise HTTPException(404,"Portfolio not found")
+    return {"deleted":True,"id":str(removed)}
+
+@app.post("/portfolios/{portfolio_id}/live")
+async def portfolio_to_live(portfolio_id:UUID,request:PortfolioLiveRequest,x_user_id:str=Header(default="local")):
+    mode=request.mode.strip().upper()
+    if mode not in {"PAPER","DEMO","PRODUCTION"}:raise HTTPException(422,"mode must be PAPER, DEMO or PRODUCTION")
+    row=await service.db.fetchrow("SELECT assets FROM portfolios WHERE id=$1 AND owner_id=$2",portfolio_id,x_user_id)
+    if not row:raise HTTPException(404,"Portfolio not found")
+    assets=decode_json(row["assets"])
+    async with service.db.acquire() as connection:
+      async with connection.transaction():
+        for item in assets:
+          config={**item["config"],"portfolioAllocationPercent":item["allocation_percent"],"portfolioId":str(portfolio_id)}
+          await connection.execute("""INSERT INTO trading_configs(symbol,mode,status,config) VALUES($1,$2,'ACTIVE',$3::jsonb)
+            ON CONFLICT(symbol) DO UPDATE SET mode=excluded.mode,status='ACTIVE',config=excluded.config,updated_at=now()""",
+            item["symbol"],mode,json.dumps(config))
+    return {"id":str(portfolio_id),"mode":mode,"activated_symbols":[item["symbol"] for item in assets]}
 @app.get("/configuration-library")
 async def configuration_library(x_user_id:str=Header(default="local")):
     rows=await service.db.fetch("SELECT id,name,description,config,created_at,updated_at FROM strategy_configurations WHERE owner_id=$1 ORDER BY updated_at DESC",x_user_id)
