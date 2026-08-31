@@ -11,8 +11,14 @@ export interface ElliottSettings {
   atrPeriod: number; zigzagReversalAtr: number; minSwingAtr: number;
   wave1MinAtr: number; wave1MinEfficiency: number;
   wave2MinRetracement: number; wave2MaxRetracement: number;
-  entryModel: "CHOCH_MARKET" | "CHOCH_RETRACE" | "WAVE1_BREAK_RETRACE";
+  entryModel: "CHOCH_MARKET" | "CHOCH_RETRACE" | "WAVE1_BREAK_RETRACE" | "WAVE1_BREAK_MARKET"
+    | "WAVE1_BREAK_STOP" | "WAVE1_BREAK_RETEST_CONFIRM" | "MICRO_WAVE3" | "DISPLACEMENT_RETRACE"
+    | "P2_LIQUIDITY_SWEEP" | "WAVE2_TRENDLINE_BREAK" | "ADX_ACCELERATION"
+    | "VOLATILITY_EXPANSION" | "VOLUME_EXPANSION";
   entryRetracement: number; entryExpiryBars: number; chochMinAtr: number; chochMinBodyRatio: number;
+  breakoutBufferAtr: number; retestZoneAtr: number; displacementMinAtr: number;
+  displacementMinBodyRatio: number; displacementRetracement: number; sweepMinWickRatio: number;
+  volatilityExpansionRatio: number; volumeExpansionRatio: number; volumeExpansionMinBodyRatio: number;
   macroFilter: "OFF" | "STRUCTURE" | "EMA200" | "EMA_CROSS";
   adxPeriod: number; adxMin: number; requireDiConfirmation: boolean;
   stopBufferAtr: number; takeProfitCount: 1 | 2; takeProfitRr: number; secondTakeProfitRr: number;

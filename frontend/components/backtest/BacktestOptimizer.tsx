@@ -8,7 +8,7 @@ type Metric = "RETURN_DD" | "RETURN" | "PROFIT_FACTOR";
 type Period = { from: string; to: string };
 type Candidate = { settings: BacktestSettings; label: string };
 type Row = Candidate & { optimization: BacktestResult; validation?: BacktestResult; optimizationScore: number; score?: number; passed?: boolean };
-type Key = "directionMode" | "macroTimeframe" | "structureTimeframe" | "entryTimeframe" | "atrPeriod" | "zigzagReversalAtr" | "minSwingAtr" | "wave1MinAtr" | "wave1MinEfficiency" | "wave2MinRetracement" | "wave2MaxRetracement" | "entryModel" | "entryRetracement" | "entryExpiryBars" | "chochMinAtr" | "chochMinBodyRatio" | "adxPeriod" | "adxMin" | "requireDiConfirmation" | "stopBufferAtr" | "minimumRr" | "takeProfitCount" | "takeProfitRr" | "secondTakeProfitRr" | "firstTakeAction" | "initialCapital" | "useMargin" | "leverage" | "reinvestProfits" | "riskPerTradePercent";
+type Key = "directionMode" | "macroTimeframe" | "structureTimeframe" | "entryTimeframe" | "atrPeriod" | "zigzagReversalAtr" | "minSwingAtr" | "wave1MinAtr" | "wave1MinEfficiency" | "wave2MinRetracement" | "wave2MaxRetracement" | "entryModel" | "entryRetracement" | "entryExpiryBars" | "breakoutBufferAtr" | "retestZoneAtr" | "displacementMinAtr" | "displacementMinBodyRatio" | "displacementRetracement" | "sweepMinWickRatio" | "volatilityExpansionRatio" | "volumeExpansionRatio" | "volumeExpansionMinBodyRatio" | "chochMinAtr" | "chochMinBodyRatio" | "adxPeriod" | "adxMin" | "requireDiConfirmation" | "stopBufferAtr" | "exitModel" | "levelLookbackBars" | "volumeProfileBins" | "minimumRr" | "takeProfitCount" | "takeProfitRr" | "secondTakeProfitRr" | "firstTakeAction" | "initialCapital" | "useMargin" | "leverage" | "reinvestProfits" | "riskPerTradePercent";
 type BlockId = "context" | "wave" | "entry" | "protection" | "capital";
 type Parameter = { key: Key; label: string; options: string[] };
 type Block = { id: BlockId; title: string; description: string; parameters: Parameter[] };
@@ -44,9 +44,22 @@ const blocks: Block[] = [
     { key: "wave2MaxRetracement", label: "Wave 2 до", options: strings([.236, .382, .5, .618, .786, .9, .99]) },
   ] },
   { id: "entry", title: "Вход и подтверждение", description: "Модель входа, CHOCH, срок ожидания, ADX и DI.", parameters: [
-    { key: "entryModel", label: "Модель входа", options: ["CHOCH_MARKET", "CHOCH_RETRACE", "WAVE1_BREAK_RETRACE"] },
+    { key: "entryModel", label: "Модель входа", options: [
+      "CHOCH_MARKET", "CHOCH_RETRACE", "WAVE1_BREAK_RETRACE", "WAVE1_BREAK_MARKET", "WAVE1_BREAK_STOP",
+      "WAVE1_BREAK_RETEST_CONFIRM", "MICRO_WAVE3", "DISPLACEMENT_RETRACE", "P2_LIQUIDITY_SWEEP",
+      "WAVE2_TRENDLINE_BREAK", "ADX_ACCELERATION", "VOLATILITY_EXPANSION", "VOLUME_EXPANSION",
+    ] },
     { key: "entryRetracement", label: "Доля импульса CHOCH", options: strings([0, .236, .382, .5, .618, .786, 1]) },
     { key: "entryExpiryBars", label: "Ждать вход, свечей", options: strings([1, 2, 3, 4, 5, 8, 10, 15, 20, 50, 100]) },
+    { key: "breakoutBufferAtr", label: "Буфер P1, ATR", options: strings([0, .1, .2, .3]) },
+    { key: "retestZoneAtr", label: "Ретест P1, ATR", options: strings([.1, .2, .3, .4, .5]) },
+    { key: "displacementMinAtr", label: "Displacement, ATR", options: strings([.5, .75, 1, 1.25, 1.5, 2]) },
+    { key: "displacementMinBodyRatio", label: "Displacement body", options: strings([.5, .6, .65, .7, .8]) },
+    { key: "displacementRetracement", label: "Откат displacement", options: strings([.382, .5, .618]) },
+    { key: "sweepMinWickRatio", label: "Тень sweep P2", options: strings([.3, .4, .5, .6]) },
+    { key: "volatilityExpansionRatio", label: "Расширение ATR", options: strings([1.2, 1.5, 2, 2.5]) },
+    { key: "volumeExpansionRatio", label: "Объём / SMA20", options: strings([1.2, 1.5, 2, 2.5, 3]) },
+    { key: "volumeExpansionMinBodyRatio", label: "Volume body", options: strings([.5, .6, .65, .7, .8]) },
     { key: "chochMinAtr", label: "CHOCH displacement, ATR", options: strings([0, .25, .5, .75, 1, 1.5, 2, 3, 5, 10]) },
     { key: "chochMinBodyRatio", label: "Мин. тело свечи", options: strings([0, .25, .35, .5, .6, .75, 1]) },
     { key: "adxPeriod", label: "Период ADX", options: strings([7, 10, 14, 20, 21, 28, 50, 100]) },
@@ -54,6 +67,7 @@ const blocks: Block[] = [
     { key: "requireDiConfirmation", label: "Подтверждение +DI/-DI", options: ["false", "true"] },
   ] },
   { id: "protection", title: "Stop Loss и Risk/Reward", description: "Структурный стоп, RR и управление тейками.", parameters: [
+    { key: "exitModel", label: "Модель выхода", options: ["FIXED_RR", "LIQUIDITY_WAVE_VOLUME"] },
     { key: "stopBufferAtr", label: "Буфер стопа, ATR", options: strings([0, .1, .2, .25, .5, .75, 1, 1.5, 2, 3, 5, 10]) },
     { key: "minimumRr", label: "Минимальный RR", options: tenths(.1, 10) },
     { key: "takeProfitCount", label: "Количество тейков", options: ["1", "2"] },
@@ -82,7 +96,9 @@ const formatDuration = (seconds: number) => {
   return `≈ ${minutes} мин`;
 };
 const rootKeys = new Set<Key>(["directionMode", "initialCapital", "leverage", "riskPerTradePercent"]);
-const stringKeys = new Set<Key>(["directionMode", "macroTimeframe", "structureTimeframe", "entryTimeframe", "entryModel", "firstTakeAction"]);
+const stringKeys = new Set<Key>([
+  "directionMode", "macroTimeframe", "structureTimeframe", "entryTimeframe", "entryModel", "exitModel", "firstTakeAction",
+]);
 const booleanKeys = new Set<Key>(["requireDiConfirmation", "useMargin", "reinvestProfits"]);
 const getValue = (settings: BacktestSettings, key: Key) => String(rootKeys.has(key) ? settings[key as "initialCapital"] : settings.elliott[key as keyof ElliottSettings]);
 function setValue(settings: BacktestSettings, key: Key, raw: string): BacktestSettings {

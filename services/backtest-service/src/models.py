@@ -21,6 +21,16 @@ class ElliottEntryModel(StrEnum):
     CHOCH_MARKET = "CHOCH_MARKET"
     CHOCH_RETRACE = "CHOCH_RETRACE"
     WAVE1_BREAK_RETRACE = "WAVE1_BREAK_RETRACE"
+    WAVE1_BREAK_MARKET = "WAVE1_BREAK_MARKET"
+    WAVE1_BREAK_STOP = "WAVE1_BREAK_STOP"
+    WAVE1_BREAK_RETEST_CONFIRM = "WAVE1_BREAK_RETEST_CONFIRM"
+    MICRO_WAVE3 = "MICRO_WAVE3"
+    DISPLACEMENT_RETRACE = "DISPLACEMENT_RETRACE"
+    P2_LIQUIDITY_SWEEP = "P2_LIQUIDITY_SWEEP"
+    WAVE2_TRENDLINE_BREAK = "WAVE2_TRENDLINE_BREAK"
+    ADX_ACCELERATION = "ADX_ACCELERATION"
+    VOLATILITY_EXPANSION = "VOLATILITY_EXPANSION"
+    VOLUME_EXPANSION = "VOLUME_EXPANSION"
 
 
 class ElliottMacroFilter(StrEnum):
@@ -59,6 +69,15 @@ class ElliottConfig(BaseModel):
     entry_model: ElliottEntryModel = ElliottEntryModel.CHOCH_RETRACE
     entry_retracement: float = Field(default=.5, ge=0, le=1)
     entry_expiry_bars: int = Field(default=4, ge=1, le=1000)
+    breakout_buffer_atr: float = Field(default=.1, ge=0, le=5)
+    retest_zone_atr: float = Field(default=.25, ge=0, le=5)
+    displacement_min_atr: float = Field(default=1, ge=.1, le=20)
+    displacement_min_body_ratio: float = Field(default=.65, ge=0, le=1)
+    displacement_retracement: float = Field(default=.5, ge=0, le=1)
+    sweep_min_wick_ratio: float = Field(default=.4, ge=0, le=1)
+    volatility_expansion_ratio: float = Field(default=1.5, ge=1, le=20)
+    volume_expansion_ratio: float = Field(default=1.5, ge=1, le=100)
+    volume_expansion_min_body_ratio: float = Field(default=.6, ge=0, le=1)
     choch_min_atr: float = Field(default=.5, ge=0, le=10)
     choch_min_body_ratio: float = Field(default=.5, ge=0, le=1)
     macro_filter: ElliottMacroFilter = ElliottMacroFilter.STRUCTURE

@@ -38,6 +38,15 @@ def test_config_enforces_timeframe_hierarchy_and_tp_allocations():
     assert ElliottConfig(take_profit_count=1, take_profit_rr=2, second_take_profit_rr=1).take_profit_count == 1
 
 
+@pytest.mark.parametrize("model", [
+    "WAVE1_BREAK_MARKET", "WAVE1_BREAK_STOP", "WAVE1_BREAK_RETEST_CONFIRM", "MICRO_WAVE3",
+    "DISPLACEMENT_RETRACE", "P2_LIQUIDITY_SWEEP", "WAVE2_TRENDLINE_BREAK", "ADX_ACCELERATION",
+    "VOLATILITY_EXPANSION", "VOLUME_EXPANSION",
+])
+def test_experimental_entry_models_are_valid_config_values(model):
+    assert ElliottConfig(entry_model=model).entry_model.value == model
+
+
 def test_fixed_rr_target_uses_actual_stop_distance():
     assert _fixed_rr_target(100, 98, "LONG", 2) == pytest.approx(104)
     assert _fixed_rr_target(100, 103, "SHORT", 1.5) == pytest.approx(95.5)
@@ -218,6 +227,67 @@ def test_wave1_break_retrace_waits_for_break_then_later_retest(monkeypatch):
     assert result["trades"][0]["pattern_id"] == "wave1"
     assert result["trades"][0]["entry_time"] == 1_800_000
     assert result["trades"][0]["entry_price"] == pytest.approx(105)
+
+
+def test_wave1_break_market_enters_on_next_open_after_confirmed_close(monkeypatch):
+    pattern = Pattern(
+        "break-market", "LONG",
+        {"P0": Pivot(0, 0, 0, 90, "LOW", 1), "P1": Pivot(1, 0, 0, 105, "HIGH", 1),
+         "P2": Pivot(2, 0, 0, 98, "LOW", 1)},
+        "WAVE3_POTENTIAL", {"choch_level": 100, "choch_close": 101}, signal_time=1,
+    )
+    monkeypatch.setattr("src.elliott.detect_patterns", lambda *args: ([pattern], [], []))
+    entry = [
+        {"timestamp": 0, "open": 100, "high": 104, "low": 99, "close": 103, "volume": 100},
+        {"timestamp": 900_000, "open": 103, "high": 107, "low": 102, "close": 106, "volume": 100},
+        {"timestamp": 1_800_000, "open": 106.5, "high": 112, "low": 106, "close": 111, "volume": 100},
+    ]
+    elliott = loose_config().model_copy(update={
+        "entry_model": "WAVE1_BREAK_MARKET", "breakout_buffer_atr": 0,
+        "take_profit_count": 1, "take_profit_rr": 1,
+    })
+    config = BacktestConfig(
+        strategy="ELLIOTT", fee_percent=0, slippage_percent=0,
+        tick_size=.1, lot_size=.01, minimum_order_size=.01, elliott=elliott,
+    )
+
+    result = run_elliott_replay({"H4": entry, "H1": entry, "M15": entry}, config)
+
+    assert result["trades"][0]["entry_time"] == 1_800_000
+    assert result["trades"][0]["entry_price"] == pytest.approx(106.5)
+
+
+def test_volume_expansion_uses_closed_signal_and_stop_entry_above_high(monkeypatch):
+    pattern = Pattern(
+        "volume", "LONG",
+        {"P0": Pivot(0, 0, 0, 90, "LOW", 1), "P1": Pivot(1, 0, 0, 105, "HIGH", 1),
+         "P2": Pivot(2, 0, 0, 98, "LOW", 1)},
+        "WAVE3_POTENTIAL", {"choch_level": 100, "choch_close": 101}, signal_time=1,
+    )
+    monkeypatch.setattr("src.elliott.detect_patterns", lambda *args: ([pattern], [], []))
+    entry = [
+        {"timestamp": index * 900_000, "open": 100, "high": 100.5, "low": 99.5, "close": 100, "volume": 10}
+        for index in range(20)
+    ]
+    entry.extend([
+        {"timestamp": 18_000_000, "open": 100, "high": 103, "low": 99.8, "close": 102.8, "volume": 30},
+        {"timestamp": 18_900_000, "open": 102.8, "high": 106, "low": 102.5, "close": 105, "volume": 10},
+        {"timestamp": 19_800_000, "open": 105, "high": 112, "low": 104, "close": 111, "volume": 10},
+    ])
+    elliott = loose_config().model_copy(update={
+        "entry_model": "VOLUME_EXPANSION", "entry_expiry_bars": 30,
+        "volume_expansion_ratio": 1.5, "volume_expansion_min_body_ratio": .6,
+        "take_profit_count": 1, "take_profit_rr": 1,
+    })
+    config = BacktestConfig(
+        strategy="ELLIOTT", fee_percent=0, slippage_percent=0,
+        tick_size=.1, lot_size=.01, minimum_order_size=.01, elliott=elliott,
+    )
+
+    result = run_elliott_replay({"H4": entry, "H1": entry, "M15": entry}, config)
+
+    assert result["trades"][0]["entry_time"] == 18_900_000
+    assert result["trades"][0]["entry_price"] == pytest.approx(103.1)
 
 
 def test_break_even_at_one_r_closes_on_later_retrace(monkeypatch):

@@ -382,6 +382,11 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
     if not entry:
         raise ValueError(f"no Elliott entry candles for {ec.entry_timeframe}")
     patterns, structure_pivots, entry_pivots = detect_patterns(structure, entry, macro, ec)
+    entry_true_ranges = _true_ranges(entry)
+    entry_atr = _rolling(entry_true_ranges, ec.atr_period)
+    entry_long_atr = _rolling(entry_true_ranges, min(ec.atr_period * 3, 500))
+    entry_adx, entry_plus_di, entry_minus_di = _adx(entry, ec.adx_period)
+    entry_volume_average = _rolling([float(item.get("volume", 0)) for item in entry], ec.volume_sma_period)
     signals = sorted([item for item in patterns if item.signal_time], key=lambda item: item.signal_time)
     maker_fee = (config.maker_fee_percent if config.maker_fee_percent is not None else config.fee_percent) / 100
     taker_fee = (config.taker_fee_percent if config.taker_fee_percent is not None else config.fee_percent) / 100
@@ -441,7 +446,7 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
             trades[-1].pop(key, None)
         position = None
 
-    for candle in entry:
+    for candle_index, candle in enumerate(entry):
         timestamp = int(candle["timestamp"])
         available_at = timestamp + TIMEFRAME_MILLISECONDS[ec.entry_timeframe]
         if evaluation_start is not None and timestamp < evaluation_start:
@@ -505,6 +510,9 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
             selected = None
             for candidate in eligible:
                 candidate_side = 1 if candidate.direction == "LONG" else -1
+                entry_duration = TIMEFRAME_MILLISECONDS[ec.entry_timeframe]
+                previous_after_signal = candle_index > 0 \
+                    and int(entry[candle_index - 1]["timestamp"]) + entry_duration >= candidate.signal_time
                 candidate_entry = float(candle["open"]) * (1 + slip * candidate_side)
                 candidate_fee = taker_fee
                 touched = timestamp >= candidate.signal_time
@@ -527,6 +535,117 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
                         # candle, so a fill is allowed only on a later candle.
                         continue
                     touched = low <= candidate_entry <= high
+                elif ec.entry_model == ElliottEntryModel.WAVE1_BREAK_MARKET:
+                    threshold = candidate.points["P1"].price + candidate_side * ec.breakout_buffer_atr * candidate.points["P1"].atr
+                    previous_close = float(entry[candle_index - 1]["close"]) if candle_index else candidate_entry
+                    touched = previous_after_signal and candidate_side * (previous_close - threshold) > 0
+                elif ec.entry_model == ElliottEntryModel.WAVE1_BREAK_STOP:
+                    candidate_entry = candidate.points["P1"].price + candidate_side * ec.breakout_buffer_atr * candidate.points["P1"].atr
+                    candidate_entry = round(candidate_entry / config.tick_size) * config.tick_size
+                    touched = high >= candidate_entry if candidate_side == 1 else low <= candidate_entry
+                elif ec.entry_model == ElliottEntryModel.WAVE1_BREAK_RETEST_CONFIRM:
+                    p1 = candidate.points["P1"].price
+                    start = max(0, candle_index - ec.entry_expiry_bars)
+                    closed = [item for item in entry[start:candle_index]
+                              if int(item["timestamp"]) + entry_duration >= candidate.signal_time]
+                    broke = any(candidate_side * (float(item["close"]) - p1) > 0 for item in closed[:-1])
+                    previous = closed[-1] if closed else None
+                    if previous:
+                        zone = ec.retest_zone_atr * candidate.points["P1"].atr
+                        touched_zone = float(previous["low"]) <= p1 + zone if candidate_side == 1 else float(previous["high"]) >= p1 - zone
+                        held = candidate_side * (float(previous["close"]) - p1) >= 0
+                        directional = candidate_side * (float(previous["close"]) - float(previous["open"])) > 0
+                        touched = broke and touched_zone and held and directional
+                    else:
+                        touched = False
+                elif ec.entry_model == ElliottEntryModel.MICRO_WAVE3:
+                    micro = [pivot for pivot in entry_pivots if candidate.signal_time <= pivot.confirmed_at <= timestamp
+                             and pivot.timestamp >= candidate.points["P2"].timestamp]
+                    recent = micro[-3:]
+                    kinds = tuple(pivot.kind for pivot in recent)
+                    expected = ("LOW", "HIGH", "LOW") if candidate_side == 1 else ("HIGH", "LOW", "HIGH")
+                    touched = len(recent) == 3 and kinds == expected and candidate_side * (recent[1].price - recent[0].price) > 0
+                elif ec.entry_model == ElliottEntryModel.DISPLACEMENT_RETRACE:
+                    impulse = None
+                    for index in range(max(0, candle_index - ec.entry_expiry_bars), candle_index):
+                        item = entry[index]
+                        if int(item["timestamp"]) + entry_duration < candidate.signal_time:
+                            continue
+                        candle_range = float(item["high"]) - float(item["low"])
+                        body = candidate_side * (float(item["close"]) - float(item["open"]))
+                        if (body > 0 and candle_range >= ec.displacement_min_atr * entry_atr[index]
+                                and body / max(candle_range, 1e-12) >= ec.displacement_min_body_ratio):
+                            impulse = item
+                    if impulse:
+                        body = abs(float(impulse["close"]) - float(impulse["open"]))
+                        candidate_entry = float(impulse["close"]) - candidate_side * ec.displacement_retracement * body
+                        candidate_entry = round(candidate_entry / config.tick_size) * config.tick_size
+                        candidate_fee = maker_fee
+                        touched = low <= candidate_entry <= high
+                    else:
+                        touched = False
+                elif ec.entry_model == ElliottEntryModel.P2_LIQUIDITY_SWEEP:
+                    previous = entry[candle_index - 1] if candle_index else None
+                    if previous and previous_after_signal:
+                        p2 = candidate.points["P2"].price
+                        candle_range = float(previous["high"]) - float(previous["low"])
+                        wick = (min(float(previous["open"]), float(previous["close"])) - float(previous["low"])
+                                if candidate_side == 1 else float(previous["high"]) - max(float(previous["open"]), float(previous["close"])))
+                        swept = float(previous["low"]) < p2 and float(previous["close"]) > p2 if candidate_side == 1 else float(previous["high"]) > p2 and float(previous["close"]) < p2
+                        candidate_entry = float(previous["high"]) + config.tick_size if candidate_side == 1 else float(previous["low"]) - config.tick_size
+                        candidate_entry = round(candidate_entry / config.tick_size) * config.tick_size
+                        touched = swept and wick / max(candle_range, 1e-12) >= ec.sweep_min_wick_ratio \
+                            and (high >= candidate_entry if candidate_side == 1 else low <= candidate_entry)
+                    else:
+                        touched = False
+                elif ec.entry_model == ElliottEntryModel.WAVE2_TRENDLINE_BREAK:
+                    kind = "HIGH" if candidate_side == 1 else "LOW"
+                    local = [pivot for pivot in entry_pivots if pivot.kind == kind
+                             and candidate.signal_time <= pivot.confirmed_at <= timestamp
+                             and pivot.timestamp >= candidate.points["P1"].timestamp]
+                    if candle_index > 1 and len(local) >= 2 and local[-1].index != local[-2].index:
+                        left, right = local[-2], local[-1]
+                        slope = (right.price - left.price) / (right.index - left.index)
+                        previous_line = left.price + slope * (candle_index - 1 - left.index)
+                        earlier_line = left.price + slope * (candle_index - 2 - left.index)
+                        touched = candidate_side * (float(entry[candle_index - 1]["close"]) - previous_line) > 0 \
+                            and candidate_side * (float(entry[candle_index - 2]["close"]) - earlier_line) <= 0
+                    else:
+                        touched = False
+                elif ec.entry_model == ElliottEntryModel.ADX_ACCELERATION:
+                    if candle_index >= 4 and previous_after_signal:
+                        indexes = (candle_index - 3, candle_index - 2, candle_index - 1)
+                        directional = (entry_plus_di[indexes[-1]] > entry_minus_di[indexes[-1]] if candidate_side == 1
+                                       else entry_minus_di[indexes[-1]] > entry_plus_di[indexes[-1]])
+                        spreads = [candidate_side * (entry_plus_di[index] - entry_minus_di[index]) for index in indexes]
+                        touched = entry_adx[indexes[2]] > entry_adx[indexes[1]] > entry_adx[indexes[0]] \
+                            and directional and spreads[2] > spreads[1]
+                    else:
+                        touched = False
+                elif ec.entry_model == ElliottEntryModel.VOLATILITY_EXPANSION:
+                    previous = candle_index - 1
+                    if previous >= 2 and previous_after_signal:
+                        directional = candidate_side * (float(entry[previous]["close"]) - float(entry[previous]["open"])) > 0
+                        compressed = entry_atr[previous - 1] < entry_long_atr[previous - 1]
+                        touched = compressed and directional \
+                            and entry_true_ranges[previous] >= ec.volatility_expansion_ratio * entry_long_atr[previous]
+                    else:
+                        touched = False
+                elif ec.entry_model == ElliottEntryModel.VOLUME_EXPANSION:
+                    previous = candle_index - 1
+                    if previous >= ec.volume_sma_period and previous_after_signal:
+                        signal = entry[previous]
+                        candle_range = float(signal["high"]) - float(signal["low"])
+                        body = candidate_side * (float(signal["close"]) - float(signal["open"]))
+                        expanded = float(signal.get("volume", 0)) \
+                            >= ec.volume_expansion_ratio * entry_volume_average[previous - 1]
+                        candidate_entry = (float(signal["high"]) + config.tick_size if candidate_side == 1
+                                           else float(signal["low"]) - config.tick_size)
+                        candidate_entry = round(candidate_entry / config.tick_size) * config.tick_size
+                        touched = body > 0 and body / max(candle_range, 1e-12) > ec.volume_expansion_min_body_ratio \
+                            and expanded and (high >= candidate_entry if candidate_side == 1 else low <= candidate_entry)
+                    else:
+                        touched = False
                 if not touched:
                     continue
                 processed.add(candidate.id)
