@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { BacktestResult, BacktestSettings, ElliottSettings } from "../../lib/backtest/types";
 
 type Metric = "RETURN_DD" | "RETURN" | "PROFIT_FACTOR";
+type OptimizationMode = "CASCADE" | "EXACT_GRAPH";
 type Period = { from: string; to: string };
 type Candidate = { settings: BacktestSettings; label: string };
 type Row = Candidate & { optimization: BacktestResult; validation?: BacktestResult; optimizationScore: number; score?: number; passed?: boolean };
@@ -86,7 +87,7 @@ const blocks: Block[] = [
 const blockMap = new Map(blocks.map(block => [block.id, block]));
 const PARALLEL_BATCH_SIZE = 4;
 const ESTIMATED_SEQUENTIAL_RUN_SECONDS = 3;
-const ESTIMATED_BATCH_SECONDS = PARALLEL_BATCH_SIZE * ESTIMATED_SEQUENTIAL_RUN_SECONDS;
+const ESTIMATED_BATCH_SECONDS = ESTIMATED_SEQUENTIAL_RUN_SECONDS;
 const estimatedBlockSeconds = (count: number) => Math.ceil(count / PARALLEL_BATCH_SIZE) * ESTIMATED_BATCH_SECONDS;
 const formatDuration = (seconds: number) => {
   if (seconds < 60) return `≈ ${seconds} сек`;
@@ -139,6 +140,7 @@ interface Props {
 
 export function BacktestOptimizer({ settings, assets, initialAsset, initialTimeframes, testFrom, testTo, onApply, runCandidate }: Props) {
   const defaults = defaultPeriods(testFrom, testTo);
+  const [optimizationMode, setOptimizationMode] = useState<OptimizationMode>("CASCADE");
   const [metric, setMetric] = useState<Metric>("RETURN_DD");
   const [asset, setAsset] = useState(initialAsset);
   const [timeframes, setTimeframes] = useState(initialTimeframes);
@@ -164,9 +166,16 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
       return sum + product(parameters.filter(parameter => parameter.key !== "entryModel")
         .map(parameter => selected[parameter.key])).length;
     }, 0)), [active, selected]);
-  const runCount = counts.reduce((sum, count) => sum + count, 0);
-  const blockEstimateSeconds = counts.reduce((sum, count) => sum + estimatedBlockSeconds(count), 0);
-  const validationRuns = Math.min(validationCount, counts.at(-1) ?? 0);
+  const cascadeRunCount = counts.reduce((sum, count) => sum + count, 0);
+  const exactGraphRunCount = counts.reduce((total, count) => total * count, 1);
+  const naiveFullRunCount = active.reduce((total, block) => total * product(
+    block.parameters.map(parameter => selected[parameter.key]),
+  ).length, 1);
+  const runCount = optimizationMode === "EXACT_GRAPH" ? exactGraphRunCount : cascadeRunCount;
+  const blockEstimateSeconds = optimizationMode === "EXACT_GRAPH"
+    ? estimatedBlockSeconds(exactGraphRunCount)
+    : counts.reduce((sum, count) => sum + estimatedBlockSeconds(count), 0);
+  const validationRuns = Math.min(validationCount, optimizationMode === "EXACT_GRAPH" ? exactGraphRunCount : counts.at(-1) ?? 0);
   const validationEstimateSeconds = validationRuns * ESTIMATED_SEQUENTIAL_RUN_SECONDS;
   const totalEstimateSeconds = blockEstimateSeconds + validationEstimateSeconds;
   const periodsValid = Date.parse(optimizationPeriod.from) <= Date.parse(optimizationPeriod.to)
@@ -197,14 +206,22 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
       if (!next.elliott.useMargin) next = { ...next, leverage: 1 };
       return { settings: next, label: block.parameters.map((parameter, index) => `${parameter.label}: ${values[index]}`).join(" · ") };
     }).filter(candidate => valid(candidate.settings));
+  const uniqueCandidates = (candidates: Candidate[]) => [...new Map(candidates.map(candidate => [
+    JSON.stringify(candidate.settings), candidate,
+  ])).values()];
+  const buildExactGraph = () => active.reduce<Candidate[]>((frontier, block) => uniqueCandidates(
+    frontier.flatMap(parent => makeCandidates(parent.settings, block).map(child => ({
+      ...child, label: [parent.label, child.label].filter(Boolean).join(" · "),
+    }))),
+  ), [{ settings, label: "" }]);
   const run = async () => {
     if (!active.length || !periodsValid) return; setRunning(true); setRows([]); setError("");
     try {
-      let base = settings; let finalists: Row[] = [];
-      for (let blockIndex = 0; blockIndex < active.length; blockIndex += 1) {
-        const block = active[blockIndex]; const candidates = makeCandidates(base, block);
-        if (!candidates.length) throw new Error(`В блоке «${block.title}» нет допустимых комбинаций.`);
-        setStage(`${blockIndex + 1}/${active.length}: ${block.title}`); setDone(0); setTotal(candidates.length); const completed: Row[] = [];
+      let finalists: Row[] = [];
+      if (optimizationMode === "EXACT_GRAPH") {
+        const candidates = buildExactGraph();
+        if (!candidates.length) throw new Error("В точном графе нет допустимых комбинаций.");
+        setStage("Точный граф"); setDone(0); setTotal(candidates.length); const completed: Row[] = [];
         for (let offset = 0; offset < candidates.length; offset += PARALLEL_BATCH_SIZE) {
           const batch = candidates.slice(offset, offset + PARALLEL_BATCH_SIZE);
           const batchResults = await Promise.all(batch.map(async candidate => {
@@ -214,7 +231,23 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
           completed.push(...batchResults);
           setDone(completed.length);
         }
-        completed.sort((a, b) => b.optimizationScore - a.optimizationScore); base = completed[0].settings; finalists = completed;
+        completed.sort((a, b) => b.optimizationScore - a.optimizationScore); finalists = completed;
+      } else {
+        let base = settings;
+        for (let blockIndex = 0; blockIndex < active.length; blockIndex += 1) {
+          const block = active[blockIndex]; const candidates = makeCandidates(base, block);
+          if (!candidates.length) throw new Error(`В блоке «${block.title}» нет допустимых комбинаций.`);
+          setStage(`${blockIndex + 1}/${active.length}: ${block.title}`); setDone(0); setTotal(candidates.length); const completed: Row[] = [];
+          for (let offset = 0; offset < candidates.length; offset += PARALLEL_BATCH_SIZE) {
+            const batch = candidates.slice(offset, offset + PARALLEL_BATCH_SIZE);
+            const batchResults = await Promise.all(batch.map(async candidate => {
+              const result = await runCandidate(candidate.settings, optimizationPeriod, asset, timeframes);
+              return { ...candidate, optimization: result, optimizationScore: score(result, metric) };
+            }));
+            completed.push(...batchResults); setDone(completed.length);
+          }
+          completed.sort((a, b) => b.optimizationScore - a.optimizationScore); base = completed[0].settings; finalists = completed;
+        }
       }
       finalists = finalists.slice(0, Math.min(validationCount, finalists.length));
       setRows([...finalists]); setStage("Валидация"); setDone(0); setTotal(finalists.length);
@@ -239,6 +272,15 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
     <Typography variant="h5">Каскадный перебор параметров Elliott</Typography>
     <Alert severity="info" sx={{ my: 2 }}>Блоки выполняются сверху вниз. Победитель ступени передаётся в следующую, поэтому число прогонов складывается по блокам, а не перемножается. Внутри блока комбинации запускаются параллельными пакетами по {PARALLEL_BATCH_SIZE}.</Alert>
     <Alert severity="warning" sx={{ mb: 2 }}>Комиссии, проскальзывание, funding, задержка, ликвидность и биржевые шаги не перебираются и берутся из основной формы. Структурный Stop Loss, Risk/Reward и риск участвуют.</Alert>
+    <TextField select fullWidth label="Режим оптимизации" value={optimizationMode}
+      disabled={running} sx={{ mb: 2 }} onChange={event => setOptimizationMode(event.target.value as OptimizationMode)}>
+      <MenuItem value="CASCADE">Быстрая лесенка — лучший результат каждой ступени</MenuItem>
+      <MenuItem value="EXACT_GRAPH">Точный граф — все уникальные комбинации</MenuItem>
+    </TextField>
+    {optimizationMode === "EXACT_GRAPH" && <Alert severity="success" sx={{ mb: 2 }}>
+      Точный граф сохраняет взаимодействия между блоками и не отбрасывает потенциальный глобальный максимум.
+      Эквивалентные ветви параметров выбранных моделей входа объединяются.
+    </Alert>}
     <Paper variant="outlined" sx={{ p: 2, mb: 2 }}><Stack spacing={1.5}><TextField select label="Актив" value={asset} onChange={event => setAsset(event.target.value)}>{assets.map(item => <MenuItem key={item} value={item}>{item}</MenuItem>)}</TextField><Stack><Typography variant="caption">Загружаемые таймфреймы</Typography><FormGroup row>{["M1", "M5", "M15", "M30", "H1", "H4", "D1"].map(item => <FormControlLabel key={item} label={item} control={<Checkbox checked={timeframes.includes(item)} disabled={timeframes.length === 1 && timeframes.includes(item)} onChange={event => setTimeframes(current => event.target.checked ? [...current, item] : current.filter(value => value !== item))} />} />)}</FormGroup></Stack></Stack></Paper>
     <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>{dateField("Перебор: с", optimizationPeriod, "from", setOptimizationPeriod)}{dateField("Перебор: по", optimizationPeriod, "to", setOptimizationPeriod)}{dateField("Валидация: с", validationPeriod, "from", setValidationPeriod)}{dateField("Валидация: по", validationPeriod, "to", setValidationPeriod)}</Stack>
     {!periodsValid && <Alert severity="error" sx={{ mt: 1.5 }}>Периоды должны идти последовательно и не пересекаться.</Alert>}
@@ -258,7 +300,10 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
       <Typography variant="subtitle2">Предположительное время</Typography>
       <Typography variant="body2">Один параллельный проход до {PARALLEL_BATCH_SIZE} прогонов: ≈ {ESTIMATED_BATCH_SECONDS} сек</Typography>
       <Typography variant="body2">Один последовательный прогон: ≈ {ESTIMATED_SEQUENTIAL_RUN_SECONDS} сек</Typography>
-      <Typography variant="body2">Все блоки: {formatDuration(blockEstimateSeconds)}</Typography>
+      <Typography variant="body2">Лесенка: {cascadeRunCount.toLocaleString("ru-RU")} прогонов</Typography>
+      <Typography variant="body2">Точный граф: до {exactGraphRunCount.toLocaleString("ru-RU")} уникальных прогонов</Typography>
+      <Typography variant="body2">Полный перебор без графа: {naiveFullRunCount.toLocaleString("ru-RU")} прогонов</Typography>
+      <Typography variant="body2">Выбранный режим: {formatDuration(blockEstimateSeconds)}</Typography>
       <Typography variant="body2">Валидация ({validationRuns} прогонов): {formatDuration(validationEstimateSeconds)}</Typography>
       <Typography sx={{ fontWeight: 700 }}>Общее время: {formatDuration(totalEstimateSeconds)}</Typography>
       <Typography variant="caption" color="text.secondary">Оценка зависит от длины датасета и нагрузки на сервис.</Typography>
