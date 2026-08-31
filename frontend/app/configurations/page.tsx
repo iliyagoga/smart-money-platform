@@ -71,6 +71,15 @@ export default function ConfigurationsPage() {
       setMessage(`Конфигурация «${item.name}» скопирована`);
     } catch(reason) { setActionError(reason instanceof Error ? reason.message:String(reason)); }
   };
+  const download=(item:SavedConfiguration) => {
+    setActionError("");
+    const content=JSON.stringify({ name:item.name,description:item.description,config:item.config },null,2);
+    const blob=new Blob([content],{ type:"application/json;charset=utf-8" });
+    const url=URL.createObjectURL(blob);const link=document.createElement("a");
+    const safeName=item.name.trim().replace(/[^a-zA-Z0-9а-яА-ЯёЁ_-]+/g,"-").replace(/^-+|-+$/g,"") || "configuration";
+    link.href=url;link.download=`${safeName}.json`;document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);
+    setMessage(`Конфигурация «${item.name}» выгружена в JSON`);
+  };
   const error=actionError || resource.error;
   const configurations=resource.data?.configurations ?? [];
   const visible=configurations.slice(page*rowsPerPage,page*rowsPerPage+rowsPerPage);
@@ -94,6 +103,7 @@ export default function ConfigurationsPage() {
           <Typography variant="caption" color="text.secondary">Обновлено {new Date(item.updated_at).toLocaleString("ru-RU")}</Typography>
           <Stack direction="row" spacing={1}><Button variant="contained" size="small" onClick={()=>edit(item)}>Редактировать</Button>
             <Button variant="outlined" size="small" onClick={()=>void copy(item)}>Копировать</Button>
+            <Button variant="outlined" size="small" onClick={()=>download(item)}>Скачать JSON</Button>
             <Button color="error" size="small" onClick={()=>void remove(item)}>Удалить</Button></Stack>
           <Accordion disableGutters><AccordionSummary expandIcon={<Typography>⌄</Typography>}><Typography variant="body2">Просмотреть JSON</Typography></AccordionSummary>
             <AccordionDetails><Box component="pre" sx={{ m:0,p:1.5,overflow:"auto",bgcolor:"action.hover",fontSize:11 }}>{JSON.stringify(item.config,null,2)}</Box></AccordionDetails>
