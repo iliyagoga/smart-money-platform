@@ -3,7 +3,7 @@ from uuid import UUID
 
 from fastapi import FastAPI, Header, HTTPException, Query, Response
 
-from .models import AssetCreate, BacktestCreate
+from .models import AssetCreate, BacktestCreate, OptimizationSessionCreate, OptimizationSessionUpdate
 from .service import BacktestService
 from .settings import settings
 
@@ -109,6 +109,25 @@ async def cancel_backtest(run_id: UUID, x_user_id: str = Header(default="local")
     if not await service.cancel_run(run_id, x_user_id):
         raise HTTPException(409, "Only a queued or running backtest can be cancelled")
     return {"id": str(run_id), "status": "CANCELLED"}
+
+
+@app.post("/optimizations", status_code=201)
+async def create_optimization(request: OptimizationSessionCreate, x_user_id: str = Header(default="local")):
+    return await service.create_optimization(x_user_id, request)
+
+
+@app.get("/optimizations/active")
+async def active_optimization(x_user_id: str = Header(default="local")):
+    return await service.active_optimization(x_user_id)
+
+
+@app.put("/optimizations/{session_id}")
+async def update_optimization(session_id: UUID, request: OptimizationSessionUpdate,
+                              x_user_id: str = Header(default="local")):
+    updated = await service.update_optimization(session_id, x_user_id, request)
+    if not updated:
+        raise HTTPException(404, "Optimization session not found")
+    return updated
 
 
 @app.get("/backtests/{run_id}/export")

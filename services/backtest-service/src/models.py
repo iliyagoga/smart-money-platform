@@ -240,3 +240,14 @@ class AssetCreate(BaseModel):
         self.symbol = self.symbol.strip().upper().replace("/", "-").replace("_", "-")
         self.category = self.category.strip().lower()
         return self
+
+
+class OptimizationSessionCreate(BaseModel):
+    configuration: dict
+    checkpoint: dict = Field(default_factory=dict)
+
+
+class OptimizationSessionUpdate(BaseModel):
+    status: str = Field(pattern="^(RUNNING|PAUSED|COMPLETED|FAILED)$")
+    checkpoint: dict
+    error: str | None = Field(default=None, max_length=2000)

@@ -13,7 +13,8 @@ import boto3
 
 from .engine import run_backtest
 from .elliott import run_elliott_replay
-from .models import AssetCreate, BacktestCreate, StrategyType
+from .models import (AssetCreate, BacktestCreate, OptimizationSessionCreate,
+                     OptimizationSessionUpdate, StrategyType)
 from .replay import FrozenModel, run_smc_replay, train_local_model
 from .settings import Settings
 
@@ -79,6 +80,14 @@ class BacktestService:
                     started_at timestamptz, completed_at timestamptz
                 );
                 CREATE INDEX IF NOT EXISTS backtest_runs_user_idx ON backtest_runs(user_id, created_at DESC);
+                CREATE TABLE IF NOT EXISTS optimization_sessions(
+                    id uuid PRIMARY KEY, user_id text NOT NULL, status text NOT NULL,
+                    configuration jsonb NOT NULL, checkpoint jsonb NOT NULL DEFAULT '{}'::jsonb,
+                    error text, created_at timestamptz NOT NULL DEFAULT now(),
+                    updated_at timestamptz NOT NULL DEFAULT now(), completed_at timestamptz
+                );
+                CREATE INDEX IF NOT EXISTS optimization_sessions_user_idx
+                    ON optimization_sessions(user_id, updated_at DESC);
             """)
             await connection.execute("""
                 INSERT INTO trading_assets(symbol,display_name,category,price_precision,quantity_precision,minimum_order_size,validation_status)
@@ -359,6 +368,56 @@ class BacktestService:
             )
             total = await connection.fetchval("SELECT count(*) FROM backtest_runs WHERE user_id=$1", user_id)
         return {"runs": [self.serialize_run(row, include_result=False) for row in rows], "total": total}
+
+    async def create_optimization(self, user_id: str, request: OptimizationSessionCreate):
+        session_id = uuid4()
+        async with self.db.acquire() as connection:
+            await connection.execute(
+                """UPDATE optimization_sessions SET status='PAUSED',updated_at=now()
+                   WHERE user_id=$1 AND status='RUNNING'""", user_id,
+            )
+            row = await connection.fetchrow(
+                """INSERT INTO optimization_sessions(id,user_id,status,configuration,checkpoint)
+                   VALUES($1,$2,'RUNNING',$3::jsonb,$4::jsonb) RETURNING *""",
+                session_id, user_id, json.dumps(request.configuration), json.dumps(request.checkpoint),
+            )
+        return self.serialize_optimization(row)
+
+    async def active_optimization(self, user_id: str):
+        async with self.db.acquire() as connection:
+            row = await connection.fetchrow(
+                """SELECT * FROM optimization_sessions WHERE user_id=$1
+                   AND status IN ('RUNNING','PAUSED') ORDER BY updated_at DESC LIMIT 1""", user_id,
+            )
+            if row and row["status"] == "RUNNING":
+                row = await connection.fetchrow(
+                    """UPDATE optimization_sessions SET status='PAUSED',updated_at=now()
+                       WHERE id=$1 RETURNING *""", row["id"],
+                )
+        return self.serialize_optimization(row) if row else None
+
+    async def update_optimization(self, session_id: UUID, user_id: str, request: OptimizationSessionUpdate):
+        async with self.db.acquire() as connection:
+            row = await connection.fetchrow(
+                """UPDATE optimization_sessions SET status=$3,checkpoint=$4::jsonb,error=$5,
+                   updated_at=now(),completed_at=CASE WHEN $3 IN ('COMPLETED','FAILED') THEN now() ELSE NULL END
+                   WHERE id=$1 AND user_id=$2 RETURNING *""",
+                session_id, user_id, request.status, json.dumps(request.checkpoint), request.error,
+            )
+        return self.serialize_optimization(row) if row else None
+
+    @staticmethod
+    def serialize_optimization(row):
+        if not row:
+            return None
+        return {
+            "id": str(row["id"]), "status": row["status"],
+            "configuration": json.loads(row["configuration"]) if isinstance(row["configuration"], str) else row["configuration"],
+            "checkpoint": json.loads(row["checkpoint"]) if isinstance(row["checkpoint"], str) else row["checkpoint"],
+            "error": row["error"], "created_at": row["created_at"].isoformat(),
+            "updated_at": row["updated_at"].isoformat(),
+            "completed_at": row["completed_at"].isoformat() if row["completed_at"] else None,
+        }
 
     async def run(self, run_id: UUID, user_id: str):
         async with self.db.acquire() as connection:
