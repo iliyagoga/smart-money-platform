@@ -100,6 +100,23 @@ const stringKeys = new Set<Key>([
   "directionMode", "macroTimeframe", "structureTimeframe", "entryTimeframe", "entryModel", "exitModel", "firstTakeAction",
 ]);
 const booleanKeys = new Set<Key>(["requireDiConfirmation", "useMargin", "reinvestProfits"]);
+const entryModelParameters: Partial<Record<ElliottSettings["entryModel"], Set<Key>>> = {
+  CHOCH_RETRACE: new Set(["entryRetracement"]),
+  WAVE1_BREAK_MARKET: new Set(["breakoutBufferAtr"]),
+  WAVE1_BREAK_STOP: new Set(["breakoutBufferAtr"]),
+  WAVE1_BREAK_RETEST_CONFIRM: new Set(["retestZoneAtr"]),
+  DISPLACEMENT_RETRACE: new Set(["displacementMinAtr", "displacementMinBodyRatio", "displacementRetracement"]),
+  P2_LIQUIDITY_SWEEP: new Set(["sweepMinWickRatio"]),
+  VOLATILITY_EXPANSION: new Set(["volatilityExpansionRatio"]),
+  VOLUME_EXPANSION: new Set(["volumeExpansionRatio", "volumeExpansionMinBodyRatio"]),
+};
+const commonEntryParameters = new Set<Key>([
+  "entryExpiryBars", "chochMinAtr", "chochMinBodyRatio", "adxPeriod", "adxMin", "requireDiConfirmation",
+]);
+const parametersForEntryModel = (block: Block, model: ElliottSettings["entryModel"]) => block.parameters.filter(parameter =>
+  parameter.key === "entryModel" || commonEntryParameters.has(parameter.key)
+    || entryModelParameters[model]?.has(parameter.key),
+);
 const getValue = (settings: BacktestSettings, key: Key) => String(rootKeys.has(key) ? settings[key as "initialCapital"] : settings.elliott[key as keyof ElliottSettings]);
 function setValue(settings: BacktestSettings, key: Key, raw: string): BacktestSettings {
   const value: string | number | boolean = booleanKeys.has(key) ? raw === "true" : stringKeys.has(key) ? raw : Number(raw);
@@ -140,8 +157,13 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
   ) as Record<Key, string[]>);
   useEffect(() => { if (!asset && assets.length) setAsset(assets[0]); }, [asset, assets]);
   const active = order.map(id => blockMap.get(id)!).filter(block => enabled[block.id]);
-  const counts = useMemo(() => active.map(block =>
-    product(block.parameters.map(parameter => selected[parameter.key])).length), [active, selected]);
+  const counts = useMemo(() => active.map(block => block.id !== "entry"
+    ? product(block.parameters.map(parameter => selected[parameter.key])).length
+    : selected.entryModel.reduce((sum, model) => {
+      const parameters = parametersForEntryModel(block, model as ElliottSettings["entryModel"]);
+      return sum + product(parameters.filter(parameter => parameter.key !== "entryModel")
+        .map(parameter => selected[parameter.key])).length;
+    }, 0)), [active, selected]);
   const runCount = counts.reduce((sum, count) => sum + count, 0);
   const blockEstimateSeconds = counts.reduce((sum, count) => sum + estimatedBlockSeconds(count), 0);
   const validationRuns = Math.min(validationCount, counts.at(-1) ?? 0);
@@ -154,15 +176,27 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
     ((b.passed ? 2 : b.passed === false ? 1 : 0) - (a.passed ? 2 : a.passed === false ? 1 : 0))
     || ((b.score ?? b.optimizationScore) - (a.score ?? a.optimizationScore)));
   const best = ranked.find(row => row.passed);
-  const makeCandidates = (base: BacktestSettings, block: Block): Candidate[] =>
-    product(block.parameters.map(parameter => selected[parameter.key])).map(values => {
-    let next = base; values.forEach((value, index) => { next = setValue(next, block.parameters[index].key, value); });
+  const makeCandidatesForParameters = (base: BacktestSettings, parameters: Parameter[], fixedModel?: string): Candidate[] =>
+    product(parameters.filter(parameter => parameter.key !== "entryModel").map(parameter => selected[parameter.key])).map(values => {
+    const varied = parameters.filter(parameter => parameter.key !== "entryModel");
+    let next = base; values.forEach((value, index) => { next = setValue(next, varied[index].key, value); });
+    if (fixedModel) next = setValue(next, "entryModel", fixedModel);
     if (!next.elliott.useMargin) next = { ...next, leverage: 1 };
     return {
       settings: next,
-      label: block.parameters.map((parameter, index) => `${parameter.label}: ${values[index]}`).join(" · "),
+      label: [fixedModel ? `Модель входа: ${fixedModel}` : "", ...varied.map((parameter, index) => `${parameter.label}: ${values[index]}`)]
+        .filter(Boolean).join(" · "),
     };
   }).filter(candidate => valid(candidate.settings));
+  const makeCandidates = (base: BacktestSettings, block: Block): Candidate[] => block.id === "entry"
+    ? selected.entryModel.flatMap(model => makeCandidatesForParameters(
+      base, parametersForEntryModel(block, model as ElliottSettings["entryModel"]), model,
+    ))
+    : product(block.parameters.map(parameter => selected[parameter.key])).map(values => {
+      let next = base; values.forEach((value, index) => { next = setValue(next, block.parameters[index].key, value); });
+      if (!next.elliott.useMargin) next = { ...next, leverage: 1 };
+      return { settings: next, label: block.parameters.map((parameter, index) => `${parameter.label}: ${values[index]}`).join(" · ") };
+    }).filter(candidate => valid(candidate.settings));
   const run = async () => {
     if (!active.length || !periodsValid) return; setRunning(true); setRows([]); setError("");
     try {
