@@ -15,6 +15,10 @@ type Block = { id: BlockId; title: string; description: string; parameters: Para
 
 const strings = (items: Array<string | number | boolean>) => items.map(String);
 const quarter = (min: number, max: number) => strings(Array.from({ length: Math.round((max - min) / .25) + 1 }, (_, i) => min + i * .25));
+const tenths = (min: number, max: number) => strings(Array.from(
+  { length: Math.round((max - min) * 10) + 1 },
+  (_, index) => Number((min + index / 10).toFixed(1)),
+));
 const product = <T,>(groups: T[][]): T[][] => groups.reduce<T[][]>((rows, group) => rows.flatMap(row => group.map(item => [...row, item])), [[]]);
 const score = (result: BacktestResult, metric: Metric) => metric === "RETURN" ? result.totalReturnPercent : metric === "PROFIT_FACTOR" ? result.profitFactor ?? 0 : result.totalReturnPercent - result.maxDrawdownPercent;
 const day = (value: number) => new Date(value).toISOString().slice(0, 10);
@@ -51,7 +55,7 @@ const blocks: Block[] = [
   ] },
   { id: "protection", title: "Stop Loss и Risk/Reward", description: "Структурный стоп, RR и управление тейками.", parameters: [
     { key: "stopBufferAtr", label: "Буфер стопа, ATR", options: strings([0, .1, .2, .25, .5, .75, 1, 1.5, 2, 3, 5, 10]) },
-    { key: "minimumRr", label: "Минимальный RR", options: strings([.5, 1, 1.5, 2, 3, 4, 5, 8, 10]) },
+    { key: "minimumRr", label: "Минимальный RR", options: tenths(.1, 10) },
     { key: "takeProfitCount", label: "Количество тейков", options: ["1", "2"] },
     { key: "takeProfitRr", label: "TP1, RR", options: strings([.5, 1, 1.5, 2, 3, 4, 5, 8, 10]) },
     { key: "secondTakeProfitRr", label: "TP2, RR", options: strings([1, 1.5, 2, 3, 4, 5, 8, 10, 20]) },
@@ -66,6 +70,17 @@ const blocks: Block[] = [
   ] },
 ];
 const blockMap = new Map(blocks.map(block => [block.id, block]));
+const PARALLEL_BATCH_SIZE = 4;
+const ESTIMATED_SEQUENTIAL_RUN_SECONDS = 3;
+const ESTIMATED_BATCH_SECONDS = PARALLEL_BATCH_SIZE * ESTIMATED_SEQUENTIAL_RUN_SECONDS;
+const estimatedBlockSeconds = (count: number) => Math.ceil(count / PARALLEL_BATCH_SIZE) * ESTIMATED_BATCH_SECONDS;
+const formatDuration = (seconds: number) => {
+  if (seconds < 60) return `≈ ${seconds} сек`;
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.ceil((seconds % 3600) / 60);
+  if (hours) return `≈ ${hours} ч ${minutes} мин`;
+  return `≈ ${minutes} мин`;
+};
 const rootKeys = new Set<Key>(["directionMode", "initialCapital", "leverage", "riskPerTradePercent"]);
 const stringKeys = new Set<Key>(["directionMode", "macroTimeframe", "structureTimeframe", "entryTimeframe", "entryModel", "firstTakeAction"]);
 const booleanKeys = new Set<Key>(["requireDiConfirmation", "useMargin", "reinvestProfits"]);
@@ -112,6 +127,10 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
   const counts = useMemo(() => active.map(block =>
     product(block.parameters.map(parameter => selected[parameter.key])).length), [active, selected]);
   const runCount = counts.reduce((sum, count) => sum + count, 0);
+  const blockEstimateSeconds = counts.reduce((sum, count) => sum + estimatedBlockSeconds(count), 0);
+  const validationRuns = Math.min(validationCount, counts.at(-1) ?? 0);
+  const validationEstimateSeconds = validationRuns * ESTIMATED_SEQUENTIAL_RUN_SECONDS;
+  const totalEstimateSeconds = blockEstimateSeconds + validationEstimateSeconds;
   const periodsValid = Date.parse(optimizationPeriod.from) <= Date.parse(optimizationPeriod.to)
     && Date.parse(optimizationPeriod.to) < Date.parse(validationPeriod.from)
     && Date.parse(validationPeriod.from) <= Date.parse(validationPeriod.to);
@@ -136,9 +155,13 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
         const block = active[blockIndex]; const candidates = makeCandidates(base, block);
         if (!candidates.length) throw new Error(`В блоке «${block.title}» нет допустимых комбинаций.`);
         setStage(`${blockIndex + 1}/${active.length}: ${block.title}`); setDone(0); setTotal(candidates.length); const completed: Row[] = [];
-        for (const candidate of candidates) {
-          const result = await runCandidate(candidate.settings, optimizationPeriod, asset, timeframes);
-          completed.push({ ...candidate, optimization: result, optimizationScore: score(result, metric) });
+        for (let offset = 0; offset < candidates.length; offset += PARALLEL_BATCH_SIZE) {
+          const batch = candidates.slice(offset, offset + PARALLEL_BATCH_SIZE);
+          const batchResults = await Promise.all(batch.map(async candidate => {
+            const result = await runCandidate(candidate.settings, optimizationPeriod, asset, timeframes);
+            return { ...candidate, optimization: result, optimizationScore: score(result, metric) };
+          }));
+          completed.push(...batchResults);
           setDone(completed.length);
         }
         completed.sort((a, b) => b.optimizationScore - a.optimizationScore); base = completed[0].settings; finalists = completed;
@@ -164,7 +187,7 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
   const dateField = (label: string, period: Period, key: keyof Period, update: (period: Period) => void) => <TextField type="date" label={label} value={period[key]} onChange={event => update({ ...period, [key]: event.target.value })} slotProps={{ inputLabel: { shrink: true } }} />;
   return <Stack spacing={2}><Paper variant="outlined" sx={{ p: 3 }}>
     <Typography variant="h5">Каскадный перебор параметров Elliott</Typography>
-    <Alert severity="info" sx={{ my: 2 }}>Блоки выполняются сверху вниз. Победитель ступени передаётся в следующую, поэтому число прогонов складывается по блокам, а не перемножается.</Alert>
+    <Alert severity="info" sx={{ my: 2 }}>Блоки выполняются сверху вниз. Победитель ступени передаётся в следующую, поэтому число прогонов складывается по блокам, а не перемножается. Внутри блока комбинации запускаются параллельными пакетами по {PARALLEL_BATCH_SIZE}.</Alert>
     <Alert severity="warning" sx={{ mb: 2 }}>Комиссии, проскальзывание, funding, задержка, ликвидность и биржевые шаги не перебираются и берутся из основной формы. Структурный Stop Loss, Risk/Reward и риск участвуют.</Alert>
     <Paper variant="outlined" sx={{ p: 2, mb: 2 }}><Stack spacing={1.5}><TextField select label="Актив" value={asset} onChange={event => setAsset(event.target.value)}>{assets.map(item => <MenuItem key={item} value={item}>{item}</MenuItem>)}</TextField><Stack><Typography variant="caption">Загружаемые таймфреймы</Typography><FormGroup row>{["M1", "M5", "M15", "M30", "H1", "H4", "D1"].map(item => <FormControlLabel key={item} label={item} control={<Checkbox checked={timeframes.includes(item)} disabled={timeframes.length === 1 && timeframes.includes(item)} onChange={event => setTimeframes(current => event.target.checked ? [...current, item] : current.filter(value => value !== item))} />} />)}</FormGroup></Stack></Stack></Paper>
     <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>{dateField("Перебор: с", optimizationPeriod, "from", setOptimizationPeriod)}{dateField("Перебор: по", optimizationPeriod, "to", setOptimizationPeriod)}{dateField("Валидация: с", validationPeriod, "from", setValidationPeriod)}{dateField("Валидация: по", validationPeriod, "to", setValidationPeriod)}</Stack>
@@ -174,10 +197,22 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
       <Stack direction={{ xs: "column", md: "row" }} spacing={1} sx={{ alignItems: { md: "center" } }}><FormControlLabel sx={{ flex: 1, m: 0 }} control={<Checkbox checked={enabled[id]} onChange={event => setEnabled({ ...enabled, [id]: event.target.checked })} />} label={`${index + 1}. ${block.title}`} /><Button size="small" disabled={index === 0 || running} onClick={() => move(index, -1)}>↑ Выше</Button><Button size="small" disabled={index === order.length - 1 || running} onClick={() => move(index, 1)}>↓ Ниже</Button></Stack>
       <Typography variant="body2" color="text.secondary">{block.description}</Typography>
       {enabled[id] && <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} sx={{ flexWrap: "wrap" }}>{block.parameters.map(parameter => <FormControl key={parameter.key} sx={{ minWidth: 220, flex: "1 1 220px" }}><InputLabel>{parameter.label}</InputLabel><Select multiple label={parameter.label} value={selected[parameter.key]} onChange={event => { const next = typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value; if (next.length) setSelected({ ...selected, [parameter.key]: next }); }} renderValue={items => items.join(", ")}>{[...new Set([...parameter.options, ...selected[parameter.key]])].map(option => <MenuItem key={option} value={option}><Checkbox checked={selected[parameter.key].includes(option)} /><ListItemText primary={option} /></MenuItem>)}</Select><FormHelperText>{selected[parameter.key].length} знач.</FormHelperText></FormControl>)}</Stack>}
-      {enabled[id] && <Typography variant="caption">Комбинаций: {counts[activeIndex]}</Typography>}
+      {enabled[id] && <Typography variant="caption">
+        Комбинаций: {counts[activeIndex]} · пакетов по {PARALLEL_BATCH_SIZE}: {Math.ceil(counts[activeIndex] / PARALLEL_BATCH_SIZE)}
+        {" · "}время: {formatDuration(estimatedBlockSeconds(counts[activeIndex]))}
+      </Typography>}
     </Stack></Paper>; })}</Stack>
     <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} sx={{ mt: 2 }}><TextField select fullWidth label="Критерий" value={metric} onChange={event => setMetric(event.target.value as Metric)}><MenuItem value="RETURN_DD">Доходность − просадка</MenuItem><MenuItem value="RETURN">Доходность</MenuItem><MenuItem value="PROFIT_FACTOR">Profit Factor</MenuItem></TextField><TextField fullWidth type="number" label="Финалистов на валидацию" value={validationCount} onChange={event => setValidationCount(Math.max(1, Number(event.target.value)))} /></Stack>
     <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} sx={{ mt: 1.5 }}><TextField fullWidth type="number" label="Мин. сделок" value={minimumTrades} onChange={event => setMinimumTrades(Math.max(0, Number(event.target.value)))} /><TextField fullWidth type="number" label="Мин. доходность, %" value={minimumReturn} onChange={event => setMinimumReturn(Number(event.target.value))} /><TextField fullWidth type="number" label="Макс. просадка, %" value={maximumDrawdown} onChange={event => setMaximumDrawdown(Math.max(0, Number(event.target.value)))} /></Stack>
+    <Paper variant="outlined" sx={{ mt: 2, p: 2 }}><Stack spacing={.5}>
+      <Typography variant="subtitle2">Предположительное время</Typography>
+      <Typography variant="body2">Один параллельный проход до {PARALLEL_BATCH_SIZE} прогонов: ≈ {ESTIMATED_BATCH_SECONDS} сек</Typography>
+      <Typography variant="body2">Один последовательный прогон: ≈ {ESTIMATED_SEQUENTIAL_RUN_SECONDS} сек</Typography>
+      <Typography variant="body2">Все блоки: {formatDuration(blockEstimateSeconds)}</Typography>
+      <Typography variant="body2">Валидация ({validationRuns} прогонов): {formatDuration(validationEstimateSeconds)}</Typography>
+      <Typography sx={{ fontWeight: 700 }}>Общее время: {formatDuration(totalEstimateSeconds)}</Typography>
+      <Typography variant="caption" color="text.secondary">Оценка зависит от длины датасета и нагрузки на сервис.</Typography>
+    </Stack></Paper>
     <Button variant="contained" sx={{ mt: 2 }} disabled={running || !asset || !timeframes.length || !active.length || !runCount || !periodsValid} onClick={() => void run()}>{running ? `${stage}: ${done} из ${total}` : `Запустить ${runCount} прогонов + валидация`}</Button>
     {running && <LinearProgress variant="determinate" value={total ? done / total * 100 : 0} sx={{ mt: 1.5 }} />}{error && <Alert severity="error" sx={{ mt: 1.5 }}>{error}</Alert>}
   </Paper>
