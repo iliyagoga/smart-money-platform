@@ -333,18 +333,12 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
       <Stack direction="row" spacing={1.5}>
         <TextField fullWidth label="Задержка, мс" value={settings.executionLatencyMs} type="number"
           onChange={(event) => updateNumber("executionLatencyMs", event.target.value)} />
-        <TextField fullWidth label="Доля объёма, %" value={settings.volumeParticipationPercent} type="number"
-          onChange={(event) => updateNumber("volumeParticipationPercent", event.target.value)} />
       </Stack>
       <Stack direction="row" spacing={1.5}>
         <TextField fullWidth label="Шаг цены" value={settings.tickSize} type="number"
           onChange={(event) => updateNumber("tickSize", event.target.value)} />
-        <TextField fullWidth label="Шаг количества" value={settings.lotSize} type="number"
-          onChange={(event) => updateNumber("lotSize", event.target.value)} />
       </Stack>
       <Stack direction="row" spacing={1.5}>
-        <TextField fullWidth label="Мин. ордер" value={settings.minimumOrderSize} type="number"
-          onChange={(event) => updateNumber("minimumOrderSize", event.target.value)} />
         <TextField fullWidth label="Ликвидация, %" value={settings.liquidationFeePercent} type="number"
           onChange={(event) => updateNumber("liquidationFeePercent", event.target.value)} />
       </Stack></>}

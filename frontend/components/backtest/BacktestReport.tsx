@@ -63,6 +63,11 @@ const marginValue = (trade: BacktestTrade, leverage?: number) => {
 const summarize = (trades: BacktestTrade[], initialCapital: number, leverage?: number) => ({
   trades: trades.length,
   wins: trades.filter((trade) => trade.pnl > 0).length,
+  losses: trades.filter((trade) => trade.pnl < 0).length,
+  averageLoss: (() => {
+    const losses = trades.filter((trade) => trade.pnl < 0);
+    return losses.length ? losses.reduce((sum, trade) => sum + trade.pnl, 0) / losses.length : 0;
+  })(),
   pnl: trades.reduce((sum,trade) => sum+trade.pnl,0),
   notional: trades.reduce((sum,trade) => sum+trade.entryPrice*trade.quantity,0),
   margin: trades.reduce((sum,trade) => sum+marginValue(trade,leverage),0),
@@ -104,6 +109,12 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
       <Grid size={{ xs: 6, lg: 3 }}><Metric label="Средняя сделка" value={result.averageTrade.toFixed(2)} /></Grid>
       <Grid size={{ xs: 6, lg: 3 }}><Metric label="Чистый PnL" value={result.netProfit.toFixed(2)} tone={profitTone} /></Grid>
       <Grid size={{ xs: 6, lg: 3 }}><Metric label="Sharpe ratio" value={result.sharpeRatio?.toFixed(2) ?? "—"} /></Grid>
+      <Grid size={{ xs: 6, lg: 3 }}><Metric label="Среднемесячная доходность" value={`${result.averageMonthlyReturnPercent.toFixed(2)}%`} tone={result.averageMonthlyReturnPercent >= 0 ? "success" : "error"} /></Grid>
+      <Grid size={{ xs: 6, lg: 3 }}><Metric label="Среднегодовая доходность (CAGR)" value={`${result.annualizedReturnPercent.toFixed(2)}%`} tone={result.annualizedReturnPercent >= 0 ? "success" : "error"} /></Grid>
+      <Grid size={{ xs: 6, lg: 3 }}><Metric label="Убыточные месяцы" value={`${result.losingMonths} · ${result.losingMonthsPercent.toFixed(1)}%`} tone="error" /></Grid>
+      <Grid size={{ xs: 6, lg: 3 }}><Metric label="Средний убыток месяца" value={`${result.averageLosingMonthPercent.toFixed(2)}%`} tone="error" /></Grid>
+      <Grid size={{ xs: 6, lg: 3 }}><Metric label="Стабильность equity (R²)" value={result.equityCurveRSquared.toFixed(3)} /></Grid>
+      <Grid size={{ xs: 6, lg: 3 }}><Metric label="Recovery factor" value={result.recoveryFactor?.toFixed(2) ?? "—"} tone={result.recoveryFactor !== undefined && result.recoveryFactor < 0 ? "error" : undefined} /></Grid>
       <Grid size={{ xs: 6, lg: 3 }}>
         <Metric label="Buy & hold" value={`${(result.benchmarkReturnPercent ?? 0).toFixed(2)}%`} />
       </Grid>
@@ -224,11 +235,16 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
       <Typography variant="h6" sx={{ px: 1, pb: 2 }}>Метрики по {periodType === "months" ? "месяцам" : "кварталам"}</Typography>
       <TableContainer><Table size="small">
         <TableHead><TableRow><TableCell>Период</TableCell><TableCell>Сделок</TableCell><TableCell>Win rate</TableCell>
+          <TableCell>Убыточных сделок</TableCell><TableCell>Средний убыток</TableCell>
           <TableCell>PnL</TableCell><TableCell>Доходность от начального капитала</TableCell>
           <TableCell>Оборот лотов</TableCell><TableCell>Использовано маржи</TableCell></TableRow></TableHead>
         <TableBody>{periodicMetrics[periodType].map((item) => <TableRow key={item.key}>
           <TableCell sx={{ textTransform: "capitalize" }}>{item.label}</TableCell><TableCell>{item.trades}</TableCell>
           <TableCell>{item.trades ? (item.wins/item.trades*100).toFixed(1) : "0.0"}%</TableCell>
+          <TableCell>{item.losses}</TableCell>
+          <TableCell sx={{ color: item.averageLoss < 0 ? "error.main" : "text.primary" }}>
+            {item.losses ? item.averageLoss.toFixed(2) : "—"}
+          </TableCell>
           <TableCell sx={{ color: item.pnl >= 0 ? "success.main" : "error.main", fontWeight: 700 }}>{item.pnl.toFixed(2)}</TableCell>
           <TableCell>{item.returnPercent.toFixed(2)}%</TableCell><TableCell>{item.notional.toFixed(2)}</TableCell>
           <TableCell>{item.margin.toFixed(2)}</TableCell>

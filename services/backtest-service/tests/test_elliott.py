@@ -61,12 +61,12 @@ def test_margin_uses_the_whole_asset_capital_and_reinvestment_is_optional():
     assert _elliott_position_quantity(100, 100, 10, 9, 100, 25, False, 5, True, .01) == pytest.approx(10)
 
 
-def test_prices_and_quantity_follow_exchange_steps():
+def test_prices_follow_exchange_steps_but_quantity_remains_fractional():
     entry, stop, targets = _round_trade_prices(100.04, 98.06, [103.01, 104.09], "LONG", .1)
     assert entry == pytest.approx(100)
     assert stop == pytest.approx(98)
     assert targets == pytest.approx([103.1, 104.1])
-    assert _elliott_position_quantity(100, 100, 3, 2, 100, 100, False, 1, True, .1) == pytest.approx(33.3)
+    assert _elliott_position_quantity(100, 100, 3, 2, 100, 100, False, 1, True, .1) == pytest.approx(100 / 3)
 
 
 def test_position_risk_is_capped_by_configured_percent():

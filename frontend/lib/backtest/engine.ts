@@ -1,4 +1,5 @@
 import type { BacktestInput, BacktestResult, BacktestTrade, OpenBacktestPosition, TradeDirection } from "./types";
+import { extendedPerformance } from "./performance";
 
 const average = (values: number[], end: number, period: number): number => {
   let sum = 0;
@@ -99,6 +100,7 @@ export function runBacktest({ candles, settings }: BacktestInput): BacktestResul
     profitFactor: grossLoss ? grossProfit / grossLoss : undefined,
     totalTrades: trades.length,
     averageTrade: trades.length ? netProfit / trades.length : 0,
+    ...extendedPerformance(settings.initialCapital, capital, equity),
     trades,
     equity,
     chartCandles: sortedCandles.map(({ timestamp, open, high, low, close, volume }) => ({ timestamp, open, high, low, close, volume })),

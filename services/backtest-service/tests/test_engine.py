@@ -87,15 +87,21 @@ def test_execution_latency_defers_indicator_entry_to_a_later_open():
     assert delayed["trades"][0]["entry_time"] > immediate["trades"][0]["entry_time"]
 
 
-def test_indicator_position_obeys_volume_and_lot_limits():
+def test_indicator_returns_are_independent_of_initial_capital():
     data = candles([10, 9, 10, 12, 14, 13, 11, 9, 8, 10])
-
-    result = run_backtest(data, config(
-        stop_loss_percent=50, take_profit_percent=50,
-        lot_size=2, minimum_order_size=2, volume_participation_percent=5,
+    small = run_backtest(data, config(
+        initial_capital=100, stop_loss_percent=50, take_profit_percent=50,
+        lot_size=2, minimum_order_size=2, volume_participation_percent=1,
+    ))
+    large = run_backtest(data, config(
+        initial_capital=1_000_000, stop_loss_percent=50, take_profit_percent=50,
+        lot_size=2, minimum_order_size=2, volume_participation_percent=1,
     ))
 
-    assert result["trades"][0]["quantity"] == pytest.approx(4)
+    assert small["total_trades"] == large["total_trades"]
+    assert small["total_return_percent"] == pytest.approx(large["total_return_percent"])
+    assert small["max_drawdown_percent"] == pytest.approx(large["max_drawdown_percent"])
+    assert large["trades"][0]["quantity"] / small["trades"][0]["quantity"] == pytest.approx(10_000)
 
 
 def test_indicator_margin_position_can_be_liquidated():

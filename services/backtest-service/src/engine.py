@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import ceil, floor, sqrt
 from statistics import mean, pstdev
+from .performance import extended_performance
 
 from .models import BacktestConfig, DirectionMode, StrategyType
 
@@ -128,10 +129,12 @@ def run_backtest(candles: list[dict], config: BacktestConfig, evaluation_start: 
         price = raw_price * (1 + slippage_rate if direction == "LONG" else 1 - slippage_rate)
         price = price_tick(price, "UP" if direction == "LONG" else "DOWN")
         notional = capital * config.position_size_percent / 100 * config.leverage
-        quantity = min(notional / price, volume * config.volume_participation_percent / 100)
-        quantity = floor(quantity / config.lot_size) * config.lot_size
-        if quantity < config.minimum_order_size:
-            return False
+        # Backtests use fractional fills. Exchange lot/minimum-size and candle
+        # volume constraints make percentage returns depend on the arbitrary
+        # initial-capital scale (a large account gets capped while a small one
+        # does not). Execution services may still enforce those constraints in
+        # live trading; the strategy simulation must remain scale invariant.
+        quantity = notional / price
         position = Position(direction, price, timestamp, quantity, price, price, last_funding_time=timestamp)
         return True
 
@@ -234,4 +237,5 @@ def run_backtest(candles: list[dict], config: BacktestConfig, evaluation_start: 
         "profit_factor": gross_profit / gross_loss if gross_loss else None, "total_trades": len(trades),
         "average_trade": net_profit / len(trades) if trades else 0, "sharpe_ratio": sharpe,
         "benchmark_return_percent": benchmark, "trades": trades, "equity": equity,
+        **extended_performance(config.initial_capital, capital, equity),
     }

@@ -4,6 +4,7 @@ from bisect import bisect_right
 from dataclasses import dataclass, field
 from math import ceil, floor, sqrt
 from statistics import mean, pstdev
+from .performance import extended_performance
 from math import exp
 
 from smc_core.engines import AnalysisPipeline
@@ -469,13 +470,15 @@ def run_smc_replay(
                     risk_distance = abs(entry - stop)
                     kelly = max(0, 2 * confidence - 1) * config.kelly_fraction * 100
                     risk_percent = min(config.risk_per_trade_percent, kelly)
+                    # Fractional sizing keeps the replay independent of the
+                    # chosen initial-capital denomination. Historical candle
+                    # volume and exchange quantity steps are execution-model
+                    # concerns and must not cap only the larger account.
                     quantity = min(
                         capital * risk_percent / 100 / max(risk_distance, 1e-12),
                         capital * config.leverage / entry,
-                        candle.volume * config.volume_participation_percent / 100,
                     )
-                    quantity = floor(quantity / config.lot_size) * config.lot_size
-                    if quantity >= config.minimum_order_size:
+                    if quantity > 0:
                         position = VirtualPosition(
                             scenario.direction, entry, available_at, quantity, stop,
                             targets, scenario.id, scenario.setup_type, confidence, quantity,
@@ -576,6 +579,7 @@ def _report(config, candles, capital, trades, equity, decisions, model):
         "average_trade": net / len(trades) if trades else 0, "sharpe_ratio": sharpe,
         "benchmark_return_percent": (closes[-1] / closes[0] - 1) * 100 if closes else 0,
         "trades": trades, "equity": equity, "decisions": decisions,
+        **extended_performance(config.initial_capital, capital, equity),
         "template_distribution": distribution, "dataset": {
             "test_candles": len(candles),
             "test_from": min((item["timestamp"] for item in candles), default=None),
