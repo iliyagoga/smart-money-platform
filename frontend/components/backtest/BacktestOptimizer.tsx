@@ -14,7 +14,8 @@ type Key = "directionMode" | "macroTimeframe" | "structureTimeframe" | "entryTim
 type BlockId = "context" | "wave" | "entry" | "protection" | "capital";
 type Parameter = { key: Key; label: string; options: string[] };
 type Block = { id: BlockId; title: string; description: string; parameters: Parameter[] };
-type Checkpoint = { phase: "OPTIMIZATION" | "VALIDATION"; blockIndex?: number; offset: number; base?: BacktestSettings; completed: Row[]; finalists: Row[]; validationIndex: number };
+type Timing = { runs: number; elapsedMs: number };
+type Checkpoint = { phase: "OPTIMIZATION" | "VALIDATION"; blockIndex?: number; offset: number; base?: BacktestSettings; completed: Row[]; finalists: Row[]; validationIndex: number; timings?: Record<string, Timing> };
 type OptimizationConfiguration = {
   optimizationMode: OptimizationMode; metric: Metric; asset: string; timeframes: string[];
   optimizationPeriod: Period; validationPeriod: Period; validationCount: number;
@@ -22,7 +23,7 @@ type OptimizationConfiguration = {
   enabled: Record<BlockId, boolean>; selected: Record<Key, string[]>; settings: BacktestSettings;
 };
 type OptimizationSession = {
-  id: string; status: "RUNNING" | "PAUSED"; configuration: OptimizationConfiguration;
+  id: string; status: "RUNNING" | "PAUSED" | "CANCELLED"; configuration: OptimizationConfiguration;
   checkpoint: Checkpoint; updated_at: string; error?: string;
 };
 
@@ -101,6 +102,9 @@ const PARALLEL_BATCH_SIZE = 4;
 const ESTIMATED_SEQUENTIAL_RUN_SECONDS = 3;
 const ESTIMATED_BATCH_SECONDS = ESTIMATED_SEQUENTIAL_RUN_SECONDS;
 const estimatedBlockSeconds = (count: number) => Math.ceil(count / PARALLEL_BATCH_SIZE) * ESTIMATED_BATCH_SECONDS;
+const estimatedFromTiming = (count: number, timing?: Timing, parallel = true) => timing?.runs
+  ? Math.ceil(count / (parallel ? PARALLEL_BATCH_SIZE : 1)) * timing.elapsedMs / timing.runs / 1000
+  : parallel ? estimatedBlockSeconds(count) : count * ESTIMATED_SEQUENTIAL_RUN_SECONDS;
 const formatDuration = (seconds: number) => {
   if (seconds < 60) return `≈ ${seconds} сек`;
   const hours = Math.floor(seconds / 3600);
@@ -165,7 +169,11 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
   const [running, setRunning] = useState(false); const [stage, setStage] = useState("Перебор"); const [done, setDone] = useState(0); const [total, setTotal] = useState(0); const [rows, setRows] = useState<Row[]>([]); const [error, setError] = useState("");
   const [savedSession, setSavedSession] = useState<OptimizationSession | null>(null);
   const [savedTopCount, setSavedTopCount] = useState(0);
-  const stopRequested = useRef(false);
+  const [timings, setTimings] = useState<Record<string, Timing>>({});
+  const [lastSavedAt, setLastSavedAt] = useState<string>();
+  const controlRequested = useRef<"PAUSE" | "CANCEL" | null>(null);
+  const checkpointRef = useRef<Checkpoint | undefined>(undefined);
+  const sessionIdRef = useRef("");
   const [order, setOrder] = useState<BlockId[]>(blocks.map(block => block.id));
   const [enabled, setEnabled] = useState<Record<BlockId, boolean>>(() =>
     Object.fromEntries(blocks.map(block => [block.id, true])) as Record<BlockId, boolean>);
@@ -183,6 +191,7 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
       setMinimumTrades(config.minimumTrades); setMinimumReturn(config.minimumReturn);
       setMaximumDrawdown(config.maximumDrawdown); setOrder(config.order); setEnabled(config.enabled);
       setSelected(config.selected); setRows(session.checkpoint.finalists.length ? session.checkpoint.finalists : session.checkpoint.completed);
+      setTimings(session.checkpoint.timings ?? {});
       setSavedSession(session);
     }).catch(() => undefined);
   }, []);
@@ -201,10 +210,10 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
   ).length, 1);
   const runCount = optimizationMode === "EXACT_GRAPH" ? exactGraphRunCount : cascadeRunCount;
   const blockEstimateSeconds = optimizationMode === "EXACT_GRAPH"
-    ? estimatedBlockSeconds(exactGraphRunCount)
-    : counts.reduce((sum, count) => sum + estimatedBlockSeconds(count), 0);
+    ? estimatedFromTiming(exactGraphRunCount, timings.EXACT_GRAPH)
+    : counts.reduce((sum, count, index) => sum + estimatedFromTiming(count, timings[active[index]?.id]), 0);
   const validationRuns = Math.min(validationCount, optimizationMode === "EXACT_GRAPH" ? exactGraphRunCount : counts.at(-1) ?? 0);
-  const validationEstimateSeconds = validationRuns * ESTIMATED_SEQUENTIAL_RUN_SECONDS;
+  const validationEstimateSeconds = estimatedFromTiming(validationRuns, timings.VALIDATION, false);
   const totalEstimateSeconds = blockEstimateSeconds + validationEstimateSeconds;
   const periodsValid = Date.parse(optimizationPeriod.from) <= Date.parse(optimizationPeriod.to)
     && Date.parse(optimizationPeriod.to) < Date.parse(validationPeriod.from)
@@ -244,10 +253,36 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
   ), [{ settings: initialSettings, label: "" }]);
   const configuration = (): OptimizationConfiguration => ({ optimizationMode, metric, asset, timeframes, optimizationPeriod,
     validationPeriod, validationCount, minimumTrades, minimumReturn, maximumDrawdown, order, enabled, selected, settings });
-  const persist = async (sessionId: string, status: "RUNNING" | "PAUSED" | "COMPLETED" | "FAILED", checkpoint: Checkpoint, message?: string) => {
+  const persist = async (sessionId: string, status: "RUNNING" | "PAUSED" | "CANCELLED" | "COMPLETED" | "FAILED", checkpoint: Checkpoint, message?: string) => {
     await api(`/api/v1/backtest/optimizations/${sessionId}`, {
       method: "PUT", body: JSON.stringify({ status, checkpoint, error: message }),
     });
+    setLastSavedAt(new Date().toISOString());
+  };
+  const addTiming = (key: string, elapsedMs: number, runs = 1) => {
+    const current = checkpointRef.current?.timings?.[key] ?? { runs: 0, elapsedMs: 0 };
+    const next = { runs: current.runs + runs, elapsedMs: current.elapsedMs + elapsedMs };
+    const all = { ...(checkpointRef.current?.timings ?? {}), [key]: next };
+    if (checkpointRef.current) checkpointRef.current = { ...checkpointRef.current, timings: all };
+    setTimings(all);
+    return all;
+  };
+  const saveStage = async () => {
+    if (!sessionIdRef.current || !checkpointRef.current) return;
+    try { await persist(sessionIdRef.current, running ? "RUNNING" : "PAUSED", checkpointRef.current); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+  };
+  const processControl = async (sessionId: string, checkpoint: Checkpoint) => {
+    const action = controlRequested.current;
+    if (!action) return false;
+    const status = action === "CANCEL" ? "CANCELLED" : "PAUSED";
+    await persist(sessionId, status, checkpoint);
+    controlRequested.current = null;
+    if (status === "CANCELLED") { setSavedSession(null); setStage("Отменён"); }
+    else setSavedSession({
+      ...savedSession!, id: sessionId, status, configuration: configuration(), checkpoint, updated_at: new Date().toISOString(),
+    });
+    return true;
   };
   const saveTopConfigurations = async (sessionId: string, finalists: Row[]) => {
     const top = [...finalists].filter(row => row.validation).sort((a, b) =>
@@ -274,17 +309,18 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
   };
   const run = async (resume = false) => {
     if (!active.length || !periodsValid) return;
-    setRunning(true); setError(""); setSavedTopCount(0); stopRequested.current = false;
+    setRunning(true); setError(""); setSavedTopCount(0); controlRequested.current = null;
     let checkpoint: Checkpoint = resume && savedSession ? savedSession.checkpoint
-      : { phase: "OPTIMIZATION", blockIndex: 0, offset: 0, completed: [], finalists: [], validationIndex: 0 };
+      : { phase: "OPTIMIZATION", blockIndex: 0, offset: 0, completed: [], finalists: [], validationIndex: 0, timings: {} };
     let sessionId = savedSession?.id ?? "";
+    checkpointRef.current = checkpoint; sessionIdRef.current = sessionId; setTimings(checkpoint.timings ?? {});
     try {
       if (!resume || !savedSession) {
         setRows([]);
         const created = await api<OptimizationSession>("/api/v1/backtest/optimizations", {
           method: "POST", body: JSON.stringify({ configuration: configuration(), checkpoint }),
         });
-        sessionId = created.id; setSavedSession(created);
+        sessionId = created.id; sessionIdRef.current = sessionId; setSavedSession(created);
       } else {
         await persist(sessionId, "RUNNING", checkpoint);
       }
@@ -296,19 +332,22 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
         for (let offset = checkpoint.offset; checkpoint.phase === "OPTIMIZATION" && offset < candidates.length; offset += PARALLEL_BATCH_SIZE) {
           const batch = candidates.slice(offset, offset + PARALLEL_BATCH_SIZE);
           const batchResults = await Promise.all(batch.map(async candidate => {
+            const started = performance.now();
             const result = await runCandidate(candidate.settings, optimizationPeriod, asset, timeframes);
-            return { ...candidate, optimization: result, optimizationScore: score(result, metric) };
+            return { row: { ...candidate, optimization: result, optimizationScore: score(result, metric) }, elapsedMs: performance.now() - started };
           }));
-          completed.push(...batchResults);
+          completed.push(...batchResults.map(item => item.row));
           setDone(completed.length); setRows([...completed]);
-          checkpoint = { ...checkpoint, offset: offset + batch.length, completed: [...completed] };
-          await persist(sessionId, stopRequested.current ? "PAUSED" : "RUNNING", checkpoint);
-          if (stopRequested.current) { setSavedSession({ ...savedSession!, id: sessionId, status: "PAUSED", configuration: configuration(), checkpoint, updated_at: new Date().toISOString() }); return; }
+          checkpoint = { ...checkpoint, offset: offset + batch.length, completed: [...completed],
+            timings: addTiming("EXACT_GRAPH", batchResults.reduce((sum, item) => sum + item.elapsedMs, 0), batchResults.length) };
+          checkpointRef.current = checkpoint; await persist(sessionId, "RUNNING", checkpoint);
+          if (await processControl(sessionId, checkpoint)) return;
         }
         if (checkpoint.phase === "OPTIMIZATION") {
           completed.sort((a, b) => b.optimizationScore - a.optimizationScore);
           finalists = completed.slice(0, Math.min(validationCount, completed.length));
           checkpoint = { ...checkpoint, phase: "VALIDATION", finalists, completed: [], offset: 0, validationIndex: 0 };
+          checkpointRef.current = checkpoint;
           await persist(sessionId, "RUNNING", checkpoint);
         }
       } else {
@@ -321,36 +360,45 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
           for (let offset = checkpoint.offset; offset < candidates.length; offset += PARALLEL_BATCH_SIZE) {
             const batch = candidates.slice(offset, offset + PARALLEL_BATCH_SIZE);
             const batchResults = await Promise.all(batch.map(async candidate => {
+              const started = performance.now();
               const result = await runCandidate(candidate.settings, optimizationPeriod, asset, timeframes);
-              return { ...candidate, optimization: result, optimizationScore: score(result, metric) };
+              return {
+                row: { ...candidate, optimization: result, optimizationScore: score(result, metric) },
+                elapsedMs: performance.now() - started,
+              };
             }));
-            completed.push(...batchResults); setDone(completed.length); setRows([...completed]);
-            checkpoint = { ...checkpoint, blockIndex, offset: offset + batch.length, base, completed: [...completed] };
-            await persist(sessionId, stopRequested.current ? "PAUSED" : "RUNNING", checkpoint);
-            if (stopRequested.current) { setSavedSession({ ...savedSession!, id: sessionId, status: "PAUSED", configuration: configuration(), checkpoint, updated_at: new Date().toISOString() }); return; }
+            completed.push(...batchResults.map(item => item.row)); setDone(completed.length); setRows([...completed]);
+            checkpoint = { ...checkpoint, blockIndex, offset: offset + batch.length, base, completed: [...completed],
+              timings: addTiming(block.id, batchResults.reduce((sum, item) => sum + item.elapsedMs, 0), batchResults.length) };
+            checkpointRef.current = checkpoint; await persist(sessionId, "RUNNING", checkpoint);
+            if (await processControl(sessionId, checkpoint)) return;
           }
           completed.sort((a, b) => b.optimizationScore - a.optimizationScore); base = completed[0].settings; finalists = completed;
           checkpoint = { ...checkpoint, blockIndex: blockIndex + 1, offset: 0, base, completed: [], finalists };
+          checkpointRef.current = checkpoint;
           await persist(sessionId, "RUNNING", checkpoint);
         }
         if (checkpoint.phase === "OPTIMIZATION") {
           finalists = finalists.slice(0, Math.min(validationCount, finalists.length));
           checkpoint = { ...checkpoint, phase: "VALIDATION", finalists, completed: [], offset: 0, validationIndex: 0 };
+          checkpointRef.current = checkpoint;
           await persist(sessionId, "RUNNING", checkpoint);
         }
       }
       finalists = checkpoint.finalists; setRows([...finalists]); setStage("Валидация"); setDone(checkpoint.validationIndex); setTotal(finalists.length);
       for (let index = checkpoint.validationIndex; index < finalists.length; index += 1) {
         const candidate = finalists[index];
+        const started = performance.now();
         candidate.validation = await runCandidate(candidate.settings, validationPeriod, asset, timeframes);
         candidate.score = Math.min(candidate.optimizationScore, score(candidate.validation, metric));
         candidate.passed = candidate.validation.totalTrades >= minimumTrades
           && candidate.validation.totalReturnPercent >= minimumReturn
           && candidate.validation.maxDrawdownPercent <= maximumDrawdown;
         setRows([...finalists]); setDone(index + 1);
-        checkpoint = { ...checkpoint, finalists: [...finalists], validationIndex: index + 1 };
-        await persist(sessionId, stopRequested.current ? "PAUSED" : "RUNNING", checkpoint);
-        if (stopRequested.current) { setSavedSession({ ...savedSession!, id: sessionId, status: "PAUSED", configuration: configuration(), checkpoint, updated_at: new Date().toISOString() }); return; }
+        checkpoint = { ...checkpoint, finalists: [...finalists], validationIndex: index + 1,
+          timings: addTiming("VALIDATION", performance.now() - started) };
+        checkpointRef.current = checkpoint; await persist(sessionId, "RUNNING", checkpoint);
+        if (await processControl(sessionId, checkpoint)) return;
       }
       await saveTopConfigurations(sessionId, finalists);
       await persist(sessionId, "COMPLETED", checkpoint); setSavedSession(null);
@@ -392,22 +440,25 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
       {enabled[id] && <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} sx={{ flexWrap: "wrap" }}>{block.parameters.map(parameter => <FormControl key={parameter.key} sx={{ minWidth: 220, flex: "1 1 220px" }}><InputLabel>{parameter.label}</InputLabel><Select multiple label={parameter.label} value={selected[parameter.key]} onChange={event => { const next = typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value; if (next.length) setSelected({ ...selected, [parameter.key]: next }); }} renderValue={items => items.join(", ")}>{[...new Set([...parameter.options, ...selected[parameter.key]])].map(option => <MenuItem key={option} value={option}><Checkbox checked={selected[parameter.key].includes(option)} /><ListItemText primary={option} /></MenuItem>)}</Select><FormHelperText>{selected[parameter.key].length} знач.</FormHelperText></FormControl>)}</Stack>}
       {enabled[id] && <Typography variant="caption">
         Комбинаций: {counts[activeIndex]} · пакетов по {PARALLEL_BATCH_SIZE}: {Math.ceil(counts[activeIndex] / PARALLEL_BATCH_SIZE)}
-        {" · "}время: {formatDuration(estimatedBlockSeconds(counts[activeIndex]))}
+        {" · "}время: {formatDuration(estimatedFromTiming(counts[activeIndex], timings[id]))}
+        {timings[id]?.runs ? ` · замер 1 прогона: ${(timings[id].elapsedMs / timings[id].runs / 1000).toFixed(2)} сек` : " · ожидается первый замер"}
       </Typography>}
     </Stack></Paper>; })}</Stack>
     <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} sx={{ mt: 2 }}><TextField select fullWidth label="Критерий" value={metric} onChange={event => setMetric(event.target.value as Metric)}><MenuItem value="RETURN_DD">Доходность − просадка</MenuItem><MenuItem value="RETURN">Доходность</MenuItem><MenuItem value="PROFIT_FACTOR">Profit Factor</MenuItem></TextField><TextField fullWidth type="number" label="Финалистов на валидацию" value={validationCount} slotProps={{ htmlInput: { min: 3 } }} onChange={event => setValidationCount(Math.max(3, Number(event.target.value)))} /></Stack>
     <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} sx={{ mt: 1.5 }}><TextField fullWidth type="number" label="Мин. сделок" value={minimumTrades} onChange={event => setMinimumTrades(Math.max(0, Number(event.target.value)))} /><TextField fullWidth type="number" label="Мин. доходность, %" value={minimumReturn} onChange={event => setMinimumReturn(Number(event.target.value))} /><TextField fullWidth type="number" label="Макс. просадка, %" value={maximumDrawdown} onChange={event => setMaximumDrawdown(Math.max(0, Number(event.target.value)))} /></Stack>
     <Paper variant="outlined" sx={{ mt: 2, p: 2 }}><Stack spacing={.5}>
       <Typography variant="subtitle2">Предположительное время</Typography>
-      <Typography variant="body2">Один параллельный проход до {PARALLEL_BATCH_SIZE} прогонов: ≈ {ESTIMATED_BATCH_SECONDS} сек</Typography>
-      <Typography variant="body2">Один последовательный прогон: ≈ {ESTIMATED_SEQUENTIAL_RUN_SECONDS} сек</Typography>
+      <Typography variant="body2">До первого замера один прогон оценивается в ≈ {ESTIMATED_SEQUENTIAL_RUN_SECONDS} сек</Typography>
+      {Object.entries(timings).map(([key, timing]) => <Typography variant="body2" key={key}>
+        {key === "VALIDATION" ? "Валидация" : key === "EXACT_GRAPH" ? "Точный граф" : blockMap.get(key as BlockId)?.title ?? key}: {(timing.elapsedMs / timing.runs / 1000).toFixed(2)} сек/прогон ({timing.runs} замеров)
+      </Typography>)}
       <Typography variant="body2">Лесенка: {cascadeRunCount.toLocaleString("ru-RU")} прогонов</Typography>
       <Typography variant="body2">Точный граф: до {exactGraphRunCount.toLocaleString("ru-RU")} уникальных прогонов</Typography>
       <Typography variant="body2">Полный перебор без графа: {naiveFullRunCount.toLocaleString("ru-RU")} прогонов</Typography>
       <Typography variant="body2">Выбранный режим: {formatDuration(blockEstimateSeconds)}</Typography>
       <Typography variant="body2">Валидация ({validationRuns} прогонов): {formatDuration(validationEstimateSeconds)}</Typography>
       <Typography sx={{ fontWeight: 700 }}>Общее время: {formatDuration(totalEstimateSeconds)}</Typography>
-      <Typography variant="caption" color="text.secondary">Оценка зависит от длины датасета и нагрузки на сервис.</Typography>
+      <Typography variant="caption" color="text.secondary">После каждого пакета оценка автоматически пересчитывается по фактическим замерам.</Typography>
     </Stack></Paper>
     {savedSession && !running && <Alert severity="info" sx={{ mt: 2 }}>
       Найден сохранённый прогресс от {new Date(savedSession.updated_at).toLocaleString("ru-RU")}. Можно продолжить без повторного запуска завершённых комбинаций.
@@ -415,9 +466,14 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
     <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mt: 2 }}>
       {!running && <Button variant="contained" disabled={!asset || !timeframes.length || !active.length || !runCount || !periodsValid} onClick={() => void run(false)}>Запустить {runCount} прогонов + валидация</Button>}
       {savedSession && !running && <Button variant="contained" color="success" disabled={!periodsValid} onClick={() => void run(true)}>Возобновить сохранённый перебор</Button>}
-      {running && <Button variant="outlined" color="warning" onClick={() => { stopRequested.current = true; }}>Остановить после текущего пакета</Button>}
+      {running && <Button variant="outlined" color="warning" onClick={() => { controlRequested.current = "PAUSE"; }}>Пауза после пакета</Button>}
+      {(running || savedSession) && <Button variant="outlined" onClick={() => void saveStage()}>Сохранить этап</Button>}
+      {running && <Button variant="outlined" color="error" onClick={() => { controlRequested.current = "CANCEL"; }}>Отменить перебор</Button>}
       {running && <Typography sx={{ alignSelf: "center" }}>{stage}: {done} из {total}</Typography>}
     </Stack>
+    {(running || savedSession) && <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+      Автосохранение после каждого пакета{lastSavedAt ? ` · последнее: ${new Date(lastSavedAt).toLocaleTimeString("ru-RU")}` : ""}
+    </Typography>}
     {running && <LinearProgress variant="determinate" value={total ? done / total * 100 : 0} sx={{ mt: 1.5 }} />}{error && <Alert severity="error" sx={{ mt: 1.5 }}>{error}</Alert>}
   </Paper>
   {!!rows.length && <Paper variant="outlined" sx={{ p: 3 }}><Typography variant="h6">Топ-3 после валидации</Typography>{savedTopCount > 0 && <Alert severity="success" sx={{ mt: 1.5 }}>{savedTopCount} конфигурации сохранены в библиотеке конфигураций.</Alert>}{!best && !running && <Alert severity="warning" sx={{ mt: 1.5 }}>Финалисты не прошли условия валидации.</Alert>}{best && <><Typography sx={{ mt: 1 }}>{best.label}</Typography><Typography>Перебор: {best.optimization.totalReturnPercent.toFixed(2)}% · DD {best.optimization.maxDrawdownPercent.toFixed(2)}%</Typography><Typography>Валидация: {best.validation?.totalReturnPercent.toFixed(2)}% · DD {best.validation?.maxDrawdownPercent.toFixed(2)}%</Typography><Button variant="outlined" sx={{ mt: 1.5 }} onClick={() => onApply(best.settings, best.validation ?? best.optimization)}>Применить и открыть отчёт</Button></>}<Stack spacing={1} sx={{ mt: 2 }}>{ranked.filter(row => row.validation).slice(0, 3).map((row, index) => <Paper key={`${index}-${row.label}`} variant="outlined" sx={{ p: 1.5 }}><Typography>{index + 1}. {row.label}</Typography><Typography variant="caption">Перебор {row.optimization.totalReturnPercent.toFixed(2)}% · валидация {row.validation!.totalReturnPercent.toFixed(2)}% · DD {row.validation!.maxDrawdownPercent.toFixed(2)}% · {row.passed ? "прошёл" : "не прошёл"}</Typography><Button size="small" sx={{ mt: 1 }} onClick={() => onApply(row.settings, row.validation!)}>Применить</Button></Paper>)}</Stack></Paper>}

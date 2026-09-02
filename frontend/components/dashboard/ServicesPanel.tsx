@@ -1,13 +1,15 @@
-import { Stack, Typography } from "@mui/material";
+import { Stack, TablePagination, Typography } from "@mui/material";
+import { usePagination } from "../../hooks/usePagination";
 import type { ServiceStatus } from "../../lib/types";
 import { Panel } from "../ui/Panel";
 import { StatusDot } from "../ui/StatusDot";
 
 export function ServicesPanel({ services }: { services: ServiceStatus[] }) {
   const healthyCount = services.filter((service) => service.status === "UP").length;
+  const pagination = usePagination(services, 5);
   return (
     <Panel title="Сервисы" meta={`${healthyCount}/${services.length}`}>
-      {services.map((service) => (
+      {pagination.visible.map((service) => (
         <Stack
           key={service.name}
           direction="row"
@@ -19,6 +21,7 @@ export function ServicesPanel({ services }: { services: ServiceStatus[] }) {
           <Typography variant="caption" color="text.secondary">{service.status}</Typography>
         </Stack>
       ))}
+      {services.length > 0 && <TablePagination component="div" {...pagination.paginationProps} />}
     </Panel>
   );
 }

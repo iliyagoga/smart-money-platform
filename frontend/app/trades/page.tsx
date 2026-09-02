@@ -49,10 +49,11 @@ export default function TradesPage() {
     if (!symbol) return;
     setIsSimulating(true);setActionError("");
     try {
-      const result = await api<{ approved: boolean }>("/api/v1/decision/signals/simulate-elliott", {
+      const result = await api<{ approved: boolean; risk?: { rejection_reason?: string | null } }>("/api/v1/decision/signals/simulate-elliott", {
         method: "POST", body: JSON.stringify({ symbol, direction }),
       });
-      setSuccessMessage(result.approved ? "Elliott-сигнал принят и отправлен на исполнение" : "Сигнал создан, но отклонён риск-контуром");
+      if (result.approved) setSuccessMessage("Elliott-сигнал принят и отправлен на исполнение");
+      else setActionError(`Сигнал не исполнен: ${result.risk?.rejection_reason ?? "неизвестная причина"}`);
       reloadTradingData();
     } catch (reason) { setActionError(reason instanceof Error ? reason.message : String(reason)); }
     finally { setIsSimulating(false); }

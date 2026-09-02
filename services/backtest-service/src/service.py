@@ -400,7 +400,7 @@ class BacktestService:
         async with self.db.acquire() as connection:
             row = await connection.fetchrow(
                 """UPDATE optimization_sessions SET status=$3,checkpoint=$4::jsonb,error=$5,
-                   updated_at=now(),completed_at=CASE WHEN $3 IN ('COMPLETED','FAILED') THEN now() ELSE NULL END
+                   updated_at=now(),completed_at=CASE WHEN $3 IN ('CANCELLED','COMPLETED','FAILED') THEN now() ELSE NULL END
                    WHERE id=$1 AND user_id=$2 RETURNING *""",
                 session_id, user_id, request.status, json.dumps(request.checkpoint), request.error,
             )

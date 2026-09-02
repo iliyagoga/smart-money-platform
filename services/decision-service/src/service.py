@@ -13,6 +13,13 @@ from .adaptive import AdaptiveModel
 
 log=logging.getLogger(__name__)
 def decode_json(value):return json.loads(value) if isinstance(value,str) else value
+def simulated_elliott_scenario(request:SimulatedElliottSignalRequest,entry:float,created:int):
+    side=1 if request.direction=="LONG" else -1;risk=entry*request.risk_percent/100
+    return Scenario(id=str(uuid4()),symbol=request.symbol,timeframe="M1",direction=request.direction,
+      setup_type="ELLIOTT_WAVE3",confidence=1,entry_zone_low=entry,entry_zone_high=entry,entry_type="MARKET",
+      stop_loss_price=entry-side*risk,take_profit_prices=[entry+side*risk*request.reward_r],
+      reasons=["Simulated Elliott signal"],objects_used=[{"kind":"ELLIOTT_SIMULATION"}],
+      created_at=created,expires_at=created+300_000)
 class DecisionService:
     def __init__(self,database_url,redis_url,threshold=.6,min_delta=.1,default_capital=10000,minio_endpoint="http://minio:9000",minio_access_key="minioadmin",minio_secret_key="minioadmin",model_bucket="models",adaptive_weight=.35):
         self.database_url=database_url;self.redis_url=redis_url;self.default_capital=default_capital
@@ -98,7 +105,7 @@ class DecisionService:
         raw=await self.redis.get("risk:config");return RiskConfig.model_validate_json(raw) if raw else RiskConfig()
     async def update_config(self,patch:RiskConfigPatch):
         cfg=(await self.config()).model_copy(update=patch.model_dump(exclude_none=True));await self.redis.set("risk:config",cfg.model_dump_json());await self.pub("system.control","config.updated",{"section":"risk","config":cfg.model_dump()});return cfg
-    async def assess(self,signal:TradeSignal,capital:float|None=None):
+    async def assess(self,signal:TradeSignal,capital:float|None=None,ignore_loss_limits:bool=False):
         cfg=await self.config();capital=capital or float(await self.redis.get("portfolio:equity") or self.default_capital)
         daily=float(await self.redis.get("portfolio:daily_pnl") or 0);positions=int(await self.redis.scard("positions:open"))
         active_orders=await self.db.fetchval("SELECT count(*) FROM orders WHERE status IN ('PENDING','OPEN')")
@@ -108,7 +115,8 @@ class DecisionService:
             if row["pnl"]>=0:break
             consecutive_losses+=1
             if last_loss_at is None:last_loss_at=int(row["closed_at_ms"])
-        decision=self.risk.calculate(signal,capital,cfg,daily,positions,int(active_orders or 0),consecutive_losses,last_loss_at)
+        decision=self.risk.calculate(signal,capital,cfg,daily,positions,int(active_orders or 0),consecutive_losses,last_loss_at,
+          ignore_loss_limits=ignore_loss_limits)
         await self.db.execute("INSERT INTO risk_decisions(signal_id,approved,data) VALUES($1::uuid,$2,$3::jsonb)",signal.signal_id,decision.approved,json.dumps(decision.model_dump(mode="json")))
         if decision.approved:
             payload=decision.model_dump();payload["approved_at"]=payload.pop("timestamp");payload.pop("approved");payload.pop("rejection_reason")
@@ -117,18 +125,19 @@ class DecisionService:
             await self.stream("trading.command","risk.rejected",{"signal_id":signal.signal_id,"rejection_reason":decision.rejection_reason,"calculated_size":decision.position_size,"min_size":cfg.min_position_size,"timestamp":decision.timestamp})
         return decision
     async def simulate_elliott(self,request:SimulatedElliottSignalRequest):
-        row=await self.db.fetchrow("SELECT config FROM trading_configs WHERE symbol=$1 AND status='ACTIVE'",request.symbol)
+        row=await self.db.fetchrow("SELECT config,mode FROM trading_configs WHERE symbol=$1 AND status='ACTIVE'",request.symbol)
         if not row or str(decode_json(row["config"]).get("strategy","")).upper()!="ELLIOTT":
             raise ValueError("Active Elliott configuration not found")
         entry=await self.db.fetchval("SELECT close::float8 FROM candles WHERE symbol=$1 ORDER BY ts DESC LIMIT 1",request.symbol)
         if entry is None:raise ValueError("Market price is not available")
-        side=1 if request.direction=="LONG" else -1;risk=entry*request.risk_percent/100;created=now_ms()
-        scenario=Scenario(symbol=request.symbol,timeframe="M1",direction=request.direction,setup_type="ELLIOTT_WAVE3",
-          confidence=1,entry_zone_low=entry,entry_zone_high=entry,entry_type="MARKET",
-          stop_loss_price=entry-side*risk,take_profit_prices=[entry+side*risk*request.reward_r],
-          reasons=["Simulated Elliott signal"],objects_used=[{"kind":"ELLIOTT_SIMULATION"}],expires_at=created+300_000)
+        created=now_ms();scenario=simulated_elliott_scenario(request,entry,created)
         signal=self.resolver.signal(scenario);self.scenarios[scenario.id]=scenario;self.signals[signal.signal_id]=signal
         await self.db.execute("INSERT INTO scenarios(id,symbol,status,data,created_at) VALUES($1::uuid,$2,'SELECTED',$3::jsonb,to_timestamp($4/1000.0))",scenario.id,scenario.symbol,json.dumps(scenario.model_dump(mode="json")),created)
+        await self.pub("scenario.update","scenario.created",scenario)
         await self.db.execute("INSERT INTO trade_signals(id,scenario_id,symbol,status,data,created_at) VALUES($1::uuid,$2::uuid,$3,'PENDING',$4::jsonb,to_timestamp($5/1000.0))",signal.signal_id,scenario.id,signal.symbol,json.dumps(signal.model_dump(mode="json")),signal.created_at)
-        decision=await self.assess(signal)
+        # A manual simulation is a diagnostic action. In PAPER/DEMO it must not
+        # be suppressed by PnL-based strategy pauses, while PRODUCTION keeps the
+        # complete risk contour.
+        ignore_loss_limits=str(row["mode"]).upper() in {"PAPER","DEMO"}
+        decision=await self.assess(signal,ignore_loss_limits=ignore_loss_limits)
         return {"scenario_id":scenario.id,"signal_id":signal.signal_id,"approved":decision.approved,"risk":decision.model_dump(mode="json")}

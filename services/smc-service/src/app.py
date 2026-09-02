@@ -88,7 +88,21 @@ async def elliott_patterns(symbol:str):
 @app.get("/elliott/entries")
 async def elliott_entries(symbol:str):
     symbol=symbol.strip().upper()
-    items=service.elliott.latest_entries.get(symbol,[])
+    items=list(service.elliott.latest_entries.get(symbol,[]))
+    rows=await infra.db.fetch("""SELECT data FROM scenarios WHERE symbol=$1
+      AND data @> '{"objects_used":[{"kind":"ELLIOTT_SIMULATION"}]}'::jsonb
+      ORDER BY created_at DESC LIMIT 100""",symbol)
+    for row in rows:
+        value=json.loads(row["data"]) if isinstance(row["data"],str) else dict(row["data"])
+        items.append({
+            "id":value["id"],"direction":value["direction"],"setup_type":value["setup_type"],
+            "status":value.get("status","SELECTED"),"entry_type":value.get("entry_type","MARKET"),
+            "entry_zone_low":value["entry_zone_low"],"entry_zone_high":value["entry_zone_high"],
+            "created_at":value["created_at"],"expires_at":value["expires_at"],
+            "entry_model":"SIMULATION","origin":"LIVE","stop_loss_price":value.get("stop_loss_price"),
+            "take_profit_prices":value.get("take_profit_prices",[]),
+        })
+    items=list({item["id"]:item for item in items}.values())
     return {"symbol":symbol,"entries":items,"total":len(items)}
 
 @app.post("/elliott/history")

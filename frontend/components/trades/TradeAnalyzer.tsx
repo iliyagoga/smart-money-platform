@@ -1,4 +1,5 @@
-import { Grid, Paper, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography } from "@mui/material";
+import { Grid, Paper, Table, TableBody, TableCell, TableContainer, TableHead, TablePagination, TableRow, Typography } from "@mui/material";
+import { usePagination } from "../../hooks/usePagination";
 import type { TradeAnalysisResponse } from "../../lib/types";
 import { formatSignedMoney } from "../../lib/formatters";
 import { EmptyState } from "../ui/EmptyState";
@@ -9,6 +10,7 @@ const duration = (seconds: number) => seconds < 3600 ? `${Math.round(seconds / 6
 export function TradeAnalyzer({ analysis }: { analysis?: TradeAnalysisResponse }) {
   const metrics = analysis?.metrics;
   const points = analysis?.entry_points ?? [];
+  const pagination = usePagination(points);
   const cards = [
     ["Чистый PnL", formatSignedMoney(metrics?.net_pnl)], ["Матожидание", formatSignedMoney(metrics?.expectancy)],
     ["Payoff ratio", number(metrics?.payoff_ratio)], ["Средний R", number(metrics?.average_r, "R")],
@@ -25,12 +27,13 @@ export function TradeAnalyzer({ analysis }: { analysis?: TradeAnalysisResponse }
       <TableHead><TableRow><TableCell>Актив</TableCell><TableCell>Направление</TableCell><TableCell>Вход / стоп</TableCell>
         <TableCell>Результат</TableCell><TableCell>R</TableCell><TableCell>Захват движения</TableCell>
         <TableCell>Удержание</TableCell></TableRow></TableHead>
-      <TableBody>{points.map((point) => <TableRow hover key={point.position_id}><TableCell>{point.symbol}</TableCell>
+      <TableBody>{pagination.visible.map((point) => <TableRow hover key={point.position_id}><TableCell>{point.symbol}</TableCell>
         <TableCell sx={{ color: point.direction === "LONG" ? "success.main" : "error.main" }}>{point.direction}</TableCell>
         <TableCell>{point.entry_price} / {point.initial_stop_loss_price ?? "—"}</TableCell>
         <TableCell sx={{ color: point.pnl >= 0 ? "success.main" : "error.main", fontWeight: 700 }}>{formatSignedMoney(point.pnl)} ({number(point.pnl_percent, "%")})</TableCell>
         <TableCell>{number(point.r_multiple, "R")}</TableCell><TableCell>{number(point.capture_rate, "%")}</TableCell>
         <TableCell>{duration(point.duration_seconds)}</TableCell></TableRow>)}</TableBody>
     </Table></TableContainer>}
+    {points.length > 0 && <TablePagination component="div" {...pagination.paginationProps} />}
   </Paper>;
 }

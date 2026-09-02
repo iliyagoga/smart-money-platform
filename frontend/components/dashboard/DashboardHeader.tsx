@@ -1,4 +1,4 @@
-import { AppBar, Box, Button, Chip, Divider, Drawer, IconButton, Stack, Toolbar, Tooltip, Typography } from "@mui/material";
+import { AppBar, Box, Button, Chip, Dialog, DialogContent, DialogTitle, Divider, Drawer, FormControl, FormControlLabel, Radio, RadioGroup, IconButton, Stack, Toolbar, Tooltip, Typography } from "@mui/material";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
@@ -21,7 +21,8 @@ interface DashboardHeaderProps { isLive: boolean; username: string }
 export function DashboardHeader({ isLive, username }: DashboardHeaderProps) {
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const { mode, toggleColorMode } = useColorMode();
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const { mode, palette, toggleColorMode, setPalette } = useColorMode();
   const pathname = usePathname();
 
   const logout = async () => {
@@ -69,6 +70,7 @@ export function DashboardHeader({ isLive, username }: DashboardHeaderProps) {
               <Box component="span" aria-hidden sx={{ fontSize: 17 }}>{mode === "light" ? "☾" : "☀"}</Box>
             </IconButton>
           </Tooltip>
+          <Tooltip title="Цветовая палитра"><IconButton onClick={() => setPaletteOpen(true)} aria-label="Настроить цветовую палитру" size="small">◉</IconButton></Tooltip>
           <Button onClick={() => void logout()} disabled={isLoggingOut} color="secondary" size="small">
             {isLoggingOut ? "Выходим…" : "Выйти"}
           </Button>
@@ -92,6 +94,17 @@ export function DashboardHeader({ isLive, username }: DashboardHeaderProps) {
           ))}
         </Stack>
       </Drawer>
+      <Dialog open={paletteOpen} onClose={() => setPaletteOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle>Цветовая палитра</DialogTitle><DialogContent>
+          <FormControl><RadioGroup value={palette} onChange={event => setPalette(event.target.value as typeof palette)}>
+            <FormControlLabel value="lime" control={<Radio />} label="Лайм" />
+            <FormControlLabel value="ocean" control={<Radio />} label="Океан" />
+            <FormControlLabel value="violet" control={<Radio />} label="Фиолетовая" />
+            <FormControlLabel value="amber" control={<Radio />} label="Янтарная" />
+          </RadioGroup></FormControl>
+          <Button fullWidth sx={{ mt: 2 }} onClick={() => setPaletteOpen(false)}>Готово</Button>
+        </DialogContent>
+      </Dialog>
     </AppBar>
   );
 }

@@ -1,14 +1,27 @@
-import asyncio,json,random
+import asyncio,json,logging,random
 from time import monotonic,time
 import asyncpg,httpx,websockets
-from decimal import Decimal
+from decimal import Decimal,ROUND_HALF_UP
 from redis.asyncio import Redis
 from .okx import TIMEFRAMES,REVERSE_TIMEFRAMES,auth_headers,book,candle,trade,ws_login
+
+log=logging.getLogger(__name__)
 
 TIMEFRAME_MILLISECONDS={"M1":60_000,"M5":300_000,"M15":900_000,"M30":1_800_000,"H1":3_600_000,"H4":14_400_000,"D1":86_400_000}
 
 def incremental_start(timeframe,latest,fallback):
     return latest+TIMEFRAME_MILLISECONDS[timeframe] if latest is not None else fallback
+
+def price_to_tick(value,tick_size):
+    price=Decimal(str(value));tick=Decimal(str(tick_size))
+    return format((price/tick).quantize(Decimal("1"),rounding=ROUND_HALF_UP)*tick,"f")
+
+def okx_ack(data,operation):
+    item=(data or [{}])[0]
+    if item.get("sCode","0")!="0":
+        details={"sCode":item.get("sCode"),"sMsg":item.get("sMsg"),"ordId":item.get("ordId")}
+        raise ValueError(f"OKX {operation} rejected: {json.dumps(details,separators=(',',':'))}")
+    return item
 
 def instrument_spec(item):
     tick=Decimal(item["tickSz"]);contract_value=Decimal(item.get("ctVal") or "1")
@@ -190,7 +203,10 @@ class ExchangeGateway:
         try:response=await asyncio.wait_for(future,timeout=15)
         finally:self.pending.pop(request_id,None)
         data=(response.get("data") or [{}])[0]
-        if response.get("code") not in (None,"0") or data.get("sCode","0")!="0":raise ValueError(data.get("sMsg") or response.get("msg") or "OKX rejected request")
+        if response.get("code") not in (None,"0") or data.get("sCode","0")!="0":
+            details={"code":response.get("code"),"msg":response.get("msg"),
+                     "sCode":data.get("sCode"),"sMsg":data.get("sMsg")}
+            raise ValueError(f"OKX rejected request: {json.dumps(details,separators=(',',':'))}")
         return data
     async def consume_orders(self):
         group="exchange-gateway"
@@ -209,11 +225,15 @@ class ExchangeGateway:
                     except Exception as exc:
                         self.last_error=f"order command: {type(exc).__name__}: {exc}"[:500]
                         payload=(json.loads(fields["data"]).get("payload") or {})
+                        log.exception("Order command failed: local_order_id=%s",payload.get("id"))
                         if payload.get("id"):
+                            await self.db.execute("""UPDATE exchange_orders SET status='REJECTED',
+                              payload=payload||jsonb_build_object('error',$2::text),updated_at=now()
+                              WHERE local_order_id=$1::uuid""",payload["id"],str(exc))
                             await self.redis.xadd("trading.command",{"data":json.dumps({"event_type":"exchange.order_updated","payload":{"order_id":payload["id"],"status":"REJECTED","reason":str(exc)}})},maxlen=100000,approximate=True)
                         await self.redis.xack("execution.command",group,message_id)
     async def instrument_order_spec(self,symbol):
-        row=await self.db.fetchrow("SELECT contract_value,lot_size,minimum_order_size,validation_status FROM trading_assets WHERE symbol=$1",symbol)
+        row=await self.db.fetchrow("SELECT contract_value,lot_size,minimum_order_size,tick_size,validation_status FROM trading_assets WHERE symbol=$1",symbol)
         if not row or row["validation_status"]!="ACTIVE":raise ValueError("Exchange instrument metadata is unavailable")
         return row
     async def place_order(self,payload):
@@ -229,13 +249,13 @@ class ExchangeGateway:
         if leverage>1:await self.private("POST","/api/v5/account/set-leverage",{"instId":payload["symbol"],"lever":str(leverage),"mgnMode":margin_mode})
         local_id=payload["id"];cl_ord_id="SMP"+local_id.replace("-","")[:29]
         args={"instId":payload["symbol"],"tdMode":margin_mode,"side":payload["side"].lower(),"ordType":payload["type"].lower(),"sz":format(contracts,"f"),"clOrdId":cl_ord_id,"tag":"SMPELLIOTT"}
-        if payload.get("price") is not None and payload["type"]!="MARKET":args["px"]=str(payload["price"])
+        if payload.get("price") is not None and payload["type"]!="MARKET":args["px"]=price_to_tick(payload["price"],spec["tick_size"])
         attached={}
-        if payload.get("stop_loss_price") is not None:attached.update({"slTriggerPx":str(payload["stop_loss_price"]),"slOrdPx":"-1"})
-        if payload.get("take_profit_prices"):attached.update({"tpTriggerPx":str(payload["take_profit_prices"][0]),"tpOrdPx":"-1"})
+        if payload.get("stop_loss_price") is not None:attached.update({"slTriggerPx":price_to_tick(payload["stop_loss_price"],spec["tick_size"]),"slOrdPx":"-1"})
+        if payload.get("take_profit_prices"):attached.update({"tpTriggerPx":price_to_tick(payload["take_profit_prices"][0],spec["tick_size"]),"tpOrdPx":"-1"})
         if attached:args["attachAlgoOrds"]=[attached]
         await self.db.execute("INSERT INTO exchange_orders(local_order_id,cl_ord_id,symbol,status,payload) VALUES($1::uuid,$2,$3,'SUBMITTING',$4::jsonb) ON CONFLICT(local_order_id) DO NOTHING",local_id,cl_ord_id,payload["symbol"],json.dumps(args))
-        ack=await self.ws_request("order",args,cl_ord_id)
+        ack=okx_ack(await self.private("POST","/api/v5/trade/order",args),"order")
         await self.db.execute("UPDATE exchange_orders SET exchange_order_id=$2,status='ACCEPTED',updated_at=now() WHERE local_order_id=$1::uuid",local_id,ack.get("ordId"))
         await self.redis.xadd("trading.command",{"data":json.dumps({"event_type":"exchange.order_updated","payload":{"order_id":local_id,"exchange_order_id":ack.get("ordId"),"status":"OPEN"}})},maxlen=100000,approximate=True)
         return {"order_id":local_id,"exchange_order_id":ack.get("ordId"),"status":"ACCEPTED"}
@@ -243,7 +263,8 @@ class ExchangeGateway:
         row=await self.db.fetchrow("SELECT cl_ord_id,symbol,status FROM exchange_orders WHERE local_order_id=$1::uuid",local_order_id)
         if not row:raise ValueError("Order is not owned by this system")
         if row["status"] in {"FILLED","CANCELLED"}:raise ValueError("Order is already final")
-        await self.ws_request("cancel-order",{"instId":row["symbol"],"clOrdId":row["cl_ord_id"]},"C"+row["cl_ord_id"][:31])
+        okx_ack(await self.private("POST","/api/v5/trade/cancel-order",
+                                   {"instId":row["symbol"],"clOrdId":row["cl_ord_id"]}),"cancel")
         return {"order_id":local_order_id,"status":"CANCEL_REQUESTED"}
     async def exchange_orders(self,limit=100):
         rows=await self.db.fetch("SELECT local_order_id,cl_ord_id,exchange_order_id,symbol,status,payload,created_at,updated_at FROM exchange_orders ORDER BY created_at DESC LIMIT $1",limit)
@@ -424,5 +445,7 @@ class ExchangeGateway:
         if not all((self.s.okx_api_key,self.s.okx_secret_key,self.s.okx_passphrase)):raise ValueError("OKX API credentials are not configured")
         body=json.dumps(payload,separators=(",",":")) if payload else "";headers=auth_headers(self.s.okx_api_key,self.s.okx_secret_key,self.s.okx_passphrase,method,path,body,self.s.okx_demo)
         r=await self.client.request(method,self.s.okx_rest_url+path,content=body or None,headers=headers);r.raise_for_status();result=r.json()
-        if result.get("code")!="0":raise ValueError(result.get("msg","OKX error"))
+        if result.get("code")!="0":
+            details={"code":result.get("code"),"msg":result.get("msg")}
+            raise ValueError(f"OKX request rejected: {json.dumps(details,separators=(',',':'))}")
         return result["data"]

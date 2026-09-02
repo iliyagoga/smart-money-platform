@@ -1,4 +1,5 @@
-import { Button, Chip, Table, TableBody, TableCell, TableHead, TableRow } from "@mui/material";
+import { Button, Chip, Table, TableBody, TableCell, TableHead, TablePagination, TableRow } from "@mui/material";
+import { usePagination } from "../../hooks/usePagination";
 import type { TradingOrder } from "../../lib/types";
 import { EmptyState } from "../ui/EmptyState";
 import { Panel } from "../ui/Panel";
@@ -6,16 +7,17 @@ import { Panel } from "../ui/Panel";
 export function OrdersPanel({ orders, canCancel, onCancel }: {
   orders: TradingOrder[]; canCancel: boolean; onCancel: (order: TradingOrder) => void;
 }) {
+  const pagination = usePagination(orders);
   return <Panel title="Ордера Elliott" meta={`${orders.length} ORDERS`}>
     {orders.length === 0 ? <EmptyState text="Ордеров пока нет" /> : <Table size="small"><TableHead><TableRow>
       <TableCell>Время</TableCell><TableCell>Актив</TableCell><TableCell>Сторона</TableCell><TableCell>Тип</TableCell>
       <TableCell>Цена</TableCell><TableCell>Количество</TableCell><TableCell>Статус</TableCell><TableCell align="right">Действие</TableCell>
-    </TableRow></TableHead><TableBody>{orders.map((order) => <TableRow hover key={order.id}>
+    </TableRow></TableHead><TableBody>{pagination.visible.map((order) => <TableRow hover key={order.id}>
       <TableCell>{new Date(order.created_at).toLocaleString("ru-RU")}</TableCell><TableCell>{order.symbol}</TableCell>
       <TableCell>{order.side}</TableCell><TableCell>{order.type}</TableCell><TableCell>{order.filled_price ?? order.price ?? "market"}</TableCell>
       <TableCell>{order.quantity}</TableCell><TableCell><Chip size="small" label={order.status} variant="outlined" /></TableCell>
       <TableCell align="right"><Button size="small" color="error" disabled={!canCancel || !["PENDING", "OPEN", "SUBMITTING", "PARTIALLY_FILLED"].includes(order.status)}
         onClick={() => onCancel(order)}>Отменить</Button></TableCell>
-    </TableRow>)}</TableBody></Table>}
+    </TableRow>)}</TableBody></Table>}{orders.length > 0 && <TablePagination component="div" {...pagination.paginationProps} />}
   </Panel>;
 }

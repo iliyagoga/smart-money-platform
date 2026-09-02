@@ -1,7 +1,8 @@
 "use client";
 
-import { Alert, Button, Dialog, DialogActions, DialogContent, DialogTitle, Paper, Stack, TextField, Typography } from "@mui/material";
+import { Alert, Button, Dialog, DialogActions, DialogContent, DialogTitle, Paper, Stack, TablePagination, TextField, Typography } from "@mui/material";
 import { useState } from "react";
+import { usePagination } from "../../hooks/usePagination";
 import { useApiResource } from "../../hooks/useApiResource";
 import { api } from "../../lib/api";
 
@@ -40,6 +41,8 @@ export function TemplateManager({ canManage }: { canManage: boolean }) {
   const resource = useApiResource<TemplatesResponse>("/api/v1/smc/scenario-templates");
   const [editor, setEditor] = useState("");
   const [error, setError] = useState("");
+  const templates = resource.data?.templates ?? [];
+  const pagination = usePagination(templates);
 
   const edit = (template: ScenarioTemplate) => setEditor(JSON.stringify(template, null, 2));
   const create = () => setEditor(JSON.stringify(starterTemplate, null, 2));
@@ -79,7 +82,7 @@ export function TemplateManager({ canManage }: { canManage: boolean }) {
     </Stack>
     {error && <Alert severity="error" sx={{ mt: 2 }}>{error}</Alert>}
     <Stack spacing={1} sx={{ mt: 2 }}>
-      {(resource.data?.templates ?? []).map((template) => <Paper key={template.id} variant="outlined" sx={{ p: 2 }}>
+      {pagination.visible.map((template) => <Paper key={template.id} variant="outlined" sx={{ p: 2 }}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" } }}>
           <Typography sx={{ flex: 1 }}>{template.name} · {template.id} · v{template.version}</Typography>
           <Button disabled={!canManage} onClick={() => edit(template)}>JSON</Button>
@@ -87,6 +90,7 @@ export function TemplateManager({ canManage }: { canManage: boolean }) {
         </Stack>
       </Paper>)}
     </Stack>
+    {templates.length > 0 && <TablePagination component="div" {...pagination.paginationProps} />}
     <Dialog open={Boolean(editor)} onClose={close} fullWidth maxWidth="md">
       <DialogTitle>Редактор JSON-шаблона</DialogTitle>
       <DialogContent>

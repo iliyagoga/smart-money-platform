@@ -1,10 +1,11 @@
 "use client";
 
-import { Alert, Box, Button, Chip, Dialog, DialogContent, DialogTitle, LinearProgress, MenuItem, Paper, Stack, TextField, Typography } from "@mui/material";
+import { Alert, Box, Button, Chip, Dialog, DialogContent, DialogTitle, LinearProgress, MenuItem, Paper, Stack, TablePagination, TextField, Typography } from "@mui/material";
 import { useMemo, useState } from "react";
 import { SectionPage } from "../../components/layout/SectionPage";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { useApiResource } from "../../hooks/useApiResource";
+import { usePagination } from "../../hooks/usePagination";
 import { api } from "../../lib/api";
 import type { BacktestSettings } from "../../lib/backtest/types";
 
@@ -54,6 +55,7 @@ export default function PortfoliosPage() {
   const [runId,setRunId]=useState("");const [from,setFrom]=useState("2025-01-01");
   const [to,setTo]=useState(today());
   const [results,setResults]=useState<Run[]>([]);const [mode,setMode]=useState("PAPER");
+  const portfolios=resource.data?.portfolios ?? [];const pagination=usePagination(portfolios);
   const configurationMap=useMemo(()=>new Map((configs.data?.configurations??[]).map(item=>[item.id,item])),[configs.data]);
   const reset=()=>{setEditingId("");setName("");setDescription("");setAssets([initialAsset()]);};
   const edit=(portfolio:Portfolio)=>{setEditingId(portfolio.id);setName(portfolio.name);setDescription(portfolio.description);
@@ -87,14 +89,14 @@ export default function PortfoliosPage() {
     <Stack direction={{xs:"column",sm:"row"}} spacing={1} sx={{mb:2,justifyContent:"space-between"}}><TextField select size="small" label="Live-режим" value={mode} onChange={event=>setMode(event.target.value)} sx={{minWidth:210}}>
       <MenuItem value="PAPER">Paper</MenuItem><MenuItem value="DEMO">OKX Demo</MenuItem><MenuItem value="PRODUCTION">OKX Production</MenuItem></TextField>
       <Button variant="contained" onClick={()=>{reset();setOpen(true);}}>Создать портфель</Button></Stack>
-    {!(resource.data?.portfolios.length)?<EmptyState text="Портфелей пока нет"/>:<Stack spacing={2}>{resource.data?.portfolios.map(portfolio=><Paper key={portfolio.id} variant="outlined" sx={{p:2.5}}><Stack spacing={1.5}>
+    {!portfolios.length?<EmptyState text="Портфелей пока нет"/>:<Stack spacing={2}>{pagination.visible.map(portfolio=><Paper key={portfolio.id} variant="outlined" sx={{p:2.5}}><Stack spacing={1.5}>
       <Stack direction={{xs:"column",md:"row"}} sx={{justifyContent:"space-between",gap:1}}><Box><Typography variant="h6">{portfolio.name}</Typography><Typography color="text.secondary">{portfolio.description||"Без описания"}</Typography></Box>
       <Stack direction="row" spacing={1} sx={{flexWrap:"wrap"}}><Button size="small" onClick={()=>edit(portfolio)}>Изменить</Button><Button size="small" color="error" onClick={()=>void remove(portfolio)}>Удалить</Button></Stack></Stack>
       <Stack direction="row" spacing={1} sx={{flexWrap:"wrap"}}>{portfolio.assets.map(item=><Chip key={item.symbol} label={`${item.symbol} · ${item.allocation_percent}%`} />)}</Stack>
       <Stack direction={{xs:"column",md:"row"}} spacing={1.5}><TextField type="date" size="small" label="Начало датасета" value={from} onChange={event=>setFrom(event.target.value)} slotProps={{inputLabel:{shrink:true}}}/><TextField type="date" size="small" label="Конец датасета" value={to} onChange={event=>setTo(event.target.value)} slotProps={{inputLabel:{shrink:true}}}/>
         <Button variant="outlined" disabled={busy} onClick={()=>void run(portfolio)}>Прогнать датасет</Button><Button variant="contained" color={mode==="PRODUCTION"?"error":"primary"} disabled={busy} onClick={()=>void live(portfolio)}>Добавить в live</Button></Stack>
       {runId===portfolio.id&&<LinearProgress variant="determinate" value={results.length?results.reduce((sum,item)=>sum+item.progress,0)/results.length:0}/>} {results.length>0&&runId===portfolio.id&&<Stack spacing={.5}>{results.map(item=><Typography variant="body2" key={item.id}>{item.symbol}: {item.status} · {item.progress}%{item.result?` · доходность ${item.result.total_return_percent.toFixed(2)}% · сделок ${item.result.total_trades}`:""}{item.error?` · ${item.error}`:""}</Typography>)}</Stack>}
-    </Stack></Paper>)}</Stack>}
+    </Stack></Paper>)}<TablePagination component="div" {...pagination.paginationProps}/></Stack>}
     <Dialog open={open} onClose={()=>!busy&&setOpen(false)} fullWidth maxWidth="md"><DialogTitle>{editingId?"Редактировать портфель":"Новый портфель"}</DialogTitle><DialogContent dividers><Stack spacing={2}>
       <TextField required label="Название" value={name} onChange={event=>setName(event.target.value)}/><TextField label="Описание" value={description} onChange={event=>setDescription(event.target.value)} multiline minRows={2}/>
       {assets.map((item,index)=><Paper key={index} variant="outlined" sx={{p:2}}><Stack direction={{xs:"column",md:"row"}} spacing={1}><TextField fullWidth label="Актив" placeholder="BTC-USDT-SWAP" value={item.symbol} onChange={event=>setAssets(current=>current.map((value,i)=>i===index?{...value,symbol:event.target.value.toUpperCase()}:value))}/>

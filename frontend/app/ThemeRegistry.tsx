@@ -8,12 +8,21 @@ import type { ReactNode } from "react";
 
 interface ColorModeContextValue {
   mode: PaletteMode;
+  palette: PaletteName;
   toggleColorMode: () => void;
+  setPalette: (palette: PaletteName) => void;
 }
+
+export type PaletteName = "lime" | "ocean" | "violet" | "amber";
 
 const ColorModeContext = createContext<ColorModeContextValue | undefined>(undefined);
 const colorModeKey = "smart-money-color-mode";
 const colorModeEvent = "smart-money-color-mode-change";
+const paletteKey = "smart-money-palette";
+const palettes: Record<PaletteName, { light: string; dark: string }> = {
+  lime: { light: "#517d00", dark: "#b9f24c" }, ocean: { light: "#006b7d", dark: "#55d8ef" },
+  violet: { light: "#6845a5", dark: "#c5a3ff" }, amber: { light: "#9a5b00", dark: "#ffc35c" },
+};
 
 const subscribeToColorMode = (listener: () => void) => {
   window.addEventListener("storage", listener);
@@ -25,9 +34,14 @@ const subscribeToColorMode = (listener: () => void) => {
 };
 
 const getColorMode = (): PaletteMode => localStorage.getItem(colorModeKey) === "dark" ? "dark" : "light";
+const getPalette = (): PaletteName => {
+  const value = localStorage.getItem(paletteKey) as PaletteName | null;
+  return value && value in palettes ? value : "lime";
+};
 const getDefaultColorMode = (): PaletteMode => "light";
+const getDefaultPalette = (): PaletteName => "lime";
 
-const buildTheme = (mode: PaletteMode) => createTheme({
+const buildTheme = (mode: PaletteMode, palette: PaletteName) => createTheme({
   palette: {
     mode,
     background: {
@@ -35,7 +49,7 @@ const buildTheme = (mode: PaletteMode) => createTheme({
       paper: mode === "light" ? "#ffffff" : "#101715",
     },
     primary: {
-      main: mode === "light" ? "#517d00" : "#b9f24c",
+      main: palettes[palette][mode],
       contrastText: mode === "light" ? "#ffffff" : "#101510",
     },
     secondary: { main: mode === "light" ? "#52605a" : "#9aaba3" },
@@ -76,14 +90,18 @@ export function useColorMode(): ColorModeContextValue {
 
 export function ThemeRegistry({ children }: { children: ReactNode }) {
   const mode = useSyncExternalStore(subscribeToColorMode, getColorMode, getDefaultColorMode);
-  const theme = useMemo(() => buildTheme(mode), [mode]);
+  const palette = useSyncExternalStore(subscribeToColorMode, getPalette, getDefaultPalette);
+  const theme = useMemo(() => buildTheme(mode, palette), [mode, palette]);
   const colorMode = useMemo(() => ({
-    mode,
+    mode, palette,
     toggleColorMode: () => {
       localStorage.setItem(colorModeKey, mode === "light" ? "dark" : "light");
       window.dispatchEvent(new Event(colorModeEvent));
     },
-  }), [mode]);
+    setPalette: (next: PaletteName) => {
+      localStorage.setItem(paletteKey, next); window.dispatchEvent(new Event(colorModeEvent));
+    },
+  }), [mode, palette]);
 
   return (
     <AppRouterCacheProvider>

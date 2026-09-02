@@ -1,5 +1,6 @@
 from src.okx import auth_headers,book,candle,trade,ws_login
-from src.service import incremental_start,instrument_spec
+import pytest
+from src.service import incremental_start,instrument_spec,okx_ack,price_to_tick
 def test_signature_matches_known_hmac():
     h=auth_headers("k","s","p","GET","/api/v5/account/balance",stamp="2020-01-01T00:00:00.000Z");assert h["OK-ACCESS-SIGN"]=="3+YzNZYq3N3si/o/YkbHvC4RpV8WeOY5ZpO7abfFcYA=";assert h["x-simulated-trading"]=="1"
 def test_private_websocket_login_signature():
@@ -24,3 +25,11 @@ def test_swap_contract_sizes_are_converted_to_base_asset_units():
     assert spec["lot_size"]==.0001
     assert spec["minimum_order_size"]==.0001
     assert spec["contract_value"]==.01
+
+def test_price_is_rounded_to_exchange_tick():
+    assert price_to_tick(126.6408,.01)=="126.64"
+    assert price_to_tick(130.4784,.01)=="130.48"
+
+def test_okx_ack_preserves_detailed_rejection():
+    with pytest.raises(ValueError,match='"sCode":"51000"'):
+        okx_ack([{"sCode":"51000","sMsg":"Parameter error","ordId":""}],"order")

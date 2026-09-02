@@ -3,6 +3,7 @@ from src.probability import ProbabilityEngine
 from src.resolver import ConflictResolver
 from src.risk import RiskManager
 from src.adaptive import AdaptiveModel,bandit_adjust
+from src.service import simulated_elliott_scenario
 
 def scenario(id,direction,confidence):return Scenario(id=id,symbol="BTC-USDT",timeframe="M15",direction=direction,setup_type="TEST",confidence=confidence,entry_zone_low=99,entry_zone_high=101,stop_loss_price=95,take_profit_prices=[110],expires_at=9999999999999)
 def test_probability_is_bounded():
@@ -41,6 +42,22 @@ def test_three_losses_pause_for_one_day():
     signal=ConflictResolver().signal(scenario("a","LONG",.7));cfg=RiskConfig();last=1_000
     decision=RiskManager().calculate(signal,10000,cfg,consecutive_losses=3,last_loss_at=last,now=last+23*3_600_000)
     assert not decision.approved and decision.cooldown_until==last+24*3_600_000
+def test_demo_simulation_ignores_pnl_limits_and_uses_full_size():
+    signal=ConflictResolver().signal(scenario("a","LONG",.7));cfg=RiskConfig();last=1_000
+    decision=RiskManager().calculate(signal,10000,cfg,daily_pnl=-1000,consecutive_losses=3,
+      last_loss_at=last,now=last+1_000,ignore_loss_limits=True)
+    assert decision.approved and decision.capital_multiplier==1
+    assert decision.risk_amount==100 and decision.cooldown_until is None
+def test_demo_simulation_still_rejects_an_active_trade():
+    signal=ConflictResolver().signal(scenario("a","LONG",.7))
+    decision=RiskManager().calculate(signal,10000,RiskConfig(),open_positions=1,ignore_loss_limits=True)
+    assert not decision.approved and decision.rejection_reason=="Another trade is still active"
 def test_adaptive_model_blends_safely():
     m=AdaptiveModel(.25);m.load({"version":"v1","feature_names":["confidence"],"weights":[2],"bias":0});assert .6<m.blend(.6,{"confidence":1})<.9
 def test_bandit_adjustment_is_bounded():assert round(bandit_adjust(.6,1),2)==.65 and round(bandit_adjust(.6,0),2)==.55
+
+def test_simulated_elliott_scenario_has_uuid_and_consistent_timestamps():
+    item=simulated_elliott_scenario(SimulatedElliottSignalRequest(symbol="aave-usdt-swap",direction="LONG"),100,1_000)
+    assert item.id and item.symbol=="AAVE-USDT-SWAP"
+    assert item.created_at==1_000 and item.expires_at==301_000
+    assert item.stop_loss_price==99 and item.take_profit_prices==[102]

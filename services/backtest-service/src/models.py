@@ -248,6 +248,6 @@ class OptimizationSessionCreate(BaseModel):
 
 
 class OptimizationSessionUpdate(BaseModel):
-    status: str = Field(pattern="^(RUNNING|PAUSED|COMPLETED|FAILED)$")
+    status: str = Field(pattern="^(RUNNING|PAUSED|CANCELLED|COMPLETED|FAILED)$")
     checkpoint: dict
     error: str | None = Field(default=None, max_length=2000)

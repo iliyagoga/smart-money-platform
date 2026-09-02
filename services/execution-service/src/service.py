@@ -8,6 +8,10 @@ from .manager import PositionManager
 from .models import *
 log=logging.getLogger(__name__)
 def decode_json(value):return json.loads(value) if isinstance(value,str) else value
+def actionable_candle(candle:Candle,created_at:int):
+    # Several timeframes describe the same market interval. Applying an H4/M15
+    # high or low to a newly opened position reuses price action from before entry.
+    return candle.timeframe=="M1" and candle.timestamp>=created_at
 
 class ExecutionService:
     def __init__(self,database_url,redis_url,group="execution-service",consumer="execution-1",mode="paper"):
@@ -119,9 +123,10 @@ class ExecutionService:
         if old!=new:await self.db.execute("INSERT INTO position_state_history(position_id,from_state,to_state,trigger,price) VALUES($1::uuid,$2,$3,$4,$5)",p.id,old,new,trigger,p.current_price)
     async def on_candle(self,c:Candle):
         for o in list(self.orders.values()):
-            if o.execution_mode=="PAPER" and o.status=="OPEN" and o.symbol==c.symbol and o.price is not None and c.low<=o.price<=c.high:await self.fill(o,o.price)
+            if (o.execution_mode=="PAPER" and o.status=="OPEN" and o.symbol==c.symbol and o.price is not None
+                    and actionable_candle(c,o.created_at) and c.low<=o.price<=c.high):await self.fill(o,o.price)
         for p in list(self.positions.values()):
-            if p.status=="CLOSED" or p.symbol!=c.symbol:continue
+            if p.status=="CLOSED" or p.symbol!=c.symbol or not actionable_candle(c,p.opened_at):continue
             old=p.status
             for action,data in self.manager.update(p,c):
                 if action=="close":await self.close(p,data["quantity"],data["price"],data["reason"])
