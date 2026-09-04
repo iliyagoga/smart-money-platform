@@ -70,7 +70,10 @@ const buildTheme = (mode: PaletteMode, palette: PaletteName) => createTheme({
   },
   shape: { borderRadius: 12 },
   components: {
-    MuiButton: { defaultProps: { disableElevation: true } },
+    MuiButton: {
+      defaultProps: { disableElevation: true },
+      styleOverrides: { root: { minHeight: 40, borderRadius: 10 } },
+    },
     MuiPaper: {
       styleOverrides: {
         root: {
@@ -79,6 +82,14 @@ const buildTheme = (mode: PaletteMode, palette: PaletteName) => createTheme({
         },
       },
     },
+    MuiTableCell: {
+      styleOverrides: {
+        head: { fontSize: 12, fontWeight: 700, letterSpacing: "0.04em", whiteSpace: "nowrap" },
+        root: { borderColor: mode === "light" ? "#e7ece9" : "#22302b" },
+      },
+    },
+    MuiTextField: { defaultProps: { size: "small" } },
+    MuiTooltip: { defaultProps: { arrow: true } },
   },
 });
 

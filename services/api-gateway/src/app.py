@@ -6,6 +6,7 @@ from redis.asyncio import Redis
 from fastapi import FastAPI, HTTPException, Request,WebSocket
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.requests import ClientDisconnect
 
 from .security import TokenVerifier, authorize
 from .settings import settings
@@ -18,6 +19,7 @@ SERVICE_URLS = {
     "decision": settings.decision_service_url,
     "execution": settings.execution_service_url,
     "analytics": settings.analytics_service_url,
+    "learning": settings.learning_service_url,
     "exchange": settings.exchange_service_url,
     "backtest": settings.backtest_service_url,
 }
@@ -65,13 +67,16 @@ async def proxy(service: str, path: str, request: Request) -> Response:
         "x-user-roles": ",".join(sorted(principal.roles)),
     }
     try:
+        body = await request.body()
         upstream = await request.app.state.client.request(
             request.method,
             f"{base_url}/{path}",
             params=request.query_params,
-            content=await request.body(),
+            content=body,
             headers=headers,
         )
+    except ClientDisconnect as exc:
+        raise HTTPException(status_code=499, detail="Client closed request") from exc
     except httpx.RequestError as exc:
         raise HTTPException(status_code=502, detail=f"Upstream {service} is unavailable") from exc
     excluded = {"content-length", "connection", "transfer-encoding", "content-encoding"}

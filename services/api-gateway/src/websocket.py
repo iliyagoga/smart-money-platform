@@ -26,7 +26,9 @@ class WebSocketBridge:
         except HTTPException:await ws.close(code=4401,reason="Invalid access token");return
         await ws.accept(subprotocol="access_token" if ws.headers.get("sec-websocket-protocol","").startswith("access_token") else None);self.connections+=1
         pubsub=self.redis.pubsub();await pubsub.subscribe(*CHANNELS);event_types:set[str]=set();symbols:set[str]=set()
-        await ws.send_json({"op":"ready","user":principal.username,"roles":sorted(principal.roles)})
+        try:await ws.send_json({"op":"ready","user":principal.username,"roles":sorted(principal.roles)})
+        except (WebSocketDisconnect,RuntimeError):
+            await pubsub.aclose();self.connections-=1;return
         async def receive():
             while True:
                 message=await ws.receive_json()

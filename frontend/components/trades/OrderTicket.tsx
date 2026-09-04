@@ -54,7 +54,7 @@ export function OrderTicket({ canTrade, isSubmitting, onSubmit }: OrderTicketPro
         >
           {assets.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}
         </TextField>
-        <Stack direction="row" spacing={1.5}>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
           <TextField
             select
             fullWidth
@@ -81,13 +81,14 @@ export function OrderTicket({ canTrade, isSubmitting, onSubmit }: OrderTicketPro
         <TextField label="Цена" value={price} onChange={(event) => setPrice(event.target.value)} type="number"
           required={type !== "MARKET"} disabled={!canTrade || type === "MARKET"}
           slotProps={{ htmlInput: { min: 0, step: "any" } }} />
-        <Stack direction="row" spacing={1.5}>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
           <TextField fullWidth label="Stop Loss" value={stopLoss} onChange={(event) => setStopLoss(event.target.value)}
             type="number" disabled={!canTrade} />
           <TextField fullWidth label="Take Profit" value={takeProfit} onChange={(event) => setTakeProfit(event.target.value)}
             type="number" disabled={!canTrade} />
         </Stack>
-        <Button type="submit" variant="contained" color={side === "BUY" ? "success" : "error"} disabled={!canTrade || isSubmitting || !quantity}>
+        <Button type="submit" variant="contained" color={side === "BUY" ? "success" : "error"}
+          disabled={!canTrade || isSubmitting || Number(quantity) <= 0 || (type !== "MARKET" && Number(price) <= 0)}>
           {isSubmitting ? "Отправляем…" : `${side} ${selectedSymbol}`}
         </Button>
       </Stack>

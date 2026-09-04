@@ -1,6 +1,6 @@
 "use client";
 
-import { Button, Dialog, DialogActions, DialogContent, DialogTitle, FormControl, Grid, InputLabel, MenuItem, Select, Snackbar, Stack, Typography } from "@mui/material";
+import { Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, FormControl, Grid, InputLabel, MenuItem, Select, Snackbar, Stack, Typography } from "@mui/material";
 import { useState } from "react";
 import { useAuth } from "../../components/auth/AuthProvider";
 import { PositionsPanel } from "../../components/dashboard/PositionsPanel";
@@ -9,9 +9,10 @@ import { TradeHistory } from "../../components/trades/TradeHistory";
 import { TradeStatisticsGrid } from "../../components/trades/TradeStatisticsGrid";
 import { TradeAnalyzer } from "../../components/trades/TradeAnalyzer";
 import { OrdersPanel } from "../../components/trades/OrdersPanel";
+import { OrderTicket } from "../../components/trades/OrderTicket";
 import { useApiResource } from "../../hooks/useApiResource";
 import { api } from "../../lib/api";
-import type { OrdersResponse, Position, PositionsResponse, TradeAnalysisResponse, TradeAssetsResponse, TradeStatistics, TradesResponse, TradingOrder } from "../../lib/types";
+import type { OrderDraft, OrdersResponse, Position, PositionsResponse, TradeAnalysisResponse, TradeAssetsResponse, TradeStatistics, TradesResponse, TradingOrder } from "../../lib/types";
 
 export default function TradesPage() {
   const [symbol, setSymbol] = useState("");
@@ -29,6 +30,7 @@ export default function TradesPage() {
   const [isClosing, setIsClosing] = useState(false);
   const [isSimulating, setIsSimulating] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
+  const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
   const positions = Array.isArray(positionsResource.data)
     ? positionsResource.data
     : (positionsResource.data?.positions ?? []);
@@ -62,6 +64,15 @@ export default function TradesPage() {
     setActionError("");
     try { await api(`/api/v1/execution/orders/${order.id}/cancel`, { method: "POST" }); setSuccessMessage("Отмена ордера отправлена"); reloadTradingData(); }
     catch (reason) { setActionError(reason instanceof Error ? reason.message : String(reason)); }
+  };
+  const submitOrder = async (order: OrderDraft) => {
+    setIsSubmittingOrder(true);setActionError("");
+    try {
+      await api("/api/v1/execution/orders", { method: "POST", body: JSON.stringify(order) });
+      setSuccessMessage("Ордер успешно отправлен в paper-контур");
+      reloadTradingData();
+    } catch (reason) { setActionError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setIsSubmittingOrder(false); }
   };
 
   const closePosition = async () => {
@@ -105,6 +116,9 @@ export default function TradesPage() {
         </Button></Stack>
       </Stack>
       <TradeStatisticsGrid statistics={statisticsResource.data} />
+      <Box sx={{ my: 1.5, maxWidth: 680 }}>
+        <OrderTicket canTrade={canTrade} isSubmitting={isSubmittingOrder} onSubmit={(order) => void submitOrder(order)} />
+      </Box>
       <OrdersPanel orders={ordersResource.data?.orders ?? []} canCancel={canTrade} onCancel={(order) => void cancelOrder(order)} />
       <Grid container spacing={1.5} sx={{ mt: 0 }}>
         <Grid size={{ xs: 12 }}>

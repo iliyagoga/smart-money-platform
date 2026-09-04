@@ -90,8 +90,9 @@ async def compare(ids: list[UUID] = Query(), x_user_id: str = Header(default="lo
 
 
 @app.get("/backtests/{run_id}")
-async def backtest(run_id: UUID, x_user_id: str = Header(default="local")):
-    run = await service.run(run_id, x_user_id)
+async def backtest(run_id: UUID, summary: bool = Query(default=False),
+                   x_user_id: str = Header(default="local")):
+    run = await service.run(run_id, x_user_id, summary=summary)
     if not run:
         raise HTTPException(404, "Backtest not found")
     return run

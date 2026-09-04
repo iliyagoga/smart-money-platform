@@ -59,18 +59,20 @@ export function useTradingAssets() {
     addAsset: async (value: string) => {
       const symbol = normalizeAssetSymbol(value);
       if (!isValidAssetSymbol(symbol) || items.some((asset) => asset.symbol === symbol)) return false;
-      await api("/api/v1/backtest/assets", {
+      const created = await api<TradingAsset>("/api/v1/backtest/assets", {
         method: "POST",
         body: JSON.stringify({ symbol, category: "crypto" }),
       });
-      await api("/api/v1/exchange/exchange/reload-symbols", { method: "POST" }).catch(() => undefined);
-      reload();
+      setItems((current) => current.some((asset) => asset.symbol === symbol)
+        ? current
+        : [...current, { ...created, symbol }]);
+      void api("/api/v1/exchange/exchange/reload-symbols", { method: "POST" }).catch(() => undefined);
       return true;
     },
     removeAsset: async (symbol: string) => {
       await api(`/api/v1/backtest/assets/${encodeURIComponent(symbol)}`, { method: "DELETE" });
-      await api("/api/v1/exchange/exchange/reload-symbols", { method: "POST" }).catch(() => undefined);
-      reload();
+      setItems((current) => current.filter((asset) => asset.symbol !== symbol));
+      void api("/api/v1/exchange/exchange/reload-symbols", { method: "POST" }).catch(() => undefined);
     },
   };
 }

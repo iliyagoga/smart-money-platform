@@ -35,6 +35,26 @@ const tenths = (min: number, max: number) => strings(Array.from(
 ));
 const product = <T,>(groups: T[][]): T[][] => groups.reduce<T[][]>((rows, group) => rows.flatMap(row => group.map(item => [...row, item])), [[]]);
 const score = (result: BacktestResult, metric: Metric) => metric === "RETURN" ? result.totalReturnPercent : metric === "PROFIT_FACTOR" ? result.profitFactor ?? 0 : result.totalReturnPercent - result.maxDrawdownPercent;
+const compactResult = (result: BacktestResult): BacktestResult => ({
+  ...result,
+  trades: [],
+  equity: [],
+  chartCandles: [],
+  chartCandlesByTimeframe: {},
+  scenarios: [],
+  patternDiagnostics: {},
+  elliottPatterns: [],
+});
+const compactRow = (row: Row): Row => ({
+  ...row,
+  optimization: compactResult(row.optimization),
+  validation: row.validation ? compactResult(row.validation) : undefined,
+});
+const checkpointForStorage = (checkpoint: Checkpoint): Checkpoint => ({
+  ...checkpoint,
+  completed: checkpoint.completed.map(compactRow),
+  finalists: checkpoint.finalists.map(compactRow),
+});
 const day = (value: number) => new Date(value).toISOString().slice(0, 10);
 const defaultPeriods = (from: string, to: string) => {
   const start = Date.parse(`${from}T00:00:00Z`); const end = Date.parse(`${to}T00:00:00Z`);
@@ -142,8 +162,12 @@ function setValue(settings: BacktestSettings, key: Key, raw: string): BacktestSe
 }
 function valid(settings: BacktestSettings) {
   const e = settings.elliott;
+  const timeframeRank: Record<string, number> = { M1: 1, M5: 5, M15: 15, M30: 30, H1: 60, H4: 240, D1: 1440 };
   return settings.initialCapital > 0 && settings.leverage >= 1 && settings.riskPerTradePercent >= 0
-    && e.wave2MinRetracement < e.wave2MaxRetracement && e.takeProfitRr > 0
+    && timeframeRank[e.entryTimeframe] < timeframeRank[e.structureTimeframe]
+    && timeframeRank[e.structureTimeframe] < timeframeRank[e.macroTimeframe]
+    && e.wave2MinRetracement < e.wave2MaxRetracement && e.minimumRr > 0
+    && e.takeProfitRr >= e.minimumRr
     && (e.takeProfitCount === 1 || e.secondTakeProfitRr > e.takeProfitRr);
 }
 
@@ -151,7 +175,7 @@ interface Props {
   settings: BacktestSettings; assets: string[]; initialAsset: string; initialTimeframes: string[];
   testFrom: string; testTo: string;
   onApply: (settings: BacktestSettings, result: BacktestResult) => void;
-  runCandidate: (settings: BacktestSettings, period: Period, asset: string, timeframes: string[]) => Promise<BacktestResult>;
+  runCandidate: (settings: BacktestSettings, period: Period, asset: string, timeframes: string[], summary?: boolean) => Promise<BacktestResult>;
 }
 
 export function BacktestOptimizer({ settings, assets, initialAsset, initialTimeframes, testFrom, testTo, onApply, runCandidate }: Props) {
@@ -255,7 +279,7 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
     validationPeriod, validationCount, minimumTrades, minimumReturn, maximumDrawdown, order, enabled, selected, settings });
   const persist = async (sessionId: string, status: "RUNNING" | "PAUSED" | "CANCELLED" | "COMPLETED" | "FAILED", checkpoint: Checkpoint, message?: string) => {
     await api(`/api/v1/backtest/optimizations/${sessionId}`, {
-      method: "PUT", body: JSON.stringify({ status, checkpoint, error: message }),
+      method: "PUT", body: JSON.stringify({ status, checkpoint: checkpointForStorage(checkpoint), error: message }),
     });
     setLastSavedAt(new Date().toISOString());
   };
@@ -312,6 +336,9 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
     setRunning(true); setError(""); setSavedTopCount(0); controlRequested.current = null;
     let checkpoint: Checkpoint = resume && savedSession ? savedSession.checkpoint
       : { phase: "OPTIMIZATION", blockIndex: 0, offset: 0, completed: [], finalists: [], validationIndex: 0, timings: {} };
+    // Persisted results intentionally contain metrics only. Re-run the small
+    // finalist set after a resumed validation to restore report/chart details.
+    if (resume && checkpoint.phase === "VALIDATION") checkpoint = { ...checkpoint, validationIndex: 0 };
     let sessionId = savedSession?.id ?? "";
     checkpointRef.current = checkpoint; sessionIdRef.current = sessionId; setTimings(checkpoint.timings ?? {});
     try {
@@ -333,7 +360,7 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
           const batch = candidates.slice(offset, offset + PARALLEL_BATCH_SIZE);
           const batchResults = await Promise.all(batch.map(async candidate => {
             const started = performance.now();
-            const result = await runCandidate(candidate.settings, optimizationPeriod, asset, timeframes);
+            const result = await runCandidate(candidate.settings, optimizationPeriod, asset, timeframes, true);
             return { row: { ...candidate, optimization: result, optimizationScore: score(result, metric) }, elapsedMs: performance.now() - started };
           }));
           completed.push(...batchResults.map(item => item.row));
@@ -361,7 +388,7 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
             const batch = candidates.slice(offset, offset + PARALLEL_BATCH_SIZE);
             const batchResults = await Promise.all(batch.map(async candidate => {
               const started = performance.now();
-              const result = await runCandidate(candidate.settings, optimizationPeriod, asset, timeframes);
+              const result = await runCandidate(candidate.settings, optimizationPeriod, asset, timeframes, true);
               return {
                 row: { ...candidate, optimization: result, optimizationScore: score(result, metric) },
                 elapsedMs: performance.now() - started,
@@ -385,7 +412,14 @@ export function BacktestOptimizer({ settings, assets, initialAsset, initialTimef
           await persist(sessionId, "RUNNING", checkpoint);
         }
       }
-      finalists = checkpoint.finalists; setRows([...finalists]); setStage("Валидация"); setDone(checkpoint.validationIndex); setTotal(finalists.length);
+      finalists = checkpoint.finalists.filter(row => valid(row.settings));
+      if (!finalists.length) throw new Error("Сохранённые финалисты не соответствуют текущим ограничениям параметров.");
+      if (finalists.length !== checkpoint.finalists.length) {
+        checkpoint = { ...checkpoint, finalists, validationIndex: Math.min(checkpoint.validationIndex, finalists.length) };
+        checkpointRef.current = checkpoint;
+        await persist(sessionId, "RUNNING", checkpoint);
+      }
+      setRows([...finalists]); setStage("Валидация"); setDone(checkpoint.validationIndex); setTotal(finalists.length);
       for (let index = checkpoint.validationIndex; index < finalists.length; index += 1) {
         const candidate = finalists[index];
         const started = performance.now();

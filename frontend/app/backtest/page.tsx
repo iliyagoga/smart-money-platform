@@ -229,6 +229,7 @@ export default function BacktestPage() {
     runAsset = selectedAsset,
     runTimeframes = selectedTimeframes,
     includeTrainingPeriod = true,
+    summary = false,
   ): Promise<BacktestResult> => {
     const periodMilliseconds = Math.max(
       0,
@@ -329,7 +330,7 @@ export default function BacktestPage() {
       });
       let completed: BacktestRun | undefined;
       for (let attempt = 0; attempt < 3_600; attempt += 1) {
-        const current = await api<BacktestRun>(`/api/v1/backtest/backtests/${created.id}`);
+        const current = await api<BacktestRun>(`/api/v1/backtest/backtests/${created.id}${summary ? "?summary=true" : ""}`);
         onProgress?.(current.progress);
         if (current.status === "FAILED") throw new Error(current.error ?? "Бэктест завершился с ошибкой");
         if (current.status === "COMPLETED") {
@@ -606,9 +607,9 @@ export default function BacktestPage() {
         initialTimeframes={selectedTimeframes}
         testFrom={testFrom}
         testTo={testTo}
-        runCandidate={async (candidateSettings, period, optimizerAsset, optimizerTimeframes) => {
+        runCandidate={async (candidateSettings, period, optimizerAsset, optimizerTimeframes, summary) => {
           const candidateResult = await executeBacktest(
-            candidateSettings, period, undefined, optimizerAsset, optimizerTimeframes, false,
+            candidateSettings, period, undefined, optimizerAsset, optimizerTimeframes, false, summary,
           );
           runsResource.reload();
           return candidateResult;

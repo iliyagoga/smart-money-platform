@@ -419,10 +419,28 @@ class BacktestService:
             "completed_at": row["completed_at"].isoformat() if row["completed_at"] else None,
         }
 
-    async def run(self, run_id: UUID, user_id: str):
+    async def run(self, run_id: UUID, user_id: str, summary: bool = False):
         async with self.db.acquire() as connection:
             row = await connection.fetchrow("SELECT * FROM backtest_runs WHERE id=$1 AND user_id=$2", run_id, user_id)
-        return self.serialize_run(row, include_result=True) if row else None
+        serialized = self.serialize_run(row, include_result=True) if row else None
+        if serialized and summary and serialized.get("result"):
+            full_result = serialized["result"]
+            summary_keys = {
+                "initial_capital", "final_capital", "net_profit", "total_return_percent",
+                "max_drawdown_percent", "win_rate", "profit_factor", "total_trades", "average_trade",
+                "sharpe_ratio", "benchmark_return_percent", "average_monthly_return_percent",
+                "annualized_return_percent", "losing_months", "losing_months_percent",
+                "average_losing_month_percent", "equity_curve_r_squared", "recovery_factor",
+                "request_config", "dataset", "model_training", "template_distribution",
+                "elliott_diagnostics", "strategy_config", "execution_spec", "engine",
+            }
+            result = {key: value for key, value in full_result.items() if key in summary_keys}
+            result.update({
+                "trades": [], "equity": [], "chart_candles": [], "chart_candles_by_timeframe": {},
+                "scenarios": [], "pattern_diagnostics": {}, "elliott_patterns": [],
+            })
+            serialized["result"] = result
+        return serialized
 
     async def cancel_run(self, run_id: UUID, user_id: str):
         async with self.db.acquire() as connection:

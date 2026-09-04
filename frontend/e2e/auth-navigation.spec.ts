@@ -10,6 +10,9 @@ async function signIn(page: Page, user = username) {
   await page.getByLabel(/Username or email|Имя пользователя/).fill(user);
   await page.getByLabel(/Password|Пароль/).fill(password);
   await page.getByRole("button", { name: /Sign In|Войти/ }).click();
+  await page.waitForURL((url) => url.origin === "http://localhost:3000" && !url.hash.includes("code="));
+  await expect(page.getByRole("button", { name: "Выйти" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe("");
 }
 
 test("user can sign in, switch theme and open every section", async ({ page }) => {
@@ -68,6 +71,7 @@ test("user can add an asset and run an isolated backtest", async ({ page }, test
   await page.getByLabel("Символ актива").fill(asset);
   await page.getByRole("button", { name: "Добавить", exact: true }).click();
   await expect(page.getByText(asset, { exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: /Настройка и запуск/ }).click();
   await page.getByRole("button", { name: "Запустить бэктест" }).click();
   await expect(page.getByText("Кривая капитала")).toBeVisible();
   await expect(page.getByText("Журнал сделок")).toBeVisible();
@@ -81,8 +85,12 @@ test("trader can submit a validated paper order", async ({ page }) => {
   });
   await signIn(page, "trader");
   await page.goto("/trades");
-  await page.getByLabel("Тип").click();
-  await page.getByRole("option", { name: "Limit" }).click();
+  await expect(page).toHaveURL(/\/trades$/);
+  const orderType = page.getByRole("combobox", { name: "Тип" });
+  await orderType.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(orderType).toContainText("Limit");
   await page.getByLabel("Количество").fill("0.001");
   await page.getByLabel("Цена").fill("50000");
   await page.getByRole("button", { name: "BUY BTC-USDT-SWAP" }).click();

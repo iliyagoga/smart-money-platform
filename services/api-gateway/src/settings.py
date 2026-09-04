@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     decision_service_url: str = "http://decision-service:8020"
     execution_service_url: str = "http://execution-service:8030"
     analytics_service_url: str = "http://analytics-service:8040"
+    learning_service_url: str = "http://learning-service:8060"
     backtest_service_url: str = "http://backtest-service:8080"
     exchange_service_url: str = "http://exchange-gateway:8070"
     request_timeout: float = 30.0

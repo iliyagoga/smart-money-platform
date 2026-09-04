@@ -4,6 +4,24 @@ html {
   scroll-behavior: smooth;
 }
 
+body {
+  min-width: 320px;
+}
+
+::selection {
+  background: color-mix(in srgb, currentColor 18%, transparent);
+}
+
+:focus-visible {
+  outline: 3px solid currentColor;
+  outline-offset: 3px;
+}
+
+* {
+  scrollbar-color: color-mix(in srgb, currentColor 28%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
 .eyebrow {
   color: inherit;
   font-size: 11px;
