@@ -194,6 +194,7 @@ export default function BacktestPage() {
   const restoredModelVersion = useRef<string | null | undefined>(undefined);
   const runsResource = useApiResource<BacktestRunsResponse>(
     `/api/v1/backtest/backtests?limit=${historyRowsPerPage}&offset=${historyPage * historyRowsPerPage}`,
+    350,
   );
   const templatesResource = useApiResource<ScenarioTemplatesResponse>("/api/v1/smc/scenario-templates");
   const templateSelectionInitialized = useRef(false);
@@ -442,6 +443,29 @@ export default function BacktestPage() {
     } catch(reason) { setError(reason instanceof Error ? reason.message:String(reason));setHistoryBusy(false); }
   };
 
+  const deleteRunsInPeriod = async (from: string, to: string): Promise<number | undefined> => {
+    if (!window.confirm(`Удалить все отчёты, созданные с ${from} по ${to} включительно, на всех страницах? Активные запуски сохранятся. Это действие нельзя отменить.`)) return;
+    setError("");
+    setHistoryBusy(true);
+    try {
+      const start = new Date(`${from}T00:00:00`);
+      const end = new Date(`${to}T00:00:00`);
+      end.setDate(end.getDate() + 1);
+      const query = new URLSearchParams({ date_from: start.toISOString(), date_to: end.toISOString() });
+      const response = await api<{ deleted_count: number }>(`/api/v1/backtest/backtests?${query}`, { method: "DELETE" });
+      setComparison((current) => current.filter((item) => {
+        const created = new Date(item.created_at);
+        return created < start || created >= end;
+      }));
+      setHistoryPage(0);
+      runsResource.reload();
+      return response.deleted_count;
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      runsResource.reload();
+    } finally { setHistoryBusy(false); }
+  };
+
   const deleteRuns = async (runs: BacktestRun[]) => {
     const label = runs.length === 1 ? "этот отчёт" : `${runs.length} отчётов`;
     if (!window.confirm(`Удалить ${label}? Это действие нельзя отменить.`)) return;
@@ -577,6 +601,7 @@ export default function BacktestPage() {
       onPageChange={setHistoryPage}
       onRowsPerPageChange={(value) => { setHistoryRowsPerPage(value); setHistoryPage(0); }}
       onCopy={(runItem) => void copyRunConfig(runItem.id)}
+      onDeletePeriod={deleteRunsInPeriod}
       onDelete={(runItems) => void deleteRuns(runItems)}
       onOpen={(runItem) => void openRun(runItem.id)}
       onRepeat={(runItem) => void repeatRun(runItem.id)}

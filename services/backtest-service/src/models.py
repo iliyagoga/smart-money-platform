@@ -251,3 +251,26 @@ class OptimizationSessionUpdate(BaseModel):
     status: str = Field(pattern="^(RUNNING|PAUSED|CANCELLED|COMPLETED|FAILED)$")
     checkpoint: dict
     error: str | None = Field(default=None, max_length=2000)
+
+
+class PortfolioBacktestAsset(BaseModel):
+    allocation_percent: float = Field(gt=0, le=100, allow_inf_nan=False)
+    request: BacktestCreate
+
+
+class PortfolioBacktestCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    initial_capital: float = Field(default=10000, gt=0, allow_inf_nan=False)
+    assets: list[PortfolioBacktestAsset] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_portfolio(self):
+        if sum(asset.allocation_percent for asset in self.assets) > 100 + 1e-9:
+            raise ValueError("portfolio allocations must not exceed 100%")
+        symbols = [asset.request.symbol for asset in self.assets]
+        if len(set(symbols)) != len(symbols):
+            raise ValueError("portfolio symbols must be unique")
+        periods = {(asset.request.test_from, asset.request.test_to) for asset in self.assets}
+        if len(periods) != 1 or any(value is None for value in next(iter(periods))):
+            raise ValueError("all assets require the same explicit test period")
+        return self

@@ -4,6 +4,28 @@ services:
     image: timescale/timescaledb:latest-pg17
     container_name: smart-money-postgres
     restart: unless-stopped
+    mem_limit: ${POSTGRES_MEMORY_LIMIT:-3g}
+    mem_reservation: 1g
+    shm_size: 256m
+    # Override timescaledb-tune defaults derived from the host's full RAM/CPU.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-512MB}
+      - -c
+      - effective_cache_size=2GB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=128MB
+      - -c
+      - autovacuum_work_mem=64MB
+      - -c
+      - max_parallel_workers_per_gather=2
+      - -c
+      - max_parallel_maintenance_workers=1
+      - -c
+      - max_parallel_workers=4
 
     environment:
       POSTGRES_DB: ${POSTGRES_DB}

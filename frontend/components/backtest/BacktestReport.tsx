@@ -57,7 +57,8 @@ const monthLabel = (key: string) => new Date(`${key}-01T00:00:00Z`).toLocaleDate
 });
 const marginValue = (trade: BacktestTrade, leverage?: number) => {
   const notional = trade.entryPrice*trade.quantity;
-  if (leverage) return notional/leverage;
+  const effectiveLeverage = trade.leverage ?? leverage;
+  if (effectiveLeverage) return notional/effectiveLeverage;
   return Math.abs(trade.pnlPercent) > 1e-12 ? Math.abs(trade.pnl/(trade.pnlPercent/100)) : notional;
 };
 const summarize = (trades: BacktestTrade[], initialCapital: number, leverage?: number) => ({
@@ -99,6 +100,25 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
     ? `${new Date(result.dataset.testFrom).toLocaleDateString("ru-RU")} — ${new Date(result.dataset.testTo).toLocaleDateString("ru-RU")}`
     : "—";
   return <>
+    {result.portfolio && <Paper variant="outlined" sx={{ p: 2.5, mb: 2 }}>
+      <Typography variant="h6">Портфель «{result.portfolio.name}» · вклад активов</Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ my: 1 }}>
+        Свободные средства: {result.portfolio.cash.toFixed(2)}. Капитал распределён при старте, без перераспределения между активами.
+        Вклад в доходность — PnL актива / стартовый капитал портфеля; сумма вкладов равна доходности портфеля.
+        Просадка рассчитана по общей кривой капитала на временных отметках свечей. Sharpe — по дневной доходности (365 дней).
+      </Typography>
+      <TableContainer><Table size="small"><TableHead><TableRow>
+        {["Актив", "Доля", "Стартовый капитал", "Итоговый капитал", "PnL", "Доходность актива",
+          "Вклад, п.п.", "Сделок", "Win rate", "Просадка актива"].map(label => <TableCell key={label}>{label}</TableCell>)}
+      </TableRow></TableHead><TableBody>{result.portfolio.assets.map(asset => <TableRow key={asset.symbol}>
+        <TableCell>{asset.symbol}</TableCell><TableCell>{asset.allocation_percent.toFixed(2)}%</TableCell>
+        <TableCell>{asset.initial_capital.toFixed(2)}</TableCell><TableCell>{asset.final_capital.toFixed(2)}</TableCell>
+        <TableCell sx={{ color: asset.net_profit >= 0 ? "success.main" : "error.main" }}>{asset.net_profit.toFixed(2)}</TableCell>
+        <TableCell>{asset.total_return_percent.toFixed(2)}%</TableCell><TableCell>{asset.contribution_percent.toFixed(2)}</TableCell>
+        <TableCell>{asset.total_trades}</TableCell><TableCell>{asset.win_rate.toFixed(1)}%</TableCell>
+        <TableCell>{asset.max_drawdown_percent.toFixed(2)}%</TableCell>
+      </TableRow>)}</TableBody></Table></TableContainer>
+    </Paper>}
     <Grid container spacing={1.5}>
       <Grid size={{ xs: 6, lg: 3 }}><Metric label="Итоговый капитал" value={result.finalCapital.toFixed(2)} tone={profitTone} /></Grid>
       <Grid size={{ xs: 6, lg: 3 }}><Metric label="Доходность" value={`${result.totalReturnPercent.toFixed(2)}%`} tone={profitTone} /></Grid>
@@ -126,13 +146,13 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
       {result.modelTraining?.version ? ` (${result.modelTraining.version})` : ""}
     </Alert>
     <EquityChart points={result.equity} />
-    <BacktestPriceChart
+    {!result.portfolio && <BacktestPriceChart
       candles={result.chartCandles}
       candlesByTimeframe={result.chartCandlesByTimeframe}
       scenarios={result.scenarios}
       trades={result.trades}
       elliottPatterns={result.elliottPatterns}
-    />
+    />}
     {result.elliottDiagnostics && <Alert severity="success" sx={{ mt: 1.5 }}>
       Elliott: {result.elliottDiagnostics.patterns} кандидатов · {result.elliottDiagnostics.signals} сигналов
       {" · "}{result.elliottDiagnostics.tradedSignals} обработано
@@ -190,7 +210,8 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
         </TextField>
       </Stack>
       <TableContainer><Table size="small">
-        <TableHead><TableRow><TableCell>#</TableCell><TableCell>Вход</TableCell><TableCell>Выход</TableCell><TableCell>Сторона</TableCell>
+        <TableHead><TableRow><TableCell>#</TableCell>{result.portfolio && <TableCell>Актив</TableCell>}
+          <TableCell>Вход</TableCell><TableCell>Выход</TableCell><TableCell>Сторона</TableCell>
           <TableCell>Цена входа</TableCell><TableCell>Цена выхода</TableCell><TableCell>Количество</TableCell><TableCell>Общая цена лота</TableCell>
           <TableCell>Маржа</TableCell><TableCell>Тейк, %</TableCell><TableCell>Стоп, %</TableCell>
           <TableCell>Исполнение</TableCell><TableCell>PnL</TableCell><TableCell>Прибыль, %</TableCell><TableCell>Причина</TableCell>
@@ -206,7 +227,7 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
             : result.strategyConfig?.stopLossPercent;
           const fallbackTake = result.strategyConfig?.takeProfitPercent;
           return <TableRow key={trade.id}>
-          <TableCell>{trade.id}</TableCell><TableCell>{new Date(trade.entryTime).toLocaleString("ru-RU")}</TableCell>
+          <TableCell>{trade.id}</TableCell>{result.portfolio && <TableCell>{trade.symbol}</TableCell>}<TableCell>{new Date(trade.entryTime).toLocaleString("ru-RU")}</TableCell>
           <TableCell>{new Date(trade.exitTime).toLocaleString("ru-RU")}</TableCell><TableCell>{trade.direction}</TableCell>
           <TableCell>{trade.entryPrice.toFixed(2)}</TableCell><TableCell>{trade.exitPrice.toFixed(2)}</TableCell>
           <TableCell>{trade.quantity.toFixed(6)}</TableCell>

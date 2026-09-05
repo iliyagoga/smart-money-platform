@@ -1,21 +1,19 @@
 "use client";
 
 import { Alert, Box, Button, Chip, Dialog, DialogContent, DialogTitle, LinearProgress, MenuItem, Paper, Stack, TablePagination, TextField, Typography } from "@mui/material";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { SectionPage } from "../../components/layout/SectionPage";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { useApiResource } from "../../hooks/useApiResource";
 import { usePagination } from "../../hooks/usePagination";
 import { api } from "../../lib/api";
+import { BacktestReport } from "../../components/backtest/BacktestReport";
+import { mapBacktestResult, type BacktestRun } from "../../lib/backtest/apiTypes";
 import type { BacktestSettings } from "../../lib/backtest/types";
 
 interface Configuration { id:string;name:string;config:BacktestSettings }
 interface PortfolioAsset { symbol:string;configuration_id:string;allocation_percent:number;config:BacktestSettings }
 interface Portfolio { id:string;name:string;description:string;assets:PortfolioAsset[];updated_at:string }
-interface Run {
-  id:string;symbol:string;status:string;progress:number;error?:string;
-  result?:{ total_return_percent:number;max_drawdown_percent:number;total_trades:number };
-}
 const today=()=>new Date().toISOString().slice(0,10);
 const initialAsset=():Omit<PortfolioAsset,"config">=>({ symbol:"",configuration_id:"",allocation_percent:100 });
 
@@ -54,7 +52,33 @@ export default function PortfoliosPage() {
   const [message,setMessage]=useState("");const [error,setError]=useState("");const [busy,setBusy]=useState(false);
   const [runId,setRunId]=useState("");const [from,setFrom]=useState("2025-01-01");
   const [to,setTo]=useState(today());
-  const [results,setResults]=useState<Run[]>([]);const [mode,setMode]=useState("PAPER");
+  const [portfolioRun, setPortfolioRun] = useState<BacktestRun>();
+  const [initialCapital, setInitialCapital] = useState(10000);
+  const [mode,setMode]=useState("PAPER");
+  const running = portfolioRun?.status === "QUEUED" || portfolioRun?.status === "RUNNING";
+  const report = useMemo(() => portfolioRun?.result ? mapBacktestResult(portfolioRun.result) : undefined, [portfolioRun?.result]);
+  useEffect(() => {
+    if (!running || !portfolioRun?.id) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const updated = await api<BacktestRun>(`/api/v1/backtest/backtests/${portfolioRun.id}`);
+        if (!active) return;
+        setPortfolioRun(updated);
+        if (updated.status === "COMPLETED") setMessage("Единый отчёт портфеля готов и сохранён в истории бэктестов.");
+        else if (updated.status === "FAILED" || updated.status === "CANCELLED") setError(updated.error || "Прогон портфеля отменён.");
+        else timer = setTimeout(() => void poll(), 1000);
+      } catch (reason) {
+        if (active) {
+          setError(reason instanceof Error ? reason.message : String(reason));
+          timer = setTimeout(() => void poll(), 3000);
+        }
+      }
+    };
+    timer = setTimeout(() => void poll(), 1000);
+    return () => { active = false; clearTimeout(timer); };
+  }, [running, portfolioRun?.id]);
   const portfolios=resource.data?.portfolios ?? [];const pagination=usePagination(portfolios);
   const configurationMap=useMemo(()=>new Map((configs.data?.configurations??[]).map(item=>[item.id,item])),[configs.data]);
   const reset=()=>{setEditingId("");setName("");setDescription("");setAssets([initialAsset()]);};
@@ -69,18 +93,27 @@ export default function PortfoliosPage() {
   const live=async(portfolio:Portfolio)=>{setBusy(true);setError("");try{const response=await api<{activated_symbols:string[]}>(`/api/v1/execution/portfolios/${portfolio.id}/live`,{
     method:"POST",body:JSON.stringify({mode})});setMessage(`Портфель добавлен в live (${mode}): ${response.activated_symbols.join(", ")}.`);}
     catch(reason){setError(reason instanceof Error?reason.message:String(reason));}finally{setBusy(false);}};
-  const run=async(portfolio:Portfolio)=>{setBusy(true);setRunId(portfolio.id);setResults([]);setError("");try{
-    const pending:Run[]=[];
-    for(const item of portfolio.assets){const settings=item.config;const e=settings.elliott;
-      const timeframes=[e.entryTimeframe,e.structureTimeframe,e.macroTimeframe];
-      const created=await api<{id:string}>("/api/v1/backtest/backtests",{method:"POST",body:JSON.stringify({symbol:item.symbol,
-        timeframe:e.entryTimeframe,timeframes,candle_limit:2000000,test_from:Date.parse(`${from}T00:00:00Z`),test_to:Date.parse(`${to}T23:59:59Z`),config:apiConfig(settings)})});
-      pending.push({id:created.id,symbol:item.symbol,status:"QUEUED",progress:0});setResults([...pending]);}
-    let current=pending;for(let attempt=0;attempt<3600&&current.some(item=>!["COMPLETED","FAILED","CANCELLED"].includes(item.status));attempt++){
-      await new Promise(resolve=>window.setTimeout(resolve,1000));current=await Promise.all(current.map(item=>["COMPLETED","FAILED","CANCELLED"].includes(item.status)?item:api<Run>(`/api/v1/backtest/backtests/${item.id}`)));setResults(current);}
-    if(current.some(item=>item.status==="FAILED"))setError("Часть активов завершилась с ошибкой. Подробности показаны в результатах.");
-    else setMessage(`Прогон портфеля «${portfolio.name}» завершён.`);
-  }catch(reason){setError(reason instanceof Error?reason.message:String(reason));}finally{setBusy(false);}};
+  const run=async(portfolio:Portfolio)=>{
+    setBusy(true);setRunId(portfolio.id);setPortfolioRun(undefined);setError("");setMessage("");
+    try {
+      const created = await api<{id:string}>("/api/v1/backtest/portfolio-backtests", {
+        method: "POST", body: JSON.stringify({
+          name: portfolio.name, initial_capital: initialCapital,
+          assets: portfolio.assets.map(item => {
+            const e = item.config.elliott;
+            return { allocation_percent: item.allocation_percent, request: {
+              symbol: item.symbol, timeframe: e.entryTimeframe,
+              timeframes: [e.entryTimeframe, e.structureTimeframe, e.macroTimeframe],
+              candle_limit: 2000000, test_from: Date.parse(`${from}T00:00:00Z`),
+              test_to: Date.parse(`${to}T23:59:59.999Z`), config: apiConfig(item.config),
+            }};
+          }),
+        }),
+      });
+      setPortfolioRun({ id: created.id, symbol: portfolio.name, timeframe: "PORTFOLIO", status: "QUEUED", progress: 0, created_at: new Date().toISOString() });
+    } catch(reason) {setError(reason instanceof Error?reason.message:String(reason));}
+    finally {setBusy(false);}
+  };
   const totalAllocation=assets.reduce((sum,item)=>sum+Number(item.allocation_percent||0),0);
   return <SectionPage title="Портфели" description="Наборы активов и стратегий для общего прогона по датасетам и запуска в live."
     error={error||resource.error||configs.error} isLoading={resource.isLoading||configs.isLoading}
@@ -94,8 +127,14 @@ export default function PortfoliosPage() {
       <Stack direction="row" spacing={1} sx={{flexWrap:"wrap"}}><Button size="small" onClick={()=>edit(portfolio)}>Изменить</Button><Button size="small" color="error" onClick={()=>void remove(portfolio)}>Удалить</Button></Stack></Stack>
       <Stack direction="row" spacing={1} sx={{flexWrap:"wrap"}}>{portfolio.assets.map(item=><Chip key={item.symbol} label={`${item.symbol} · ${item.allocation_percent}%`} />)}</Stack>
       <Stack direction={{xs:"column",md:"row"}} spacing={1.5}><TextField type="date" size="small" label="Начало датасета" value={from} onChange={event=>setFrom(event.target.value)} slotProps={{inputLabel:{shrink:true}}}/><TextField type="date" size="small" label="Конец датасета" value={to} onChange={event=>setTo(event.target.value)} slotProps={{inputLabel:{shrink:true}}}/>
-        <Button variant="outlined" disabled={busy} onClick={()=>void run(portfolio)}>Прогнать датасет</Button><Button variant="contained" color={mode==="PRODUCTION"?"error":"primary"} disabled={busy} onClick={()=>void live(portfolio)}>Добавить в live</Button></Stack>
-      {runId===portfolio.id&&<LinearProgress variant="determinate" value={results.length?results.reduce((sum,item)=>sum+item.progress,0)/results.length:0}/>} {results.length>0&&runId===portfolio.id&&<Stack spacing={.5}>{results.map(item=><Typography variant="body2" key={item.id}>{item.symbol}: {item.status} · {item.progress}%{item.result?` · доходность ${item.result.total_return_percent.toFixed(2)}% · сделок ${item.result.total_trades}`:""}{item.error?` · ${item.error}`:""}</Typography>)}</Stack>}
+        <TextField type="number" size="small" label="Капитал портфеля" value={initialCapital} disabled={busy || running}
+          onChange={event => setInitialCapital(Number(event.target.value))} slotProps={{htmlInput:{min:0.01,step:100}}}/>
+        <Button variant="outlined" disabled={busy || running || !Number.isFinite(initialCapital) || initialCapital <= 0 || !from || !to || from > to} onClick={()=>void run(portfolio)}>Прогнать датасет</Button><Button variant="contained" color={mode==="PRODUCTION"?"error":"primary"} disabled={busy} onClick={()=>void live(portfolio)}>Добавить в live</Button></Stack>
+      {runId === portfolio.id && portfolioRun && <Stack spacing={1}>
+        {running && <LinearProgress variant="determinate" value={portfolioRun.progress}/>}
+        <Typography variant="body2">Портфель: {portfolioRun.status} · {portfolioRun.progress}%</Typography>
+        {report && <BacktestReport key={portfolioRun.id} result={report}/>}
+      </Stack>}
     </Stack></Paper>)}<TablePagination component="div" {...pagination.paginationProps}/></Stack>}
     <Dialog open={open} onClose={()=>!busy&&setOpen(false)} fullWidth maxWidth="md"><DialogTitle>{editingId?"Редактировать портфель":"Новый портфель"}</DialogTitle><DialogContent dividers><Stack spacing={2}>
       <TextField required label="Название" value={name} onChange={event=>setName(event.target.value)}/><TextField label="Описание" value={description} onChange={event=>setDescription(event.target.value)} multiline minRows={2}/>

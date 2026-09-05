@@ -10,7 +10,7 @@ interface ApiResource<T> {
   reload: () => void;
 }
 
-export function useApiResource<T>(path: string): ApiResource<T> {
+export function useApiResource<T>(path: string, debounceMs = 0): ApiResource<T> {
   const [data, setData] = useState<T>();
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -21,12 +21,14 @@ export function useApiResource<T>(path: string): ApiResource<T> {
     let isActive = true;
     setIsLoading(true);
     setError("");
-    api<T>(path)
-      .then((response) => { if (isActive) setData(response); })
-      .catch((reason: unknown) => { if (isActive) setError(reason instanceof Error ? reason.message : String(reason)); })
-      .finally(() => { if (isActive) setIsLoading(false); });
-    return () => { isActive = false; };
-  }, [path, requestNumber]);
+    const timer = setTimeout(() => {
+      api<T>(path)
+        .then((response) => { if (isActive) setData(response); })
+        .catch((reason: unknown) => { if (isActive) setError(reason instanceof Error ? reason.message : String(reason)); })
+        .finally(() => { if (isActive) setIsLoading(false); });
+    }, debounceMs);
+    return () => { isActive = false; clearTimeout(timer); };
+  }, [path, requestNumber, debounceMs]);
 
   return { data, error, isLoading, reload };
 }

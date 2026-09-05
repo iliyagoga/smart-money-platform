@@ -2,6 +2,7 @@ import asyncio
 import csv
 import io
 import json
+import logging
 import time
 from math import isfinite
 from pathlib import Path
@@ -14,9 +15,10 @@ import boto3
 from .engine import run_backtest
 from .elliott import run_elliott_replay
 from .models import (AssetCreate, BacktestCreate, OptimizationSessionCreate,
-                     OptimizationSessionUpdate, StrategyType)
+                     OptimizationSessionUpdate, PortfolioBacktestCreate, StrategyType)
 from .replay import FrozenModel, run_smc_replay, train_local_model
 from .settings import Settings
+from .portfolio import aggregate_portfolio, compact_asset_result
 
 
 TIMEFRAME_INTERVALS = {
@@ -56,6 +58,7 @@ class BacktestService:
         self.db: asyncpg.Pool | None = None
         self.client: httpx.AsyncClient | None = None
         self.tasks: dict[UUID, asyncio.Task] = {}
+        self.cleanup_task: asyncio.Task | None = None
         self.semaphore = asyncio.Semaphore(settings.job_concurrency)
         self.s3 = boto3.client(
             "s3", endpoint_url=settings.minio_endpoint, aws_access_key_id=settings.minio_access_key,
@@ -98,11 +101,34 @@ class BacktestService:
             await connection.execute("ALTER TABLE trading_assets ADD COLUMN IF NOT EXISTS tick_size double precision")
             await connection.execute("ALTER TABLE trading_assets ADD COLUMN IF NOT EXISTS lot_size double precision")
             await connection.execute("ALTER TABLE trading_assets ADD COLUMN IF NOT EXISTS contract_value double precision NOT NULL DEFAULT 1")
+            await connection.execute("ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS parent_id uuid REFERENCES backtest_runs(id) ON DELETE CASCADE")
+            await connection.execute("CREATE INDEX IF NOT EXISTS backtest_runs_parent_idx ON backtest_runs(parent_id)")
             queued = await connection.fetch("SELECT id FROM backtest_runs WHERE status IN ('QUEUED','RUNNING')")
+        await self.cleanup_expired_runs()
+        self.cleanup_task = asyncio.create_task(self.cleanup_loop())
         for row in queued:
             self.schedule(row["id"])
 
+    async def cleanup_expired_runs(self):
+        async with self.db.acquire() as connection:
+            await connection.execute("""
+                DELETE FROM backtest_runs
+                WHERE parent_id IS NULL AND status IN ('COMPLETED', 'FAILED', 'CANCELLED')
+                  AND COALESCE(completed_at, created_at) < now() - interval '48 hours'
+            """)
+
+    async def cleanup_loop(self):
+        while True:
+            await asyncio.sleep(60)
+            try:
+                await self.cleanup_expired_runs()
+            except Exception:
+                logging.getLogger(__name__).exception("Failed to clean up expired backtest reports")
+
     async def stop(self):
+        if self.cleanup_task:
+            self.cleanup_task.cancel()
+            await asyncio.gather(self.cleanup_task, return_exceptions=True)
         for task in self.tasks.values():
             task.cancel()
         await asyncio.gather(*self.tasks.values(), return_exceptions=True)
@@ -133,13 +159,78 @@ class BacktestService:
         self.schedule(run_id)
         return run_id
 
+    async def create_portfolio_run(self, user_id: str, request: PortfolioBacktestCreate):
+        run_id = uuid4()
+        children = []
+        async with self.db.acquire() as connection, connection.transaction():
+            for asset in request.assets:
+                if not await connection.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM trading_assets WHERE symbol=$1 AND enabled)", asset.request.symbol
+                ):
+                    raise ValueError(f"asset is not enabled: {asset.request.symbol}")
+                asset.request.config.initial_capital = request.initial_capital * asset.allocation_percent / 100
+            await connection.execute(
+                """INSERT INTO backtest_runs(id,user_id,symbol,timeframe,status,request)
+                   VALUES($1,$2,$3,'PORTFOLIO','QUEUED',$4::jsonb)""",
+                run_id, user_id, request.name, json.dumps({'portfolio': request.model_dump()}),
+            )
+            for asset in request.assets:
+                child_id = uuid4()
+                children.append(child_id)
+                await connection.execute(
+                    """INSERT INTO backtest_runs(id,user_id,symbol,timeframe,status,request,parent_id)
+                       VALUES($1,$2,$3,$4,'QUEUED',$5::jsonb,$6)""",
+                    child_id, user_id, asset.request.symbol, asset.request.timeframe,
+                    asset.request.model_dump_json(), run_id,
+                )
+        for child_id in children:
+            self.schedule(child_id)
+        self.schedule(run_id)
+        return run_id
+
+    async def execute_portfolio(self, run_id: UUID, request: dict):
+        try:
+            await self.db.execute(
+                "UPDATE backtest_runs SET status='RUNNING',started_at=COALESCE(started_at,now()) WHERE id=$1 AND status='QUEUED'", run_id)
+            while True:
+                rows = await self.db.fetch("SELECT id,symbol,status,progress,error FROM backtest_runs WHERE parent_id=$1", run_id)
+                if len(rows) != len(request['assets']):
+                    raise ValueError("Portfolio asset runs are missing")
+                if all(row['status'] in ('COMPLETED', 'FAILED', 'CANCELLED') for row in rows):
+                    break
+                await self.db.execute("UPDATE backtest_runs SET progress=$2 WHERE id=$1 AND status='RUNNING'",
+                                      run_id, int(sum(row['progress'] for row in rows) / len(rows)))
+                await asyncio.sleep(1)
+            failed = [row for row in rows if row['status'] != 'COMPLETED']
+            if failed:
+                raise ValueError('; '.join(f"{row['symbol']}: {row['error'] or row['status']}" for row in failed))
+            rows = await self.db.fetch("SELECT id,symbol,result FROM backtest_runs WHERE parent_id=$1", run_id)
+            by_symbol = {row['symbol']: {**dict(row), 'result': json.loads(row['result'])
+                         if isinstance(row['result'], str) else row['result']} for row in rows}
+            result = await asyncio.to_thread(aggregate_portfolio, request,
+                [by_symbol[asset['request']['symbol']] for asset in request['assets']])
+            await self.db.execute(
+                """UPDATE backtest_runs SET status='COMPLETED',progress=100,result=$2::jsonb,completed_at=now()
+                   WHERE id=$1 AND status='RUNNING'""", run_id, json.dumps(result))
+        except Exception as exc:
+            await self.db.execute(
+                """UPDATE backtest_runs SET status='FAILED',error=$2,completed_at=now()
+                   WHERE id=$1 AND status IN ('QUEUED','RUNNING')""", run_id, str(exc))
+
     async def execute(self, run_id: UUID):
+        row = await self.db.fetchrow("SELECT request,status,parent_id FROM backtest_runs WHERE id=$1", run_id)
+        if not row or row['status'] not in ('QUEUED', 'RUNNING'):
+            return
+        request = json.loads(row['request']) if isinstance(row['request'], str) else row['request']
+        if 'portfolio' in request:
+            await self.execute_portfolio(run_id, request['portfolio'])
+            return
         async with self.semaphore:
             await self._execute(run_id)
 
     async def _execute(self, run_id: UUID):
         async with self.db.acquire() as connection:
-            row = await connection.fetchrow("SELECT request,status FROM backtest_runs WHERE id=$1", run_id)
+            row = await connection.fetchrow("SELECT request,status,parent_id FROM backtest_runs WHERE id=$1", run_id)
             if not row or row["status"] == "CANCELLED":
                 return
             await connection.execute(
@@ -254,6 +345,8 @@ class BacktestService:
                     for path in Path(self.settings.scenario_template_dir).glob("*.json")
                 } if request.config.strategy == StrategyType.SMC else {},
             }
+            if row['parent_id'] is not None:
+                result = compact_asset_result(result)
             async with self.db.acquire() as connection:
                 await connection.execute(
                     "UPDATE backtest_runs SET status='COMPLETED',progress=100,result=$2::jsonb,completed_at=now() "
@@ -363,10 +456,10 @@ class BacktestService:
     async def runs(self, user_id: str, limit: int = 50, offset: int = 0):
         async with self.db.acquire() as connection:
             rows = await connection.fetch(
-                "SELECT id,symbol,timeframe,status,progress,error,created_at,completed_at,result FROM backtest_runs "
-                "WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2 OFFSET $3", user_id, limit, offset
+                "SELECT id,symbol,timeframe,status,progress,error,created_at,completed_at FROM backtest_runs "
+                "WHERE user_id=$1 AND parent_id IS NULL ORDER BY created_at DESC LIMIT $2 OFFSET $3", user_id, limit, offset
             )
-            total = await connection.fetchval("SELECT count(*) FROM backtest_runs WHERE user_id=$1", user_id)
+            total = await connection.fetchval("SELECT count(*) FROM backtest_runs WHERE user_id=$1 AND parent_id IS NULL", user_id)
         return {"runs": [self.serialize_run(row, include_result=False) for row in rows], "total": total}
 
     async def create_optimization(self, user_id: str, request: OptimizationSessionCreate):
@@ -431,7 +524,7 @@ class BacktestService:
                 "sharpe_ratio", "benchmark_return_percent", "average_monthly_return_percent",
                 "annualized_return_percent", "losing_months", "losing_months_percent",
                 "average_losing_month_percent", "equity_curve_r_squared", "recovery_factor",
-                "request_config", "dataset", "model_training", "template_distribution",
+                "request_config", "dataset", "model_training", "template_distribution", "portfolio",
                 "elliott_diagnostics", "strategy_config", "execution_spec", "engine",
             }
             result = {key: value for key, value in full_result.items() if key in summary_keys}
@@ -449,10 +542,25 @@ class BacktestService:
                    WHERE id=$1 AND user_id=$2 AND status IN ('QUEUED','RUNNING') RETURNING id""",
                 run_id, user_id,
             )
+        if cancelled:
+            children = await self.db.fetch("SELECT id FROM backtest_runs WHERE parent_id=$1", run_id)
+            for child in children:
+                await self.cancel_run(child['id'], user_id)
         task = self.tasks.get(run_id)
         if cancelled and task and not task.done():
             task.cancel()
         return cancelled
+
+    async def delete_runs_in_period(self, user_id: str, date_from, date_to):
+        async with self.db.acquire() as connection:
+            return await connection.fetchval("""
+                WITH deleted AS (
+                    DELETE FROM backtest_runs
+                    WHERE user_id=$1 AND parent_id IS NULL AND created_at >= $2 AND created_at < $3
+                      AND status IN ('COMPLETED', 'FAILED', 'CANCELLED')
+                    RETURNING id
+                ) SELECT count(*) FROM deleted
+            """, user_id, date_from, date_to)
 
     async def delete_run(self, run_id: UUID, user_id: str):
         async with self.db.acquire() as connection:
@@ -557,9 +665,9 @@ class BacktestService:
             return "application/json", json.dumps(run, ensure_ascii=False, indent=2)
         output = io.StringIO()
         writer = csv.DictWriter(output, fieldnames=[
-            "id", "direction", "entry_time", "exit_time", "entry_price", "exit_price", "quantity", "pnl",
+            "id", "symbol", "run_id", "leverage", "direction", "entry_time", "exit_time", "entry_price", "exit_price", "quantity", "pnl",
             "pnl_percent", "fees", "funding", "reason", "scenario_id", "template_id", "confidence",
-        ])
+        ], extrasaction="ignore")
         writer.writeheader()
         writer.writerows(run["result"]["trades"])
         return "text/csv", output.getvalue()

@@ -1,3 +1,5 @@
+import type { PortfolioResult } from "./apiTypes";
+
 import type { Candle } from "../types";
 
 export type TradeDirection = "LONG" | "SHORT";
@@ -62,6 +64,8 @@ export interface BacktestSettings {
 }
 
 export interface BacktestTrade {
+  symbol?: string;
+  leverage?: number;
   id: number;
   direction: TradeDirection;
   entryTime: number;
@@ -92,6 +96,7 @@ export interface BacktestScenario {
 }
 
 export interface BacktestResult {
+  portfolio?: PortfolioResult;
   initialCapital: number;
   finalCapital: number;
   netProfit: number;

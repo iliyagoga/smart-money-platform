@@ -1,9 +1,10 @@
-import { Button, Checkbox, Chip, CircularProgress, LinearProgress, Paper, Stack, TablePagination, Typography } from "@mui/material";
+import { Button, Checkbox, Chip, CircularProgress, LinearProgress, Paper, Stack, TablePagination, TextField, Typography } from "@mui/material";
 import { useState } from "react";
 import type { BacktestRunSummary } from "../../lib/backtest/apiTypes";
 
 interface BacktestHistoryProps {
   onCopy: (run: BacktestRunSummary) => void;
+  onDeletePeriod: (from: string, to: string) => Promise<number | undefined>;
   onDelete: (runs: BacktestRunSummary[]) => void;
   onExport: (run: BacktestRunSummary, format: "csv" | "json") => void;
   onOpen: (run: BacktestRunSummary) => void;
@@ -26,9 +27,13 @@ const statusColor = (status: BacktestRunSummary["status"]) => {
   return "default";
 };
 
-export function BacktestHistory({ busy, loading, onCompare, onCopy, onDelete, onExport, onOpen, onPageChange,
+export function BacktestHistory({ busy, loading, onCompare, onCopy, onDelete, onDeletePeriod, onExport, onOpen, onPageChange,
   onRepeat, onSaveConfiguration, onRowsPerPageChange, page, rowsPerPage, runs, total }: BacktestHistoryProps) {
   const [selected, setSelected] = useState<string[]>([]);
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [deletedCount, setDeletedCount] = useState<number>();
+  const invalidPeriod = Boolean(dateFrom && dateTo && dateFrom > dateTo);
   const pageRuns = runs;
   const selectedRuns = runs.filter((run) => selected.includes(run.id));
   const comparableIds = selectedRuns.filter((run) => run.status === "COMPLETED").map((run) => run.id);
@@ -45,6 +50,25 @@ export function BacktestHistory({ busy, loading, onCompare, onCopy, onDelete, on
         {busy && <CircularProgress size={22} />}
       </Stack>
     </Stack>
+    <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mb: 1, alignItems: { sm: "center" } }}>
+      <TextField label="Дата создания: с" type="date" size="small" value={dateFrom} disabled={busy}
+        slotProps={{ inputLabel: { shrink: true } }}
+        onChange={(event) => { setDateFrom(event.target.value); setDeletedCount(undefined); }} />
+      <TextField label="По включительно" type="date" size="small" value={dateTo} disabled={busy}
+        error={invalidPeriod} helperText={invalidPeriod ? "Конец периода раньше начала" : undefined}
+        slotProps={{ inputLabel: { shrink: true } }}
+        onChange={(event) => { setDateTo(event.target.value); setDeletedCount(undefined); }} />
+      <Button color="error" variant="outlined" disabled={busy || !dateFrom || !dateTo || invalidPeriod}
+        onClick={async () => {
+          setDeletedCount(undefined);
+          const count = await onDeletePeriod(dateFrom, dateTo);
+          if (count !== undefined) { setSelected([]); setDeletedCount(count); }
+        }}>Удалить все за период</Button>
+    </Stack>
+    <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+      По дате создания, на всех страницах. Даты указаны в вашем часовом поясе. Активные запуски сохраняются.
+    </Typography>
+    {deletedCount !== undefined && <Typography role="status" sx={{ mb: 1 }}>Удалено отчётов: {deletedCount}</Typography>}
     {loading && <LinearProgress sx={{ mb: 1 }} />}
     <Stack direction="row" sx={{ alignItems: "center", mb: 1 }}>
       <Checkbox checked={allPageSelected} indeterminate={!allPageSelected && pageIds.some((id) => selected.includes(id))}

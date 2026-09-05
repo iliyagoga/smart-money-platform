@@ -33,6 +33,8 @@ export interface BacktestRunsResponse { runs: BacktestRunSummary[]; total: numbe
 export interface BacktestCreateResponse { id: string; status: string }
 
 interface BackendTrade {
+  symbol?: string;
+  leverage?: number;
   id: number;
   direction: "LONG" | "SHORT";
   entry_time: number;
@@ -55,7 +57,19 @@ interface BackendTrade {
 
 interface BackendEquityPoint { timestamp: number; equity: number }
 
+export interface PortfolioResult {
+  name: string;
+  cash: number;
+  assets: Array<{
+    symbol: string; run_id: string; allocation_percent: number;
+    initial_capital: number; final_capital: number; net_profit: number;
+    total_return_percent: number; contribution_percent: number;
+    total_trades: number; win_rate: number; max_drawdown_percent: number;
+  }>;
+}
+
 export interface BackendBacktestResult {
+  portfolio?: PortfolioResult;
   initial_capital: number;
   final_capital: number;
   net_profit: number;
@@ -126,6 +140,8 @@ export interface BackendBacktestResult {
 export function mapBacktestResult(result: BackendBacktestResult): BacktestResult {
   const trades: BacktestTrade[] = result.trades.map((trade) => ({
     id: trade.id,
+    symbol: trade.symbol,
+    leverage: trade.leverage,
     direction: trade.direction,
     entryTime: trade.entry_time,
     exitTime: trade.exit_time,
@@ -147,6 +163,7 @@ export function mapBacktestResult(result: BackendBacktestResult): BacktestResult
   const equity: EquityPoint[] = result.equity;
   const calculated = extendedPerformance(result.initial_capital,result.final_capital,equity);
   return {
+    portfolio: result.portfolio,
     initialCapital: result.initial_capital,
     finalCapital: result.final_capital,
     netProfit: result.net_profit,

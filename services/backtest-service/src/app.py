@@ -1,9 +1,11 @@
 from contextlib import asynccontextmanager
 from uuid import UUID
 
+from pydantic import AwareDatetime
+
 from fastapi import FastAPI, Header, HTTPException, Query, Response
 
-from .models import AssetCreate, BacktestCreate, OptimizationSessionCreate, OptimizationSessionUpdate
+from .models import AssetCreate, BacktestCreate, OptimizationSessionCreate, OptimizationSessionUpdate, PortfolioBacktestCreate
 from .service import BacktestService
 from .settings import settings
 
@@ -77,10 +79,27 @@ async def create_backtest(request: BacktestCreate, x_user_id: str = Header(defau
     return {"id": str(run_id), "status": "QUEUED"}
 
 
+@app.post("/portfolio-backtests", status_code=202)
+async def create_portfolio_backtest(request: PortfolioBacktestCreate, x_user_id: str = Header(default="local")):
+    try:
+        run_id = await service.create_portfolio_run(x_user_id, request)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"id": str(run_id), "status": "QUEUED"}
+
+
 @app.get("/backtests")
 async def backtests(x_user_id: str = Header(default="local"), limit: int = Query(default=10, ge=1, le=100),
                     offset: int = Query(default=0, ge=0)):
     return await service.runs(x_user_id, limit, offset)
+
+
+@app.delete("/backtests")
+async def delete_backtests(date_from: AwareDatetime, date_to: AwareDatetime,
+                           x_user_id: str = Header(default="local")):
+    if date_from >= date_to:
+        raise HTTPException(422, "date_from must be earlier than date_to")
+    return {"deleted_count": await service.delete_runs_in_period(x_user_id, date_from, date_to)}
 
 
 @app.get("/backtests/compare")
