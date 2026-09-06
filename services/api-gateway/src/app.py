@@ -15,11 +15,10 @@ from .websocket import WebSocketBridge
 
 SERVICE_URLS = {
     "data": settings.data_service_url,
-    "smc": settings.smc_service_url,
+    "elliott": settings.elliott_service_url,
     "decision": settings.decision_service_url,
     "execution": settings.execution_service_url,
     "analytics": settings.analytics_service_url,
-    "learning": settings.learning_service_url,
     "exchange": settings.exchange_service_url,
     "backtest": settings.backtest_service_url,
 }
@@ -35,7 +34,7 @@ async def lifespan(app: FastAPI):
     await app.state.redis.aclose()
 
 
-app = FastAPI(title="Smart Money API Gateway", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Elliott Wave API Gateway", version="1.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware,allow_origins=["http://localhost:3000"],allow_credentials=True,allow_methods=["*"],allow_headers=["Authorization","Content-Type","X-Correlation-ID"])
 
 

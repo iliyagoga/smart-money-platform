@@ -1,13 +1,9 @@
 from src.models import *
-from src.probability import ProbabilityEngine
 from src.resolver import ConflictResolver
 from src.risk import RiskManager
-from src.adaptive import AdaptiveModel,bandit_adjust
 from src.service import simulated_elliott_scenario
 
 def scenario(id,direction,confidence):return Scenario(id=id,symbol="BTC-USDT",timeframe="M15",direction=direction,setup_type="TEST",confidence=confidence,entry_zone_low=99,entry_zone_high=101,stop_loss_price=95,take_profit_prices=[110],expires_at=9999999999999)
-def test_probability_is_bounded():
-    result=ProbabilityEngine().calculate([100,-100,1]);assert 0<=result.confidence<=1
 def test_conflict_rejects_inconclusive_directions():
     selected,rejected=ConflictResolver().select([scenario("a","LONG",.7),scenario("b","SHORT",.65)])
     assert selected is None and len(rejected)==2
@@ -52,12 +48,26 @@ def test_demo_simulation_still_rejects_an_active_trade():
     signal=ConflictResolver().signal(scenario("a","LONG",.7))
     decision=RiskManager().calculate(signal,10000,RiskConfig(),open_positions=1,ignore_loss_limits=True)
     assert not decision.approved and decision.rejection_reason=="Another trade is still active"
-def test_adaptive_model_blends_safely():
-    m=AdaptiveModel(.25);m.load({"version":"v1","feature_names":["confidence"],"weights":[2],"bias":0});assert .6<m.blend(.6,{"confidence":1})<.9
-def test_bandit_adjustment_is_bounded():assert round(bandit_adjust(.6,1),2)==.65 and round(bandit_adjust(.6,0),2)==.55
-
 def test_simulated_elliott_scenario_has_uuid_and_consistent_timestamps():
     item=simulated_elliott_scenario(SimulatedElliottSignalRequest(symbol="aave-usdt-swap",direction="LONG"),100,1_000)
     assert item.id and item.symbol=="AAVE-USDT-SWAP"
     assert item.created_at==1_000 and item.expires_at==301_000
     assert item.stop_loss_price==99 and item.take_profit_prices==[102]
+
+
+def test_elliott_confidence_is_preserved_without_model_scoring():
+    import asyncio
+    from unittest.mock import AsyncMock
+    from src.service import DecisionService
+
+    async def check():
+        service = DecisionService("unused", "unused")
+        service.pub = AsyncMock()
+        service.resolve_after_delay = AsyncMock()
+        item = scenario("elliott", "LONG", 1).model_copy(update={"setup_type": "ELLIOTT_WAVE3"})
+        result = await service.evaluate(item)
+        assert result == {"scenario_id": "elliott", "confidence": 1}
+        assert item.confidence == 1
+        await asyncio.gather(*service.pending.values())
+        assert await service.evaluate(scenario("other", "LONG", 1)) is None
+    asyncio.run(check())

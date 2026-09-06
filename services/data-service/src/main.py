@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-app = FastAPI(title="Smart Money Data Service")
+app = FastAPI(title="Elliott Wave Data Service")
 
 
 @app.get("/health")

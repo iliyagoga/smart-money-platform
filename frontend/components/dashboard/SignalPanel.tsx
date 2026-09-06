@@ -16,7 +16,7 @@ export function SignalPanel() {
     >
       <Typography className="eyebrow">SYSTEM SIGNAL</Typography>
       <Typography component="h2" variant="h5" sx={{ my: 2 }}>Контур готов<br />к анализу рынка</Typography>
-      <Typography variant="body2" color="text.secondary">Данные, SMC и риск-сервисы подключены.</Typography>
+      <Typography variant="body2" color="text.secondary">Данные, анализ Эллиотта и риск-сервисы подключены.</Typography>
       <Button component="a" href="#events" variant="text" sx={{ mt: 2.5, px: 0 }}>Перейти к событиям →</Button>
       <Box
         sx={{

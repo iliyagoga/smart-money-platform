@@ -1,41 +1,12 @@
 "use client";
 
-import { Alert, Box, Chip, Grid, LinearProgress, ListSubheader, MenuItem, Paper, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TablePagination, TableRow, TextField, Typography } from "@mui/material";
+import { Alert, Chip, Grid, ListSubheader, MenuItem, Paper, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TablePagination, TableRow, TextField, Typography } from "@mui/material";
 import { useMemo, useState } from "react";
 import type { BacktestResult, BacktestTrade } from "../../lib/backtest/types";
 import { EquityChart } from "./EquityChart";
 import { BacktestPriceChart } from "./BacktestPriceChart";
 
 interface MetricProps { label: string; value: string; tone?: "success" | "error" }
-
-const diagnosticLabels: Record<string,{ title: string; hint: string }> = {
-  NO_CONTEXT_STRUCTURE: { title: "Нет направления на старших ТФ", hint: "На context-ТФ шаблона не найден подходящий BOS, CHoCH или MSS." },
-  NO_ZONE_TOUCH: { title: "Цена не коснулась Order Block", hint: "Контекст найден, но цена не вернулась в активный OB заданного таймфрейма." },
-  NO_FVG_TOUCH: { title: "Цена не коснулась FVG", hint: "Не было возврата цены в незаполненный imbalance/FVG." },
-  NO_OB_FVG_OVERLAP: { title: "OB и FVG не пересекаются", hint: "Обе зоны существуют, но не образуют требуемую общую область входа." },
-  NO_OB_RETEST: { title: "Нет ретеста Order Block", hint: "Order Block ещё не был повторно протестирован ценой." },
-  NO_DIRECTION_SOURCE: { title: "Не определена сторона сделки", hint: "Источник направления, указанный в шаблоне, отсутствует." },
-  DIRECTION_NOT_ALLOWED: { title: "Направление запрещено шаблоном", hint: "Шаблон разрешает только другую сторону сделки." },
-  STOP_TOO_TIGHT: { title: "Стоп слишком близкий", hint: "Структурный стоп меньше minimum_stop_percent шаблона." },
-  STOP_TOO_WIDE: { title: "Стоп слишком широкий", hint: "Структурный стоп больше maximum_stop_percent шаблона." },
-  REJECTED_STOP_DISTANCE: { title: "Стоп вне диапазона при исполнении", hint: "После учёта фактической цены входа стоп вышел за диапазон шаблона." },
-  NO_PRIMARY_CONTEXT: { title: "Нет структуры главного ТФ", hint: "На primary_context_timeframe не найдено событие направления." },
-  NO_PRIMARY_ALIGNMENT: { title: "Главный ТФ не подтверждён", hint: "Тренд главного context-ТФ не совпадает с направлением сделки." },
-  HTF_CONTEXT_CONFLICT: { title: "Конфликт старших ТФ", hint: "Один из дополнительных context-ТФ направлен против главного." },
-  EVENT_SEQUENCE_MISSING: { title: "Нет события последовательности", hint: "Не найден sweep, confirmation или touch, обязательный шаблону." },
-  EVENT_SEQUENCE_WRONG_ORDER: { title: "Нарушен порядок событий", hint: "События произошли не в порядке event_sequence шаблона." },
-  ZONE_CREATED_AFTER_CONFIRMATION: { title: "Зона появилась слишком поздно", hint: "Шаблон требует существования зоны до подтверждения." },
-  REJECTED_ZONE_REUSE: { title: "Повторный вход в зону", hint: "Шаблон разрешает только одну сделку на Order Block." },
-  REJECTED_COOLDOWN: { title: "Cooldown после стопа", hint: "После стопа ещё не прошло заданное шаблоном число свечей." },
-  NO_TRIGGER_CONFIRMATION: { title: "Нет подтверждения на младшем ТФ", hint: "В заданном окне не появился требуемый BOS, CHoCH или MSS." },
-  NO_TRIGGER_BOS: { title: "Нет локального BOS", hint: "Продолжение структуры на trigger-ТФ не подтверждено." },
-  NO_TRIGGER_CHOCH_MSS: { title: "Нет локального CHoCH/MSS", hint: "Разворот структуры на trigger-ТФ не подтвержден." },
-  NO_LIQUIDITY_SWEEP: { title: "Не снята ликвидность", hint: "Не найден SFP/sweep нужного пула ликвидности." },
-  WRONG_PREMIUM_DISCOUNT: { title: "Цена не в нужной половине диапазона", hint: "Long ожидается в discount, Short — в premium." },
-  NO_HTF_ALIGNMENT: { title: "Старшие ТФ не согласованы", hint: "Недостаточно старших таймфреймов направлены в сторону сделки." },
-  NO_TARGET_LIQUIDITY: { title: "Нет ликвидности для цели", hint: "За точкой входа не найден подходящий целевой пул ликвидности." },
-  DUPLICATE: { title: "Сценарий уже существует", hint: "Та же комбинация объектов уже была зарегистрирована ранее." },
-};
 
 function Metric({ label, tone, value }: MetricProps) {
   return <Paper variant="outlined" sx={{ p: 2.5 }}>
@@ -87,7 +58,6 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
       : quarterKey(trade.exitTime) === tradePeriod.slice(2))), [result.trades, tradePeriod]);
   const visibleTrades = filteredTrades.slice(tradePage*tradesPerPage,tradePage*tradesPerPage+tradesPerPage);
   const leverage = result.strategyConfig?.leverage;
-  const scenariosById = useMemo(() => new Map(result.scenarios.map((scenario) => [scenario.id,scenario])), [result.scenarios]);
   const periodicMetrics = useMemo(() => ({
     months: months.map((key) => ({ key, label: monthLabel(key), ...summarize(
       result.trades.filter((trade) => monthKey(trade.exitTime) === key), result.initialCapital, leverage,
@@ -142,14 +112,12 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
     </Grid>
     <Alert severity="info" sx={{ mt: 1.5 }}>
       Только закрытые свечи · ТФ: {result.dataset?.timeframes.join(", ") ?? "—"} · свечей теста: {result.dataset?.testCandles ?? 0}
-      {" · "}модель: {result.modelTraining?.mode ?? "BASELINE"}
-      {result.modelTraining?.version ? ` (${result.modelTraining.version})` : ""}
     </Alert>
     <EquityChart points={result.equity} />
     {!result.portfolio && <BacktestPriceChart
       candles={result.chartCandles}
       candlesByTimeframe={result.chartCandlesByTimeframe}
-      scenarios={result.scenarios}
+
       trades={result.trades}
       elliottPatterns={result.elliottPatterns}
     />}
@@ -167,35 +135,6 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
     {result.elliottDiagnostics?.selectionBiasWarning && <Alert severity="warning" sx={{ mt: 1.5 }}>
       После подбора параметров оценивайте результат на отдельном, ранее не просмотренном периоде.
     </Alert>}
-    <Paper variant="outlined" sx={{ mt: 1.5, p: 2.5 }}>
-      <Typography variant="h6" sx={{ mb: 1.5 }}>Распределение по шаблонам</Typography>
-      <Stack spacing={1}>{Object.entries(result.templateDistribution ?? {}).map(([templateId, item]) => (
-        <Typography key={templateId} variant="body2">
-          {templateId}: {item.trades} сделок · {item.wins} прибыльных · PnL {item.pnl.toFixed(2)}
-        </Typography>
-      ))}</Stack>
-      {!Object.keys(result.templateDistribution ?? {}).length && <Typography color="text.secondary">Сделок по шаблонам нет.</Typography>}
-    </Paper>
-    <Paper variant="outlined" sx={{ mt: 1.5, p: 2.5 }}>
-      <Typography variant="h6" sx={{ mb: 1.5 }}>Диагностика поиска паттернов</Typography>
-      {Object.entries(result.patternDiagnostics).map(([template, reasons]) => {
-        const maximum = Math.max(1,...Object.values(reasons));
-        return <Paper key={template} variant="outlined" sx={{ p: 1.5, mb: 1 }}>
-          <Typography variant="subtitle2">{template}</Typography>
-          {Object.entries(reasons).sort((left,right) => right[1]-left[1]).map(([reason,count]) => {
-            const explanation = diagnosticLabels[reason] ?? { title: reason, hint: "Условие шаблона не выполнено." };
-            return <Box key={reason} sx={{ mt: 1 }}>
-              <Stack direction="row" sx={{ justifyContent: "space-between", gap: 1 }}>
-                <Typography variant="body2">{explanation.title}</Typography><Typography variant="body2" sx={{ fontWeight: 700 }}>{count}</Typography>
-              </Stack>
-              <LinearProgress variant="determinate" value={count/maximum*100} sx={{ my: .5 }} />
-              <Typography variant="caption" color="text.secondary">{explanation.hint}</Typography>
-            </Box>;
-          })}
-        </Paper>;
-      })}
-      {!Object.keys(result.patternDiagnostics).length && <Typography color="text.secondary">Диагностика отсутствует.</Typography>}
-    </Paper>
     <Paper variant="outlined" sx={{ mt: 1.5, p: { xs: 1, md: 2.5 } }}>
       <Stack direction={{ xs: "column", sm: "row" }} sx={{ px: 1, pb: 2, alignItems: { sm: "center" }, justifyContent: "space-between", gap: 1 }}>
         <div><Typography variant="h6">Журнал сделок</Typography>
@@ -217,15 +156,11 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
           <TableCell>Исполнение</TableCell><TableCell>PnL</TableCell><TableCell>Прибыль, %</TableCell><TableCell>Причина</TableCell>
         </TableRow></TableHead>
         <TableBody>{visibleTrades.map((trade) => {
-          const scenario = trade.scenarioId ? scenariosById.get(trade.scenarioId) : undefined;
-          const takePrices = trade.takeProfitPrices ?? scenario?.takeProfitPrices;
+          const takePrices = trade.takeProfitPrices;
           const takePercents = takePrices?.map((price) => Math.abs(price-trade.entryPrice)/trade.entryPrice*100);
           const stopPercent = trade.initialStop !== undefined
             ? Math.abs(trade.initialStop-trade.entryPrice)/trade.entryPrice*100
-            : scenario
-            ? Math.abs(scenario.stopLossPrice-trade.entryPrice)/trade.entryPrice*100
-            : result.strategyConfig?.stopLossPercent;
-          const fallbackTake = result.strategyConfig?.takeProfitPercent;
+            : undefined;
           return <TableRow key={trade.id}>
           <TableCell>{trade.id}</TableCell>{result.portfolio && <TableCell>{trade.symbol}</TableCell>}<TableCell>{new Date(trade.entryTime).toLocaleString("ru-RU")}</TableCell>
           <TableCell>{new Date(trade.exitTime).toLocaleString("ru-RU")}</TableCell><TableCell>{trade.direction}</TableCell>
@@ -235,7 +170,7 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
           <TableCell>{marginValue(trade,leverage).toFixed(2)}</TableCell>
           <TableCell>{takePercents?.length
             ? takePercents.map((value) => `${value.toFixed(2)}%`).join(" / ")
-            : fallbackTake === undefined ? "—" : `${fallbackTake.toFixed(2)}%`}</TableCell>
+            : "—"}</TableCell>
           <TableCell>{stopPercent === undefined ? "—" : `${stopPercent.toFixed(2)}%`}</TableCell>
           <TableCell>{trade.exits?.length
             ? trade.exits.map((exit, index) => `${index + 1}. ${exit.reason} · ${exit.quantity.toFixed(2)} @ ${exit.price.toFixed(4)} · ${exit.pnl >= 0 ? "+" : ""}${exit.pnl.toFixed(2)}`).join(" / ")

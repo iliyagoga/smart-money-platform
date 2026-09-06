@@ -5,10 +5,6 @@ from pydantic import BaseModel,Field,model_validator
 
 now_ms=lambda:int(time()*1000)
 
-class ProbabilityRequest(BaseModel):features:list[float]=Field(min_length=1,max_length=512)
-class ConfidenceDetails(BaseModel):gmdh:float;xgboost:float;lightgbm:float;meta:float
-class ProbabilityResponse(BaseModel):confidence:float;confidence_details:ConfidenceDetails
-
 class Scenario(BaseModel):
     id:str;symbol:str;timeframe:str;direction:str;setup_type:str;confidence:float=0
     entry_zone_low:float;entry_zone_high:float;stop_loss_price:float;take_profit_prices:list[float]

@@ -436,7 +436,7 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
             return
         trades.append({**position, "id": len(trades) + 1, "exit_time": timestamp, "exit_price": exit_price,
                        # Report return on position margin, consistently with
-                       # indicator and SMC replays (not return on risk budget).
+                       # portfolio reports (not return on risk budget).
                        "pnl": position["realized"],
                        "pnl_percent": position["realized"] / max(
                            position["entry_price"] * position["quantity"] / (config.leverage if ec.use_margin else 1), 1e-12,
@@ -774,7 +774,7 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
             "benchmark_return_percent": ((float(evaluation_entry[-1]["close"])
                                            / float(evaluation_entry[0]["close"]) - 1) * 100
                                           if evaluation_entry else 0),
-            "trades": trades, "equity": equity, "decisions": [], "scenarios": [],
+            "trades": trades, "equity": equity,
             **extended_performance(config.initial_capital, capital, equity),
             "chart_candles": entry[-50000:],
             "chart_candles_by_timeframe": {key: sorted(value, key=lambda item: item["timestamp"])[-50000:] for key, value in candles_by_tf.items()},
@@ -795,7 +795,6 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
                                      "macro_filter_uses_closed_candles_only": True,
                                      "entry_uses_next_candle_open": True,
                                      "excluded_v1_patterns": ["DIAGONAL", "FLAT", "TRIANGLE", "DOUBLE_THREE", "TRIPLE_THREE"]},
-            "pattern_diagnostics": [], "template_distribution": {},
             "dataset": {
                 "candles_by_timeframe": {key: len(value) for key, value in candles_by_tf.items()},
                 "test_candles": len(evaluation_entry),

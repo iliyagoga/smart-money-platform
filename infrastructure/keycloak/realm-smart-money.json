@@ -1,7 +1,7 @@
 {
   "realm": "smart-money",
   "enabled": true,
-  "displayName": "Smart Money Platform",
+  "displayName": "Elliott Wave Platform",
   "registrationAllowed": false,
   "loginWithEmailAllowed": true,
   "roles": {
@@ -14,7 +14,7 @@
   "clients": [
     {
       "clientId": "smart-money-api",
-      "name": "Smart Money API",
+      "name": "Elliott Wave API",
       "enabled": true,
       "publicClient": true,
       "directAccessGrantsEnabled": true,

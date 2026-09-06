@@ -9,7 +9,6 @@ export const allSubscriptionEvents = [
   "candle.*",
   "trade.executed",
   "orderbook.updated",
-  "smc.*",
   "scenario.*",
   "position.*",
   "model.*",

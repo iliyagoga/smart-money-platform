@@ -4,7 +4,7 @@ import type { Candle } from "../types";
 
 export type TradeDirection = "LONG" | "SHORT";
 export type DirectionMode = "LONG" | "SHORT" | "BOTH";
-export type StrategyType = "SMC" | "ELLIOTT" | "SMA_CROSS" | "RSI" | "MACD" | "BOLLINGER";
+export type StrategyType = "ELLIOTT";
 
 export interface ElliottSettings {
   useMargin: boolean;
@@ -31,14 +31,10 @@ export interface ElliottSettings {
 export interface BacktestSettings {
   initialCapital: number;
   strategy: StrategyType;
-  fastPeriod: number;
-  slowPeriod: number;
   feePercent: number;
   makerFeePercent?: number;
   takerFeePercent?: number;
   slippagePercent: number;
-  stopLossPercent: number;
-  takeProfitPercent: number;
   positionSizePercent: number;
   leverage: number;
   fundingPercentPerDay: number;
@@ -49,17 +45,8 @@ export interface BacktestSettings {
   minimumOrderSize?: number;
   volumeParticipationPercent?: number;
   liquidationFeePercent?: number;
-  trailingStopPercent?: number;
   directionMode: DirectionMode;
   riskPerTradePercent: number;
-  smcTargetMode: "FIXED" | "TEMPLATE";
-  smcTargetRr: number;
-  smcMinTargetRr: number;
-  smcMaxTargetRr: number;
-  kellyFraction: number;
-  confidenceThreshold: number;
-  templateIds: string[];
-  localRetraining: boolean;
   elliott: ElliottSettings;
 }
 
@@ -76,7 +63,6 @@ export interface BacktestTrade {
   pnl: number;
   pnlPercent: number;
   scenarioId?: string;
-  templateId?: string;
   initialStop?: number;
   takeProfitPrices?: number[];
   exits?: Array<{ timestamp: number; price: number; quantity: number; pnl: number; fees: number; reason: string }>;
@@ -89,12 +75,6 @@ export interface BacktestTrade {
 
 export interface EquityPoint { timestamp: number; equity: number }
 export interface BacktestChartCandle { timestamp: number; open: number; high: number; low: number; close: number; volume: number }
-export interface BacktestScenario {
-  id: string; timestamp: number; expiresAt: number; timeframe: string; direction: TradeDirection;
-  templateId: string; priority: number; confidence: number; entryZoneLow: number; entryZoneHigh: number;
-  stopLossPrice: number; takeProfitPrices: number[]; reasons: string[]; decision: string;
-}
-
 export interface BacktestResult {
   portfolio?: PortfolioResult;
   initialCapital: number;
@@ -124,12 +104,8 @@ export interface BacktestResult {
     testTo?: number;
     timeframes: string[];
   };
-  modelTraining?: { mode: string; samples: number; version?: string };
-  templateDistribution?: Record<string, { pnl: number; trades: number; wins: number }>;
   chartCandles: BacktestChartCandle[];
   chartCandlesByTimeframe: Record<string, BacktestChartCandle[]>;
-  scenarios: BacktestScenario[];
-  patternDiagnostics: Record<string, Record<string, number>>;
   elliottPatterns: ElliottPattern[];
   elliottDiagnostics?: {
     states: Record<string, number>; patterns: number; signals: number; tradedSignals: number; lookaheadSafe: boolean;
@@ -141,8 +117,6 @@ export interface BacktestResult {
     positionSizePercent: number;
     useMargin?: boolean;
     reinvestProfits?: boolean;
-    stopLossPercent?: number;
-    takeProfitPercent?: number;
   };
 }
 

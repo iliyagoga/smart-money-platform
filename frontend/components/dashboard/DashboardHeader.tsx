@@ -52,7 +52,7 @@ export function DashboardHeader({ isLive, username }: DashboardHeaderProps) {
           >
             <Typography variant="caption" sx={{ fontWeight: 700 }}>SM</Typography>
           </Box>
-          <Typography sx={{ display: { xs: "none", sm: "block" }, fontWeight: 700 }}>Smart Money</Typography>
+          <Typography sx={{ display: { xs: "none", sm: "block" }, fontWeight: 700 }}>Elliott Wave</Typography>
         </Stack>
         <Stack component="nav" direction="row" spacing={0.5} sx={{ display: { xs: "none", lg: "flex" } }}>
           {navigation.map((item) => (

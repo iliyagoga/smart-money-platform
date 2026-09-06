@@ -5,7 +5,7 @@ import { ThemeRegistry } from "./ThemeRegistry";
 import "./styles.css";
 
 export const metadata: Metadata = {
-  title: "Smart Money",
+  title: "Elliott Wave",
   description: "Trading intelligence platform",
 };
 

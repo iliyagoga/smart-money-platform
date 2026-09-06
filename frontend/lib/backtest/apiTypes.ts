@@ -21,11 +21,8 @@ export interface SavedBacktestRequest {
   timeframe: string;
   timeframes: string[];
   candle_limit: number;
-  train_from?: number | null;
-  train_to?: number | null;
   test_from?: number | null;
   test_to?: number | null;
-  model_version?: string | null;
   config: Record<string, unknown> & { elliott?: Record<string, unknown> };
 }
 
@@ -45,7 +42,6 @@ interface BackendTrade {
   pnl: number;
   pnl_percent: number;
   scenario_id?: string;
-  template_id?: string;
   initial_stop?: number;
   take_profit_prices?: number[];
   exits?: Array<{ timestamp: number; price: number; quantity: number; pnl: number; fees: number; reason: string }>;
@@ -91,13 +87,6 @@ export interface BackendBacktestResult {
   trades: BackendTrade[];
   equity: BackendEquityPoint[];
   request_config?: SavedBacktestRequest;
-  decisions?: Array<{
-    confidence: number;
-    decision: string;
-    scenario_id: string;
-    template_id: string;
-    timestamp: number;
-  }>;
   dataset?: {
     closed_candles_only: boolean;
     test_candles: number;
@@ -105,18 +94,10 @@ export interface BackendBacktestResult {
     test_to?: number;
     timeframes: string[];
   };
-  model_training?: { mode: string; samples: number; version?: string };
-  template_distribution?: Record<string, { pnl: number; trades: number; wins: number }>;
   chart_candles?: Array<{ timestamp: number; open: number; high: number; low: number; close: number; volume: number }>;
   chart_candles_by_timeframe?: Record<string, Array<{
     timestamp: number; open: number; high: number; low: number; close: number; volume: number;
   }>>;
-  scenarios?: Array<{
-    id: string; timestamp: number; expires_at: number; timeframe: string; direction: "LONG" | "SHORT";
-    template_id: string; priority: number; confidence: number; entry_zone_low: number; entry_zone_high: number;
-    stop_loss_price: number; take_profit_prices: number[]; reasons: string[]; decision: string;
-  }>;
-  pattern_diagnostics?: Record<string, Record<string, number>>;
   elliott_patterns?: Array<{
     id: string; direction: "LONG" | "SHORT"; state: string; invalid_reason?: string; signal_time?: number;
     points: Record<string, { timestamp: number; confirmed_at: number; price: number; kind: "HIGH" | "LOW" }>;
@@ -132,8 +113,6 @@ export interface BackendBacktestResult {
     position_size_percent: number;
     use_margin?: boolean;
     reinvest_profits?: boolean;
-    stop_loss_percent?: number;
-    take_profit_percent?: number;
   };
 }
 
@@ -151,7 +130,6 @@ export function mapBacktestResult(result: BackendBacktestResult): BacktestResult
     pnl: trade.pnl,
     pnlPercent: trade.pnl_percent,
     scenarioId: trade.scenario_id,
-    templateId: trade.template_id,
     initialStop: trade.initial_stop,
     takeProfitPrices: trade.take_profit_prices,
     exits: trade.exits,
@@ -191,18 +169,8 @@ export function mapBacktestResult(result: BackendBacktestResult): BacktestResult
       testTo: result.dataset.test_to ?? result.request_config?.test_to ?? undefined,
       timeframes: result.dataset.timeframes,
     } : undefined,
-    modelTraining: result.model_training,
-    templateDistribution: result.template_distribution,
     chartCandles: result.chart_candles ?? [],
     chartCandlesByTimeframe: result.chart_candles_by_timeframe ?? {},
-    scenarios: (result.scenarios ?? []).map((item) => ({
-      id: item.id, timestamp: item.timestamp, expiresAt: item.expires_at, timeframe: item.timeframe,
-      direction: item.direction, templateId: item.template_id, priority: item.priority, confidence: item.confidence,
-      entryZoneLow: item.entry_zone_low, entryZoneHigh: item.entry_zone_high,
-      stopLossPrice: item.stop_loss_price, takeProfitPrices: item.take_profit_prices,
-      reasons: item.reasons, decision: item.decision,
-    })),
-    patternDiagnostics: result.pattern_diagnostics ?? {},
     elliottPatterns: (result.elliott_patterns ?? []).map((item) => ({
       id: item.id, direction: item.direction, state: item.state, invalidReason: item.invalid_reason,
       signalTime: item.signal_time, features: item.features, structureTimeframe: item.structure_timeframe,
@@ -227,8 +195,6 @@ export function mapBacktestResult(result: BackendBacktestResult): BacktestResult
       positionSizePercent: result.strategy_config.position_size_percent,
       useMargin: result.strategy_config.use_margin,
       reinvestProfits: result.strategy_config.reinvest_profits,
-      stopLossPercent: result.strategy_config.stop_loss_percent,
-      takeProfitPercent: result.strategy_config.take_profit_percent,
     } : undefined,
   };
 }

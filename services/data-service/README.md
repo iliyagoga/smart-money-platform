@@ -1,6 +1,6 @@
 # Data Service
 
-Сервис приёма и выдачи рыночных данных платформы Smart Money. Данные хранятся в TimescaleDB, обновления публикуются через Redis Pub/Sub в формате из `docs/API docs.docx`.
+Сервис приёма и выдачи рыночных данных платформы Elliott Wave. Данные хранятся в TimescaleDB, обновления публикуются через Redis Pub/Sub в формате из `docs/API docs.docx`.
 
 ## API
 

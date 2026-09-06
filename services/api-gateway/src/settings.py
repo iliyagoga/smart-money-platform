@@ -6,11 +6,10 @@ class Settings(BaseSettings):
     keycloak_jwks_url: str = "http://keycloak:8080/realms/smart-money/protocol/openid-connect/certs"
     keycloak_client_id: str = "smart-money-api"
     data_service_url: str = "http://data-service:8000"
-    smc_service_url: str = "http://smc-service:8010"
+    elliott_service_url: str = "http://elliott-service:8010"
     decision_service_url: str = "http://decision-service:8020"
     execution_service_url: str = "http://execution-service:8030"
     analytics_service_url: str = "http://analytics-service:8040"
-    learning_service_url: str = "http://learning-service:8060"
     backtest_service_url: str = "http://backtest-service:8080"
     exchange_service_url: str = "http://exchange-gateway:8070"
     request_timeout: float = 30.0

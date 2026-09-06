@@ -41,8 +41,6 @@ const compactResult = (result: BacktestResult): BacktestResult => ({
   equity: [],
   chartCandles: [],
   chartCandlesByTimeframe: {},
-  scenarios: [],
-  patternDiagnostics: {},
   elliottPatterns: [],
 });
 const compactRow = (row: Row): Row => ({

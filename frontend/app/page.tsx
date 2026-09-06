@@ -50,7 +50,7 @@ export default function Home() {
           </IconButton>
         </Tooltip>
         <Box component="section" sx={{ alignSelf: "center" }}>
-          <Typography className="eyebrow">SMART MONEY PLATFORM</Typography>
+          <Typography className="eyebrow">ELLIOTT WAVE PLATFORM</Typography>
           <Typography component="h1" variant="h1" sx={{ fontSize: "clamp(48px, 7vw, 96px)", lineHeight: 0.98, my: 3 }}>
             Рынок становится<br /><Box component="em" color="primary.main" sx={{ fontStyle: "normal" }}>структурой.</Box>
           </Typography>

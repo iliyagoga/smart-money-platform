@@ -11,16 +11,11 @@ interface ReplayEvent { detail: string; timestamp: number; type: string }
 
 function eventsFrom(result?: BackendBacktestResult): ReplayEvent[] {
   if (!result) return [];
-  const decisions = (result.decisions ?? []).map((item) => ({
-    detail: `${item.template_id}: ${item.decision} (${(item.confidence * 100).toFixed(0)}%)`,
-    timestamp: item.timestamp,
-    type: "Решение",
-  }));
   const trades = result.trades.flatMap((trade) => [
     { detail: `${trade.direction} @ ${trade.entry_price}`, timestamp: trade.entry_time, type: "Вход" },
     { detail: `${trade.reason}, PnL ${trade.pnl.toFixed(2)}`, timestamp: trade.exit_time, type: "Выход" },
   ]);
-  return [...decisions, ...trades].sort((left, right) => left.timestamp - right.timestamp);
+  return trades.sort((left, right) => left.timestamp - right.timestamp);
 }
 
 export default function ReplayPage() {

@@ -30,14 +30,6 @@ export interface CandlesResponse {
   candles: Candle[];
 }
 
-export interface MarketStructure {
-  last_swing_high?: number;
-  last_swing_low?: number;
-  trend?: { direction: string; strength: number };
-  order_blocks: Array<{ id: string; zone_high: number; zone_low: number; type: string }>;
-  fvgs: Array<{ id: string; zone_high: number; zone_low: number; type: string }>;
-}
-
 export interface ServiceStatus {
   name: string;
   status: "UP" | "DOWN" | string;
@@ -163,17 +155,4 @@ export interface Scenario {
 export interface ScenariosResponse {
   scenarios: Scenario[];
   total: number;
-}
-
-export interface LearningModel {
-  id: string;
-  type: string;
-  version: string;
-  samples_count: number;
-  is_active: boolean;
-  training_date: number;
-}
-
-export interface LearningModelsResponse {
-  models: LearningModel[];
 }

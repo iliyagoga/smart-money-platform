@@ -19,7 +19,7 @@ async def lifespan(app):
     await service.stop()
 
 
-app = FastAPI(title="Smart Money Backtest Service", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Elliott Wave Backtest Service", version="1.0.0", lifespan=lifespan)
 
 
 @app.get("/health")

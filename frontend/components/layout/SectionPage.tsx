@@ -26,7 +26,7 @@ export function SectionPage({ children, description, error = "", isLoading = fal
         <DashboardHeader isLive username={username} />
         <Stack direction={{ xs: "column", sm: "row" }} sx={{ py: { xs: 4, md: 6 }, justifyContent: "space-between", gap: 2 }}>
           <Box>
-            <Typography className="eyebrow" color="primary.main">SMART MONEY</Typography>
+            <Typography className="eyebrow" color="primary.main">ELLIOTT WAVE</Typography>
             <Typography variant="h3" sx={{ mt: 1 }}>{title}</Typography>
             <Typography color="text.secondary" sx={{ mt: 1 }}>{description}</Typography>
           </Box>
