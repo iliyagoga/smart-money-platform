@@ -1,7 +1,7 @@
 "use client";
 
 import { Alert, Box, Button, Checkbox, FormControlLabel, FormGroup, Grid, Paper, Stack, Tab, Tabs, TextField, Typography } from "@mui/material";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AssetManager } from "../../components/backtest/AssetManager";
 import { BacktestReport } from "../../components/backtest/BacktestReport";
 import { BacktestHistory } from "../../components/backtest/BacktestHistory";
@@ -23,8 +23,8 @@ import { useRouter } from "next/navigation";
 const defaultSettings: BacktestSettings = {
   initialCapital: 10_000,
   strategy: "ELLIOTT",
-  fastPeriod: 9,
-  slowPeriod: 21,
+  
+  
   feePercent: 0.05,
   makerFeePercent: 0.02,
   takerFeePercent: 0.05,
@@ -44,14 +44,14 @@ const defaultSettings: BacktestSettings = {
   trailingStopPercent: undefined,
   directionMode: "BOTH",
   riskPerTradePercent: 1,
-  smcTargetMode: "TEMPLATE",
-  smcTargetRr: 1.5,
-  smcMinTargetRr: 1.5,
-  smcMaxTargetRr: 8,
-  kellyFraction: 0.25,
-  confidenceThreshold: 0.5,
-  templateIds: [],
-  localRetraining: false,
+  
+  
+  
+  
+  
+  
+  
+  
   elliott: {
     useMargin: false,
     reinvestProfits: true,
@@ -80,13 +80,12 @@ const savedDate = (value: number) => new Date(value).toISOString().slice(0, 10);
 function restoreSettings(request: SavedBacktestRequest, current: BacktestSettings): BacktestSettings {
   const config = request.config;
   const elliott = config.elliott ?? {};
-  const fixedSmcTarget = typeof config.smc_target_rr === "number";
   return {
     ...current,
     initialCapital: savedNumber(config.initial_capital, current.initialCapital),
     strategy: typeof config.strategy === "string" ? config.strategy as BacktestSettings["strategy"] : current.strategy,
-    fastPeriod: savedNumber(config.fast_period, current.fastPeriod),
-    slowPeriod: savedNumber(config.slow_period, current.slowPeriod),
+    
+    
     feePercent: savedNumber(config.fee_percent, current.feePercent),
     makerFeePercent: savedNumber(config.maker_fee_percent, current.makerFeePercent ?? current.feePercent),
     takerFeePercent: savedNumber(config.taker_fee_percent, current.takerFeePercent ?? current.feePercent),
@@ -106,14 +105,14 @@ function restoreSettings(request: SavedBacktestRequest, current: BacktestSetting
     trailingStopPercent: typeof config.trailing_stop_percent === "number" ? config.trailing_stop_percent : undefined,
     directionMode: typeof config.direction_mode === "string" ? config.direction_mode as BacktestSettings["directionMode"] : current.directionMode,
     riskPerTradePercent: savedNumber(config.risk_per_trade_percent, current.riskPerTradePercent),
-    smcTargetMode: fixedSmcTarget ? "FIXED" : "TEMPLATE",
-    smcTargetRr: savedNumber(config.smc_target_rr, current.smcTargetRr),
-    smcMinTargetRr: savedNumber(config.smc_min_target_rr, current.smcMinTargetRr),
-    smcMaxTargetRr: savedNumber(config.smc_max_target_rr, current.smcMaxTargetRr),
-    kellyFraction: savedNumber(config.kelly_fraction, current.kellyFraction),
-    confidenceThreshold: savedNumber(config.confidence_threshold, current.confidenceThreshold),
-    templateIds: Array.isArray(config.template_ids) ? config.template_ids.filter((item): item is string => typeof item === "string") : current.templateIds,
-    localRetraining: savedBoolean(config.local_retraining, current.localRetraining),
+    
+    
+    
+    
+    
+    
+    
+    
     elliott: {
       ...current.elliott,
       useMargin: savedBoolean(elliott.use_margin, current.elliott.useMargin),
@@ -159,10 +158,6 @@ function restoreSettings(request: SavedBacktestRequest, current: BacktestSetting
   };
 }
 
-interface ScenarioTemplatesResponse {
-  templates: Array<{ id: string; name: string }>;
-  total: number;
-}
 
 export default function BacktestPage() {
   const router=useRouter();
@@ -174,8 +169,6 @@ export default function BacktestPage() {
   const [okxTimeframes] = useState(timeframes);
   const [candleLimit, setCandleLimit] = useState(10_000);
   const today = new Date().toISOString().slice(0, 10);
-  const [trainFrom, setTrainFrom] = useState("2025-01-01");
-  const [trainTo, setTrainTo] = useState("2025-06-30");
   const [testFrom, setTestFrom] = useState("2025-07-01");
   const [testTo, setTestTo] = useState(today);
   const [dataFrom, setDataFrom] = useState("2024-01-01");
@@ -191,24 +184,13 @@ export default function BacktestPage() {
   const [historyRowsPerPage, setHistoryRowsPerPage] = useState(10);
   const [historyBusy, setHistoryBusy] = useState(false);
   const restoredConfig = useRef<SavedBacktestRequest["config"] | undefined>(undefined);
-  const restoredModelVersion = useRef<string | null | undefined>(undefined);
   const runsResource = useApiResource<BacktestRunsResponse>(
     `/api/v1/backtest/backtests?limit=${historyRowsPerPage}&offset=${historyPage * historyRowsPerPage}`,
   );
-  const templatesResource = useApiResource<ScenarioTemplatesResponse>("/api/v1/smc/scenario-templates");
-  const templateSelectionInitialized = useRef(false);
-  const templates = useMemo(() => templatesResource.data?.templates ?? [], [templatesResource.data?.templates]);
   useEffect(() => {
     const lastPage = Math.max(0, Math.ceil((runsResource.data?.total ?? 0) / historyRowsPerPage) - 1);
     if (historyPage > lastPage) setHistoryPage(lastPage);
   }, [historyPage, historyRowsPerPage, runsResource.data?.total]);
-  useEffect(() => {
-    if (templateSelectionInitialized.current || !templates.length) return;
-    templateSelectionInitialized.current = true;
-    setSettings((current) => current.templateIds.length
-      ? current
-      : { ...current, templateIds: templates.map((template) => template.id) });
-  }, [templates]);
   const selectedAsset = asset || assets[0];
   const selectedOkxAsset = okxAsset || assets[0];
   useEffect(() => {
@@ -228,7 +210,6 @@ export default function BacktestPage() {
     onProgress?: (value: number) => void,
     runAsset = selectedAsset,
     runTimeframes = selectedTimeframes,
-    includeTrainingPeriod = true,
   ): Promise<BacktestResult> => {
     const periodMilliseconds = Math.max(
       0,
@@ -247,11 +228,11 @@ export default function BacktestPage() {
           symbol: runAsset,
           timeframes: runTimeframes,
           candle_limit: effectiveCandleLimit,
-          train_from: includeTrainingPeriod ? Date.parse(`${trainFrom}T00:00:00Z`) : undefined,
-          train_to: includeTrainingPeriod ? Date.parse(`${trainTo}T23:59:59Z`) : undefined,
+          
+          
           test_from: Date.parse(`${period.from}T00:00:00Z`),
           test_to: Date.parse(`${period.to}T23:59:59Z`),
-          model_version: restoredModelVersion.current,
+          
           config: {
             ...restoredConfig.current,
             strategy: candidateSettings.strategy,
@@ -273,17 +254,17 @@ export default function BacktestPage() {
             stop_loss_percent: candidateSettings.stopLossPercent,
             take_profit_percent: candidateSettings.takeProfitPercent,
             trailing_stop_percent: candidateSettings.trailingStopPercent,
-            fast_period: candidateSettings.fastPeriod,
-            slow_period: candidateSettings.slowPeriod,
+            
+            
             direction_mode: candidateSettings.directionMode,
             risk_per_trade_percent: candidateSettings.riskPerTradePercent,
-            smc_target_rr: candidateSettings.smcTargetMode === "FIXED" ? candidateSettings.smcTargetRr : undefined,
-            smc_min_target_rr: candidateSettings.smcMinTargetRr,
-            smc_max_target_rr: candidateSettings.smcMaxTargetRr,
-            kelly_fraction: candidateSettings.kellyFraction,
-            confidence_threshold: candidateSettings.confidenceThreshold,
-            template_ids: candidateSettings.templateIds,
-            local_retraining: candidateSettings.localRetraining,
+            
+            
+            
+            
+            
+            
+            
             elliott: {
               ...(restoredConfig.current?.elliott ?? {}),
               use_margin: candidateSettings.elliott.useMargin,
@@ -384,12 +365,9 @@ export default function BacktestPage() {
       const request = runDetails.result?.request_config;
       if (!request) throw new Error("В этом отчёте отсутствуют сохранённые параметры запуска");
       restoredConfig.current = request.config;
-      restoredModelVersion.current = request.model_version;
       setAsset(request.symbol);
       setSelectedTimeframes(request.timeframes.length ? request.timeframes : [request.timeframe]);
       setCandleLimit(request.candle_limit);
-      if (typeof request.train_from === "number") setTrainFrom(savedDate(request.train_from));
-      if (typeof request.train_to === "number") setTrainTo(savedDate(request.train_to));
       if (typeof request.test_from === "number") setTestFrom(savedDate(request.test_from));
       if (typeof request.test_to === "number") setTestTo(savedDate(request.test_to));
       setSettings((current) => restoreSettings(request, current));
@@ -466,7 +444,7 @@ export default function BacktestPage() {
     }
   };
 
-  return <SectionPage wide title="Бэктест" description="Проверка торговых стратегий на исторических данных без отправки ордеров.">
+  return <SectionPage title="Бэктест" description="Проверка торговых стратегий на исторических данных без отправки ордеров.">
     <Paper variant="outlined" sx={{ mb: 2, px: { xs: 1, md: 2 }, bgcolor: "background.paper" }}>
       <Tabs value={workspaceTab} onChange={(_,value) => setWorkspaceTab(value)} variant="scrollable" scrollButtons="auto">
         <Tab label="1. Данные" /><Tab label="2. Настройка и запуск" />
@@ -508,16 +486,10 @@ export default function BacktestPage() {
             : current.filter((value) => value !== item))}
         />} />)}
       </FormGroup>
-      <Typography variant="subtitle2" sx={{ mt: 1.5, mb: 1 }}>Периоды без пересечения</Typography>
+      <Typography variant="subtitle2" sx={{ mt: 1.5, mb: 1 }}>Период бэктеста</Typography>
       <Grid container spacing={1.5}>
-        <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
-          <TextField fullWidth type="date" label="Обучение: начало" value={trainFrom}
-            onChange={(event) => setTrainFrom(event.target.value)} slotProps={{ inputLabel: { shrink: true } }} />
-        </Grid>
-        <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
-          <TextField fullWidth type="date" label="Обучение: конец" value={trainTo}
-            onChange={(event) => setTrainTo(event.target.value)} slotProps={{ inputLabel: { shrink: true } }} />
-        </Grid>
+
+
         <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
           <TextField fullWidth type="date" label="Бэктест: начало" value={testFrom}
             onChange={(event) => setTestFrom(event.target.value)} slotProps={{ inputLabel: { shrink: true } }} />
@@ -541,7 +513,7 @@ export default function BacktestPage() {
           onRun={() => void run()}
           isRunning={isRunning}
           progress={progress}
-          templates={templates}
+          
         />
       </Grid>
       <Grid size={{ xs: 12, xl: 7 }}>
@@ -608,7 +580,7 @@ export default function BacktestPage() {
         testTo={testTo}
         runCandidate={async (candidateSettings, period, optimizerAsset, optimizerTimeframes) => {
           const candidateResult = await executeBacktest(
-            candidateSettings, period, undefined, optimizerAsset, optimizerTimeframes, false,
+            candidateSettings, period, undefined, optimizerAsset, optimizerTimeframes,
           );
           runsResource.reload();
           return candidateResult;

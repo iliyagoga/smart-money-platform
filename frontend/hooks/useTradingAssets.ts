@@ -46,7 +46,7 @@ export function useTradingAssets() {
   useEffect(() => {
     let active = true;
     api<AssetsResponse>("/api/v1/backtest/assets")
-      .then((response) => { if (active) setItems(response.assets); })
+      .then((response) => { if (active) { setItems(response.assets); setError(""); } })
       .catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : String(reason)); });
     return () => { active = false; };
   }, [reloadKey]);

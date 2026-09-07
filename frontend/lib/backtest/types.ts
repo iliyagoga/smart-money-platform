@@ -1,8 +1,6 @@
-import type { Candle } from "../types";
-
 export type TradeDirection = "LONG" | "SHORT";
 export type DirectionMode = "LONG" | "SHORT" | "BOTH";
-export type StrategyType = "SMC" | "ELLIOTT" | "SMA_CROSS" | "RSI" | "MACD" | "BOLLINGER";
+export type StrategyType = "ELLIOTT";
 
 export interface ElliottSettings {
   useMargin: boolean;
@@ -29,8 +27,8 @@ export interface ElliottSettings {
 export interface BacktestSettings {
   initialCapital: number;
   strategy: StrategyType;
-  fastPeriod: number;
-  slowPeriod: number;
+  
+  
   feePercent: number;
   makerFeePercent?: number;
   takerFeePercent?: number;
@@ -50,14 +48,14 @@ export interface BacktestSettings {
   trailingStopPercent?: number;
   directionMode: DirectionMode;
   riskPerTradePercent: number;
-  smcTargetMode: "FIXED" | "TEMPLATE";
-  smcTargetRr: number;
-  smcMinTargetRr: number;
-  smcMaxTargetRr: number;
-  kellyFraction: number;
-  confidenceThreshold: number;
-  templateIds: string[];
-  localRetraining: boolean;
+  
+  
+  
+  
+  
+  
+  
+  
   elliott: ElliottSettings;
 }
 
@@ -112,7 +110,7 @@ export interface BacktestResult {
     testTo?: number;
     timeframes: string[];
   };
-  modelTraining?: { mode: string; samples: number; version?: string };
+  
   templateDistribution?: Record<string, { pnl: number; trades: number; wins: number }>;
   chartCandles: BacktestChartCandle[];
   chartCandlesByTimeframe: Record<string, BacktestChartCandle[]>;
@@ -139,16 +137,4 @@ export interface ElliottPattern {
   id: string; direction: TradeDirection; state: string; invalidReason?: string; signalTime?: number;
   points: Record<string, ElliottPoint>; features: Record<string, number | string>;
   structureTimeframe: string; entryTimeframe: string;
-}
-
-export interface OpenBacktestPosition {
-  direction: TradeDirection;
-  entryPrice: number;
-  entryTime: number;
-  quantity: number;
-}
-
-export interface BacktestInput {
-  candles: Candle[];
-  settings: BacktestSettings;
 }

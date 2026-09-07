@@ -54,20 +54,6 @@ services:
       - keycloak_data:/opt/keycloak/data
       - ./infrastructure/keycloak/realm-smart-money.json:/opt/keycloak/data/import/realm-smart-money.json:ro
 
-  minio:
-    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
-    container_name: smart-money-minio
-    restart: unless-stopped
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-CHANGE_ME_MINIO}
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    volumes:
-      - minio_data:/data
-
   data-service:
     build:
       context: ./services/data-service
@@ -101,22 +87,17 @@ services:
       timeout: 5s
       retries: 10
 
-  smc-service:
+  elliott-service:
     build:
       context: .
-      dockerfile: services/smc-service/Dockerfile
-    container_name: smart-money-smc-service
+      dockerfile: services/elliott-service/Dockerfile
+    container_name: smart-money-elliott-service
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: ${REDIS_URL}
-      SWING_LOOKBACK: ${SWING_LOOKBACK:-5}
-      SCENARIO_TEMPLATE_DIR: /app/scenario-templates
-      DEFAULT_SCENARIO_TEMPLATE_DIR: /app/default-scenario-templates
     ports:
       - "8010:8010"
-    volumes:
-      - scenario_templates:/app/scenario-templates
     depends_on:
       postgres:
         condition: service_healthy
@@ -142,11 +123,6 @@ services:
       CONFIDENCE_THRESHOLD: ${CONFIDENCE_THRESHOLD:-0.60}
       CONFLICT_MIN_DELTA: ${CONFLICT_MIN_DELTA:-0.10}
       DEFAULT_CAPITAL: ${DEFAULT_CAPITAL:-10000}
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-CHANGE_ME_MINIO}
-      MODEL_BUCKET: models
-      ADAPTIVE_MODEL_WEIGHT: ${ADAPTIVE_MODEL_WEIGHT:-0.35}
     ports:
       - "8020:8020"
     depends_on:
@@ -154,10 +130,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
-      smc-service:
+      elliott-service:
         condition: service_healthy
-      minio:
-        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8020/health')\""]
       interval: 10s
@@ -227,24 +201,16 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       DATA_SERVICE_URL: http://data-service:8000
       MAX_CANDLES: ${BACKTEST_MAX_CANDLES:-2000000}
-      SCENARIO_TEMPLATE_DIR: /app/scenario-templates
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-CHANGE_ME_MINIO}
       JOB_CONCURRENCY: ${BACKTEST_JOB_CONCURRENCY:-2}
     ports:
       - "8085:8080"
-    volumes:
-      - scenario_templates:/app/scenario-templates:ro
     depends_on:
       postgres:
         condition: service_healthy
       data-service:
         condition: service_healthy
-      smc-service:
+      elliott-service:
         condition: service_healthy
-      minio:
-        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health')\""]
       interval: 10s
@@ -273,7 +239,7 @@ services:
       SYMBOLS: ${EXCHANGE_SYMBOLS:-BTC-USDT-SWAP}
       TIMEFRAMES: ${EXCHANGE_TIMEFRAMES:-M1,M5,M15,M30,H1,H4,D1}
       DATA_SERVICE_URL: http://data-service:8000
-      SMC_SERVICE_URL: http://smc-service:8010
+      ELLIOTT_SERVICE_URL: http://elliott-service:8010
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: ${REDIS_URL}
       HISTORY_CONCURRENCY: ${HISTORY_CONCURRENCY:-2}
@@ -282,7 +248,7 @@ services:
     depends_on:
       data-service:
         condition: service_healthy
-      smc-service:
+      elliott-service:
         condition: service_healthy
       postgres:
         condition: service_healthy
@@ -305,7 +271,7 @@ services:
       KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/smart-money/protocol/openid-connect/certs
       KEYCLOAK_CLIENT_ID: smart-money-api
       DATA_SERVICE_URL: http://data-service:8000
-      SMC_SERVICE_URL: http://smc-service:8010
+      ELLIOTT_SERVICE_URL: http://elliott-service:8010
       DECISION_SERVICE_URL: http://decision-service:8020
       EXECUTION_SERVICE_URL: http://execution-service:8030
       ANALYTICS_SERVICE_URL: http://analytics-service:8040
@@ -321,7 +287,7 @@ services:
         condition: service_started
       data-service:
         condition: service_healthy
-      smc-service:
+      elliott-service:
         condition: service_healthy
       decision-service:
         condition: service_healthy
@@ -362,5 +328,3 @@ volumes:
   postgres_data:
   redis_data:
   keycloak_data:
-  minio_data:
-  scenario_templates:

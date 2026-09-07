@@ -52,7 +52,7 @@ async def events(limit:int=Query(100,ge=1,le=1000),type:str|None=None):
 @app.get("/monitoring/services")
 async def services():
     import asyncio,httpx
-    targets={"data-service":"http://data-service:8000/actuator/health","smc-service":"http://smc-service:8010/health","decision-service":"http://decision-service:8020/health","execution-service":"http://execution-service:8030/health"}
+    targets={"data-service":"http://data-service:8000/actuator/health","elliott-service":"http://elliott-service:8010/health","decision-service":"http://decision-service:8020/health","execution-service":"http://execution-service:8030/health"}
     async with httpx.AsyncClient(timeout=2) as client:
         async def check(name,url):
             try:r=await client.get(url);return {"name":name,"status":"UP" if r.is_success else "DOWN","uptime":None,"processed_events":0,"error_rate":0}

@@ -95,9 +95,9 @@ export default function TradesPage() {
     >
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mb: 1.5, justifyContent: "space-between", alignItems: { sm: "center" } }}>
         <Typography variant="body2" color="text.secondary">Показаны {symbol ? `сделки по ${symbol}` : "сделки по всем активам"}</Typography>
-        <Stack direction="row" spacing={1}><FormControl size="small" sx={{ minWidth: 220 }}><InputLabel>Актив</InputLabel><Select value={symbol} label="Актив" onChange={(event) => setSymbol(event.target.value)}>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}><FormControl size="small" sx={{ minWidth: 220 }}><InputLabel id="trade-asset-label">Актив</InputLabel><Select labelId="trade-asset-label" value={symbol} label="Актив" onChange={(event) => setSymbol(event.target.value)}>
           <MenuItem value="">Все активы</MenuItem>{symbols.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}
-        </Select></FormControl><Select size="small" value={direction} onChange={(event) => setDirection(event.target.value as "LONG" | "SHORT")}>
+        </Select></FormControl><Select size="small" inputProps={{ "aria-label": "Направление" }} value={direction} onChange={(event) => setDirection(event.target.value as "LONG" | "SHORT")}>
           <MenuItem value="LONG">LONG</MenuItem><MenuItem value="SHORT">SHORT</MenuItem>
         </Select><Button variant="contained" disabled={!canTrade || !symbol || isSimulating} onClick={() => void simulateSignal()}>
           {isSimulating ? "Создаём…" : "Имитировать сигнал"}
@@ -112,7 +112,7 @@ export default function TradesPage() {
       </Grid>
       <TradeHistory trades={historyResource.data?.trades ?? []} />
       <TradeAnalyzer analysis={analysisResource.data} />
-      <Dialog open={Boolean(closingPosition)} onClose={() => setClosingPosition(undefined)}>
+      <Dialog open={Boolean(closingPosition)} onClose={() => !isClosing && setClosingPosition(undefined)}>
         <DialogTitle>Закрыть позицию?</DialogTitle>
         <DialogContent>
           <Stack spacing={1} sx={{ pt: 1 }}>

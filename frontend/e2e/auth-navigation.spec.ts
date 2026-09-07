@@ -18,9 +18,11 @@ test("user can sign in, switch theme and open every section", async ({ page }) =
   await signIn(page);
   await expect(page.getByRole("heading", { name: new RegExp(`Добрый день, ${username}`) })).toBeVisible();
 
-  for (const route of ["market", "scenarios", "trades", "learning", "backtest"]) {
+  for (const route of ["market", "trades", "configurations", "portfolios", "backtest", "replay"]) {
     await page.goto(`/${route}`);
     await expect(page).toHaveURL(new RegExp(`/${route}$`));
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+    await expect(page.getByText("404", { exact: true })).toHaveCount(0);
   }
 });
 
@@ -73,18 +75,18 @@ test("user can add an asset and run an isolated backtest", async ({ page }, test
   await expect(page.getByText("Журнал сделок")).toBeVisible();
 });
 
-test("trader can submit a validated paper order", async ({ page }) => {
-  await page.route("**/api/v1/execution/orders", async (route) => {
-    const body = route.request().postDataJSON() as { side: string; type: string; quantity: number };
-    expect(body).toMatchObject({ side: "BUY", type: "LIMIT", quantity: 0.001 });
-    await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ order_id: "e2e", status: "PENDING" }) });
+test("trader can simulate an Elliott signal", async ({ page }) => {
+  await page.route("**/api/v1/execution/trades/assets", (route) => route.fulfill({
+    json: { assets: [{ symbol: "BTC-USDT-SWAP" }] },
+  }));
+  await page.route("**/api/v1/decision/signals/simulate-elliott", async (route) => {
+    expect(route.request().postDataJSON()).toEqual({ symbol: "BTC-USDT-SWAP", direction: "LONG" });
+    await route.fulfill({ json: { approved: true } });
   });
   await signIn(page, "trader");
   await page.goto("/trades");
-  await page.getByLabel("Тип").click();
-  await page.getByRole("option", { name: "Limit" }).click();
-  await page.getByLabel("Количество").fill("0.001");
-  await page.getByLabel("Цена").fill("50000");
-  await page.getByRole("button", { name: "BUY BTC-USDT-SWAP" }).click();
-  await expect(page.getByText("Ордер успешно отправлен в paper-контур")).toBeVisible();
+  await page.getByLabel("Актив", { exact: true }).click();
+  await page.getByRole("option", { name: "BTC-USDT-SWAP" }).click();
+  await page.getByRole("button", { name: "Имитировать сигнал" }).click();
+  await expect(page.getByText("Elliott-сигнал принят и отправлен на исполнение")).toBeVisible();
 });

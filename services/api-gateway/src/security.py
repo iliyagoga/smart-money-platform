@@ -88,7 +88,6 @@ def authorize(principal: Principal, method: str, service: str, path: str) -> Non
         normalized.startswith("/internal")
         or service == "decision" and normalized.startswith("/risk/config") and method != "GET"
         or service == "backtest" and normalized.startswith(("/assets","/datasets")) and method != "GET"
-        or service == "smc" and normalized.startswith("/scenario-templates") and method != "GET"
         or service == "exchange" and normalized.startswith("/exchange/account")
         or service == "exchange" and normalized.startswith("/exchange/history") and method != "GET"
     )

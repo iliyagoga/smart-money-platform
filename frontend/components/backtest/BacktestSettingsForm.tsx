@@ -1,7 +1,7 @@
 "use client";
 
 import { Button, Checkbox, FormControl, FormControlLabel, InputLabel, ListItemText, MenuItem, Paper, Select, Stack, TextField, Typography } from "@mui/material";
-import type { BacktestSettings, DirectionMode, StrategyType } from "../../lib/backtest/types";
+import type { BacktestSettings, DirectionMode } from "../../lib/backtest/types";
 
 interface BacktestSettingsFormProps {
   isRunning: boolean;
@@ -9,15 +9,13 @@ interface BacktestSettingsFormProps {
   onRun: () => void;
   progress: number;
   settings: BacktestSettings;
-  templates: Array<{ id: string; name: string }>;
-  elliottOnly?: boolean;
   submitLabel?: string;
 }
 
 const quarterSteps = (minimum: number, maximum: number) =>
   Array.from({ length: Math.round((maximum - minimum) / 0.25) + 1 }, (_, index) => minimum + index * 0.25);
 
-export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, settings, templates, elliottOnly = false, submitLabel = "Запустить бэктест" }: BacktestSettingsFormProps) {
+export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, settings, submitLabel = "Запустить бэктест" }: BacktestSettingsFormProps) {
   const updateNumber = (key: keyof BacktestSettings, value: string) => onChange({ ...settings, [key]: Number(value) });
   const isValid = settings.initialCapital > 0
     && (settings.strategy === "ELLIOTT"
@@ -25,10 +23,7 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
     && settings.riskPerTradePercent >= 0
     && (settings.strategy !== "ELLIOTT" || (settings.elliott.takeProfitRr > 0
       && settings.elliott.wave2MinRetracement < settings.elliott.wave2MaxRetracement
-      && (settings.elliott.takeProfitCount === 1 || settings.elliott.secondTakeProfitRr > settings.elliott.takeProfitRr)))
-    && (settings.strategy !== "SMC" || (settings.smcMinTargetRr > 0 && settings.smcMaxTargetRr > settings.smcMinTargetRr
-      && (settings.smcTargetMode === "TEMPLATE" || settings.smcTargetRr > 0)))
-    && (settings.strategy !== "SMC" || settings.templateIds.length > 0);
+      && (settings.elliott.takeProfitCount === 1 || settings.elliott.secondTakeProfitRr > settings.elliott.takeProfitRr)));
   const updateElliottNumber = (key: keyof BacktestSettings["elliott"], value: string) =>
     onChange({ ...settings, elliott: { ...settings.elliott, [key]: Number(value) } });
   const checkedValue = (value: unknown, display = String(value)) =>
@@ -63,13 +58,10 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
   return <Paper variant="outlined" sx={{ p: 3 }}>
     <Typography variant="h6">Параметры стратегии</Typography>
     <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 2.5 }}>
-      {elliottOnly ? "Elliott Wave на сохранённых закрытых свечах." : "SMC или Elliott replay на сохранённых закрытых свечах без заглядывания вперёд."}
+      Elliott Wave на сохранённых закрытых свечах без заглядывания вперёд.
     </Typography>
     <Stack spacing={2}>
-      {!elliottOnly && <TextField select label="Стратегия" value={settings.strategy}
-        onChange={(event) => onChange({ ...settings, strategy: event.target.value as StrategyType })}>
-        <MenuItem value="ELLIOTT">Elliott Wave</MenuItem><MenuItem value="SMC">Smart Money Concept</MenuItem>
-      </TextField>}
+      
       <TextField
         select
         label="Направление"
@@ -78,28 +70,8 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
       >
         <MenuItem value="BOTH">Long и Short</MenuItem><MenuItem value="LONG">Только Long</MenuItem><MenuItem value="SHORT">Только Short</MenuItem>
       </TextField>
-      {settings.strategy === "SMC" && <FormControl fullWidth>
-        <InputLabel id="backtest-templates-label">Шаблоны для теста</InputLabel>
-        <Select
-          labelId="backtest-templates-label"
-          multiple
-          label="Шаблоны для теста"
-          value={settings.templateIds}
-          onChange={(event) => onChange({
-            ...settings,
-            templateIds: typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value,
-          })}
-          renderValue={(selected) => `Выбрано: ${selected.length}`}
-        >
-          {templates.map((template) => <MenuItem key={template.id} value={template.id}>
-            <Checkbox checked={settings.templateIds.includes(template.id)} />
-            <ListItemText primary={template.name} secondary={template.id} />
-          </MenuItem>)}
-        </Select>
-      </FormControl>}
-      {settings.strategy === "SMC" && <Typography variant="body2" color="text.secondary">
-        В расчёте участвуют только отмеченные шаблоны и их собственные роли таймфреймов.
-      </Typography>}
+      
+      
       {settings.strategy === "ELLIOTT" && <Stack spacing={1.5}>
         <Typography variant="subtitle2">Архитектура Elliott и ATR ZigZag</Typography>
         <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
@@ -284,75 +256,21 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
           </Typography>
         </Stack>
       </Paper>}
-      {settings.strategy !== "ELLIOTT" && <>
-        <TextField label="Размер позиции, %" value={settings.positionSizePercent} type="number"
-          onChange={(event) => updateNumber("positionSizePercent", event.target.value)} />
-        <TextField label="Плечо" value={settings.leverage} type="number"
-          onChange={(event) => updateNumber("leverage", event.target.value)} />
-      </>}
-      {settings.strategy !== "ELLIOTT" && <Stack direction="row" spacing={1.5}>
-        <TextField fullWidth label="Риск на сделку, %" value={settings.riskPerTradePercent} type="number"
-          helperText="0 отключает риск-лимит"
-          slotProps={{ htmlInput: { min: 0, step: 0.1 } }}
-          onChange={(event) => updateNumber("riskPerTradePercent", event.target.value)} />
-        <TextField fullWidth label="Доля Kelly" value={settings.kellyFraction} type="number"
-          onChange={(event) => updateNumber("kellyFraction", event.target.value)} />
-      </Stack>}
-      {settings.strategy === "SMC" && <TextField fullWidth label="Порог confidence" value={settings.confidenceThreshold} type="number"
-        onChange={(event) => updateNumber("confidenceThreshold", event.target.value)} />}
-      {settings.strategy === "SMC" && <TextField fullWidth select label="Управление Risk/Reward" value={settings.smcTargetMode}
-        onChange={(event) => onChange({ ...settings, smcTargetMode: event.target.value as BacktestSettings["smcTargetMode"] })}>
-        <MenuItem value="TEMPLATE">По шаблону, в заданном диапазоне</MenuItem>
-        <MenuItem value="FIXED">Фиксированная цель</MenuItem>
-      </TextField>}
-      {settings.strategy === "SMC" && <Stack direction="row" spacing={1.5}>
-        <TextField fullWidth label="Risk/Reward: минимум" value={settings.smcMinTargetRr} type="number"
-          slotProps={{ htmlInput: { min: 0.01, step: 0.1 } }} onChange={(event) => updateNumber("smcMinTargetRr", event.target.value)} />
-        <TextField fullWidth label="Risk/Reward: максимум" value={settings.smcMaxTargetRr} type="number"
-          slotProps={{ htmlInput: { min: 0.01, step: 0.1 } }} onChange={(event) => updateNumber("smcMaxTargetRr", event.target.value)} />
-      </Stack>}
-      {settings.strategy === "SMC" && settings.smcTargetMode === "FIXED" && <TextField fullWidth label="Фиксированный Risk/Reward" value={settings.smcTargetRr} type="number"
-        slotProps={{ htmlInput: { min: 0.01, step: 0.1 } }} onChange={(event) => updateNumber("smcTargetRr", event.target.value)} />}
+      
+      
+      
+      
+      
+      
       <Typography variant="body2" color="text.secondary">
-        {elliottOnly ? "Stop Loss рассчитывается за структурной границей Elliott, тейки — по заданному Risk/Reward." : "Stop Loss рассчитывается за структурной границей OB, тейк выставляется на указанном расстоянии Risk/Reward."}
+        Stop Loss рассчитывается за структурной границей Elliott, тейки — по заданному Risk/Reward.
       </Typography>
-      {!elliottOnly && <><Stack direction="row" spacing={1.5}>
-        <TextField fullWidth label="Maker, %" value={settings.makerFeePercent} type="number"
-          onChange={(event) => updateNumber("makerFeePercent", event.target.value)} />
-        <TextField fullWidth label="Taker, %" value={settings.takerFeePercent} type="number"
-          onChange={(event) => updateNumber("takerFeePercent", event.target.value)} />
-        <TextField fullWidth label="Проскальзывание, %" value={settings.slippagePercent} type="number"
-          onChange={(event) => updateNumber("slippagePercent", event.target.value)} />
-      </Stack>
-      <Stack direction="row" spacing={1.5}>
-        <TextField fullWidth label="Funding в день, %" value={settings.fundingPercentPerDay} type="number"
-          onChange={(event) => updateNumber("fundingPercentPerDay", event.target.value)} />
-        <TextField fullWidth label="Funding интервал, ч" value={settings.fundingIntervalHours} type="number"
-          onChange={(event) => updateNumber("fundingIntervalHours", event.target.value)} />
-      </Stack>
-      <Stack direction="row" spacing={1.5}>
-        <TextField fullWidth label="Задержка, мс" value={settings.executionLatencyMs} type="number"
-          onChange={(event) => updateNumber("executionLatencyMs", event.target.value)} />
-        <TextField fullWidth label="Доля объёма, %" value={settings.volumeParticipationPercent} type="number"
-          onChange={(event) => updateNumber("volumeParticipationPercent", event.target.value)} />
-      </Stack>
-      <Stack direction="row" spacing={1.5}>
-        <TextField fullWidth label="Шаг цены" value={settings.tickSize} type="number"
-          onChange={(event) => updateNumber("tickSize", event.target.value)} />
-        <TextField fullWidth label="Шаг количества" value={settings.lotSize} type="number"
-          onChange={(event) => updateNumber("lotSize", event.target.value)} />
-      </Stack>
-      <Stack direction="row" spacing={1.5}>
-        <TextField fullWidth label="Мин. ордер" value={settings.minimumOrderSize} type="number"
-          onChange={(event) => updateNumber("minimumOrderSize", event.target.value)} />
-        <TextField fullWidth label="Ликвидация, %" value={settings.liquidationFeePercent} type="number"
-          onChange={(event) => updateNumber("liquidationFeePercent", event.target.value)} />
-      </Stack></>}
+      
       <Button variant="contained" size="large" disabled={!isValid || isRunning} onClick={onRun}>
         {isRunning ? (progress > 0 ? `Выполняем расчёт… ${progress}%` : "Сохраняем…") : submitLabel}
       </Button>
       {!isValid && <Typography variant="caption" color="error.main">
-        {elliottOnly ? "Проверьте капитал, риск и параметры Elliott/Risk-Reward." : "Проверьте капитал, риск, Risk/Reward, размер позиции, параметры исполнения и выберите хотя бы один шаблон."}
+        Проверьте капитал, риск и параметры Elliott/Risk-Reward.
       </Typography>}
     </Stack>
   </Paper>;

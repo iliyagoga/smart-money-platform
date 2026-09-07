@@ -24,3 +24,19 @@ def test_valid_candle_series_is_accepted():
 def test_invalid_candle_series_is_rejected(items, message):
     with pytest.raises(ValueError, match=message):
         validate_candle_series("M1", items)
+
+
+def test_only_elliott_strategy_is_supported():
+    from pydantic import ValidationError
+    from src.models import BacktestConfig
+    assert BacktestConfig().strategy == "ELLIOTT"
+    with pytest.raises(ValidationError):
+        BacktestConfig(strategy="SMC")
+
+
+def test_backtest_requires_complete_ordered_test_period():
+    from pydantic import ValidationError
+    from src.models import BacktestCreate
+    for boundaries in [{"test_from": 100}, {"test_from": 200, "test_to": 100}]:
+        with pytest.raises(ValidationError):
+            BacktestCreate(symbol="BTC-USDT", **boundaries)

@@ -20,11 +20,11 @@ export interface SavedBacktestRequest {
   timeframe: string;
   timeframes: string[];
   candle_limit: number;
-  train_from?: number | null;
-  train_to?: number | null;
+  
+  
   test_from?: number | null;
   test_to?: number | null;
-  model_version?: string | null;
+  
   config: Record<string, unknown> & { elliott?: Record<string, unknown> };
 }
 
@@ -83,7 +83,7 @@ export interface BackendBacktestResult {
     test_to?: number;
     timeframes: string[];
   };
-  model_training?: { mode: string; samples: number; version?: string };
+  
   template_distribution?: Record<string, { pnl: number; trades: number; wins: number }>;
   chart_candles?: Array<{ timestamp: number; open: number; high: number; low: number; close: number; volume: number }>;
   chart_candles_by_timeframe?: Record<string, Array<{
@@ -158,7 +158,7 @@ export function mapBacktestResult(result: BackendBacktestResult): BacktestResult
       testTo: result.dataset.test_to ?? result.request_config?.test_to ?? undefined,
       timeframes: result.dataset.timeframes,
     } : undefined,
-    modelTraining: result.model_training,
+    
     templateDistribution: result.template_distribution,
     chartCandles: result.chart_candles ?? [],
     chartCandlesByTimeframe: result.chart_candles_by_timeframe ?? {},

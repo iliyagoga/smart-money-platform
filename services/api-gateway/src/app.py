@@ -14,7 +14,7 @@ from .websocket import WebSocketBridge
 
 SERVICE_URLS = {
     "data": settings.data_service_url,
-    "smc": settings.smc_service_url,
+    "elliott": settings.elliott_service_url,
     "decision": settings.decision_service_url,
     "execution": settings.execution_service_url,
     "analytics": settings.analytics_service_url,

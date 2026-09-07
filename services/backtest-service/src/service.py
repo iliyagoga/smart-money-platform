@@ -4,17 +4,13 @@ import io
 import json
 import time
 from math import isfinite
-from pathlib import Path
 from uuid import UUID, uuid4
 
 import asyncpg
 import httpx
-import boto3
 
-from .engine import run_backtest
 from .elliott import run_elliott_replay
 from .models import AssetCreate, BacktestCreate, StrategyType
-from .replay import FrozenModel, run_smc_replay, train_local_model
 from .settings import Settings
 
 
@@ -56,10 +52,6 @@ class BacktestService:
         self.client: httpx.AsyncClient | None = None
         self.tasks: dict[UUID, asyncio.Task] = {}
         self.semaphore = asyncio.Semaphore(settings.job_concurrency)
-        self.s3 = boto3.client(
-            "s3", endpoint_url=settings.minio_endpoint, aws_access_key_id=settings.minio_access_key,
-            aws_secret_access_key=settings.minio_secret_key,
-        )
 
     async def start(self):
         self.db = await asyncpg.create_pool(self.settings.database_url)
@@ -154,9 +146,7 @@ class BacktestService:
             request.config = request.config.model_copy(update={
                 key: execution_spec[key] for key in ("tick_size", "lot_size", "minimum_order_size")
             })
-            warmup_bars = (max(request.config.slow_period, request.config.rsi_period, 35)
-                           if request.config.strategy not in (StrategyType.SMC, StrategyType.ELLIOTT)
-                           else 250)
+            warmup_bars = 250
             test_candles = await self.load_candles(
                 request.symbol, request.timeframes, request.test_from, request.test_to, request.candle_limit,
                 warmup_bars=warmup_bars if request.test_from is not None else 0,
@@ -165,54 +155,13 @@ class BacktestService:
                 for candle in candles: candle["volume"] *= execution_spec["contract_value"]
             async with self.db.acquire() as connection:
                 await connection.execute("UPDATE backtest_runs SET progress=35 WHERE id=$1", run_id)
-            if request.config.strategy == StrategyType.SMC:
-                model = None
-                if request.config.local_retraining:
-                    if request.train_from is None:
-                        raise ValueError("explicit train and test periods are required for local retraining")
-                    training_candles = await self.load_candles(
-                        request.symbol, request.timeframes, request.train_from, request.train_to,
-                        self.settings.max_candles,
-                    )
-                    for candles in training_candles.values():
-                        for candle in candles: candle["volume"] *= execution_spec["contract_value"]
-                    async with self.db.acquire() as connection:
-                        await connection.execute("UPDATE backtest_runs SET progress=50 WHERE id=$1", run_id)
-                    model = await asyncio.to_thread(
-                        train_local_model, training_candles, request.timeframe, request.config,
-                        self.settings.scenario_template_dir,
-                    )
-                    async with self.db.acquire() as connection:
-                        await connection.execute("UPDATE backtest_runs SET progress=70 WHERE id=$1", run_id)
-                    artifact_path = await self.save_local_model(run_id, model, request)
-                else:
-                    model = await self.load_frozen_model(request.model_version, request.test_from)
-                async with self.db.acquire() as connection:
-                    await connection.execute("UPDATE backtest_runs SET progress=80 WHERE id=$1", run_id)
-                result = await asyncio.to_thread(
-                    run_smc_replay, test_candles, request.timeframe, request.config,
-                    self.settings.scenario_template_dir, model, request.test_from,
-                )
-                result["dataset"]["timeframes"] = request.timeframes
-                result["dataset"]["execution_timeframe"] = request.timeframe
-                result["dataset"]["requested_train_from"] = request.train_from
-                result["dataset"]["requested_train_to"] = request.train_to
-                result["dataset"]["requested_test_from"] = request.test_from
-                result["dataset"]["requested_test_to"] = request.test_to
-                if request.config.local_retraining:
-                    result["model_training"]["artifact_path"] = artifact_path
-            elif request.config.strategy == StrategyType.ELLIOTT:
-                async with self.db.acquire() as connection:
-                    await connection.execute("UPDATE backtest_runs SET progress=80 WHERE id=$1", run_id)
-                result = await asyncio.to_thread(run_elliott_replay, test_candles, request.config, request.test_from)
-                result["dataset"]["timeframes"] = request.timeframes
-                result["dataset"]["execution_timeframe"] = request.config.elliott.entry_timeframe
-                result["dataset"]["structure_timeframe"] = request.config.elliott.structure_timeframe
-                result["dataset"]["macro_timeframe"] = request.config.elliott.macro_timeframe
-            else:
-                result = await asyncio.to_thread(
-                    run_backtest, test_candles[request.timeframe], request.config, request.test_from,
-                )
+            async with self.db.acquire() as connection:
+                await connection.execute("UPDATE backtest_runs SET progress=80 WHERE id=$1", run_id)
+            result = await asyncio.to_thread(run_elliott_replay, test_candles, request.config, request.test_from)
+            result["dataset"]["timeframes"] = request.timeframes
+            result["dataset"]["execution_timeframe"] = request.config.elliott.entry_timeframe
+            result["dataset"]["structure_timeframe"] = request.config.elliott.structure_timeframe
+            result["dataset"]["macro_timeframe"] = request.config.elliott.macro_timeframe
             result.setdefault("dataset", {})
             result["dataset"].setdefault("timeframes", request.timeframes)
             result["dataset"].setdefault("test_candles", len(test_candles.get(request.timeframe, [])))
@@ -231,20 +180,11 @@ class BacktestService:
                 "reinvest_profits": (request.config.elliott.reinvest_profits
                                      if request.config.strategy == StrategyType.ELLIOTT else True),
                 "stop_loss_percent": request.config.stop_loss_percent,
-                "smc_min_stop_percent": request.config.smc_min_stop_percent,
                 "take_profit_percent": request.config.take_profit_percent,
             }
             result["request_config"] = request.model_dump(mode="json")
             result["execution_spec"] = execution_spec
-            result["engine"] = {
-                "name": ({StrategyType.SMC: "SMC_CLOSE_TIME_REPLAY", StrategyType.ELLIOTT: "ELLIOTT_CLOSE_TIME_REPLAY"}
-                         .get(request.config.strategy, "INDICATOR_REPLAY")),
-                "version": 2,
-                "template_versions": {
-                    path.stem: json.loads(path.read_text(encoding="utf-8")).get("version", 1)
-                    for path in Path(self.settings.scenario_template_dir).glob("*.json")
-                } if request.config.strategy == StrategyType.SMC else {},
-            }
+            result["engine"] = {"name": "ELLIOTT_CLOSE_TIME_REPLAY", "version": 2}
             async with self.db.acquire() as connection:
                 await connection.execute(
                     "UPDATE backtest_runs SET status='COMPLETED',progress=100,result=$2::jsonb,completed_at=now() "
@@ -306,50 +246,6 @@ class BacktestService:
             if incomplete:
                 raise ValueError(f"stored candles do not cover the requested period for: {', '.join(incomplete)}")
         return result
-
-    async def save_local_model(self, run_id, model, request):
-        bucket = "models"
-        key = f"backtests/{run_id}/local-template-model.json"
-        artifact = {
-            "type": "TEMPLATE_BAYES_WALK_FORWARD", "run_id": str(run_id),
-            "train_from": request.train_from, "train_to": request.train_to,
-            "outcomes": model.outcomes, "metrics": model.metrics, "folds": model.folds,
-        }
-        await asyncio.to_thread(
-            self.s3.put_object, Bucket=bucket, Key=key, Body=json.dumps(artifact).encode(),
-            ContentType="application/json",
-        )
-        return f"s3://{bucket}/{key}"
-
-    async def load_frozen_model(self, version, test_from):
-        try:
-            async with self.db.acquire() as connection:
-                if version:
-                    row = await connection.fetchrow(
-                        "SELECT version,path,training_date FROM model_versions WHERE version=$1", version,
-                    )
-                else:
-                    row = await connection.fetchrow(
-                        """
-                        SELECT version,path,training_date FROM model_versions
-                        WHERE ($1::bigint IS NULL OR training_date<to_timestamp($1/1000.0))
-                        ORDER BY is_active DESC,training_date DESC LIMIT 1
-                        """,
-                        test_from,
-                    )
-        except asyncpg.UndefinedTableError:
-            return None
-        if not row:
-            return None
-        if test_from and int(row["training_date"].timestamp() * 1000) >= test_from:
-            raise ValueError("selected model was trained after the backtest period started")
-        bucket, key = row["path"].removeprefix("s3://").split("/", 1)
-        response = await asyncio.to_thread(self.s3.get_object, Bucket=bucket, Key=key)
-        artifact = json.loads(await asyncio.to_thread(response["Body"].read))
-        return FrozenModel(
-            version=artifact["version"], feature_names=list(artifact["feature_names"]),
-            weights=[float(item) for item in artifact["weights"]], bias=float(artifact.get("bias", 0)),
-        )
 
     async def runs(self, user_id: str, limit: int = 50, offset: int = 0):
         async with self.db.acquire() as connection:

@@ -1,6 +1,6 @@
 "use client";
 
-import { Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle, Stack, TextField, Typography } from "@mui/material";
+import { Alert, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle, Stack, TextField, Typography } from "@mui/material";
 import { useState } from "react";
 import { isValidAssetSymbol, normalizeAssetSymbol, useTradingAssets } from "../../hooks/useTradingAssets";
 import { useAuth } from "../auth/AuthProvider";
@@ -68,7 +68,8 @@ export function AssetManager(props: AssetManagerProps) {
       />)}
       <Button variant="outlined" onClick={() => setIsOpen(true)} disabled={!canManage}>+ Добавить актив</Button>
     </Stack>
-    <Dialog open={isOpen} onClose={() => setIsOpen(false)} fullWidth maxWidth="xs">
+    {error && !isOpen && <Alert severity="error" sx={{ mt: 2 }}>{error}</Alert>}
+    <Dialog open={isOpen} onClose={() => !isSaving && setIsOpen(false)} fullWidth maxWidth="sm">
       <DialogTitle>Добавить торговый актив</DialogTitle>
       <DialogContent>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
@@ -86,7 +87,7 @@ export function AssetManager(props: AssetManagerProps) {
         {error && <Typography variant="caption" color="error.main">{error}</Typography>}
       </DialogContent>
       <DialogActions>
-        <Button onClick={() => setIsOpen(false)}>Отмена</Button>
+        <Button disabled={isSaving} onClick={() => setIsOpen(false)}>Отмена</Button>
         <Button variant="contained" onClick={() => void add()} disabled={!isValid || isSaving}>
           {isSaving ? "Добавляем…" : "Добавить"}
         </Button>

@@ -5,12 +5,9 @@ from pydantic import BaseModel,Field,model_validator
 
 now_ms=lambda:int(time()*1000)
 
-class ProbabilityRequest(BaseModel):features:list[float]=Field(min_length=1,max_length=512)
-class ConfidenceDetails(BaseModel):gmdh:float;xgboost:float;lightgbm:float;meta:float
-class ProbabilityResponse(BaseModel):confidence:float;confidence_details:ConfidenceDetails
 
 class Scenario(BaseModel):
-    id:str;symbol:str;timeframe:str;direction:str;setup_type:str;confidence:float=0
+    id:str=Field(default_factory=lambda:str(uuid4()));symbol:str;timeframe:str;direction:str;setup_type:str;confidence:float=0
     entry_zone_low:float;entry_zone_high:float;stop_loss_price:float;take_profit_prices:list[float]
     status:str="ACTIVE";reasons:list[str]=[];objections:list[str]=[];objects_used:list[dict]=[]
     target_allocations:list[float]=[];break_even_rule:str="ONE_R";move_stop_to_break_even_after_target:int|None=1

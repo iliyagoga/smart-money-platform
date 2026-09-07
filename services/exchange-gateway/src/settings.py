@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     trading_enabled:bool=False; margin_mode:str="cross"
     symbols:str="BTC-USDT-SWAP"; timeframes:str="M1,M5,M15,M30,H1,H4,D1"
     data_service_url:str="http://data-service:8000"
-    smc_service_url:str="http://smc-service:8010"
+    elliott_service_url:str="http://elliott-service:8010"
     database_url:str="postgresql://smart_money:smart_money_local_password@postgres:5432/smart_money"
     redis_url:str="redis://redis:6379"
     history_concurrency:int=2

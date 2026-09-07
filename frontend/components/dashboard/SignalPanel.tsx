@@ -15,8 +15,8 @@ export function SignalPanel() {
       }}
     >
       <Typography className="eyebrow">SYSTEM SIGNAL</Typography>
-      <Typography component="h2" variant="h5" sx={{ my: 2 }}>Контур готов<br />к анализу рынка</Typography>
-      <Typography variant="body2" color="text.secondary">Данные, SMC и риск-сервисы подключены.</Typography>
+      <Typography component="h2" variant="h5" sx={{ my: 2 }}>Анализ рынка<br />и события системы</Typography>
+      <Typography variant="body2" color="text.secondary">Проверяйте состояние сервисов и последние события перед запуском операций.</Typography>
       <Button component="a" href="#events" variant="text" sx={{ mt: 2.5, px: 0 }}>Перейти к событиям →</Button>
       <Box
         sx={{

@@ -13,21 +13,20 @@ interface SectionPageProps {
   isLoading?: boolean;
   onReload?: () => void;
   title: string;
-  wide?: boolean;
 }
 
-export function SectionPage({ children, description, error = "", isLoading = false, onReload, title, wide = false }: SectionPageProps) {
+export function SectionPage({ children, description, error = "", isLoading = false, onReload, title }: SectionPageProps) {
   const { username } = useAuth();
   return (
     <AuthenticatedPage>
       <Container component="main" maxWidth={false} sx={{
-        maxWidth: wide ? "95vw" : 1500, width: wide ? "95%" : "100%", pb: 7.5, px: { xs: 2, md: 4.75 },
+        width: "100%", pb: 7.5, px: { xs: 2, md: 3, xl: 4 },
       }}>
-        <DashboardHeader isLive username={username} />
+        <DashboardHeader username={username} />
         <Stack direction={{ xs: "column", sm: "row" }} sx={{ py: { xs: 4, md: 6 }, justifyContent: "space-between", gap: 2 }}>
           <Box>
             <Typography className="eyebrow" color="primary.main">SMART MONEY</Typography>
-            <Typography variant="h3" sx={{ mt: 1 }}>{title}</Typography>
+            <Typography component="h1" variant="h3" sx={{ mt: 1, fontSize: { xs: "2rem", md: "3rem" }, overflowWrap: "anywhere" }}>{title}</Typography>
             <Typography color="text.secondary" sx={{ mt: 1 }}>{description}</Typography>
           </Box>
           {onReload && <Button variant="outlined" onClick={onReload} disabled={isLoading} sx={{ alignSelf: { sm: "flex-end" } }}>↻ Обновить</Button>}

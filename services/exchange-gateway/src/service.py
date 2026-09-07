@@ -360,7 +360,7 @@ class ExchangeGateway:
                     error="; ".join(f"{key}: {value['error']}" for key,value in failed.items())
                     await self.db.execute("UPDATE exchange_history_jobs SET status='FAILED',error=$2,updated_at=now() WHERE id=$1::uuid",job_id,error[:2000]);return
                 await self.db.execute("UPDATE exchange_history_jobs SET status='COMPLETED',progress=100,updated_at=now() WHERE id=$1::uuid",job_id)
-                self.add_task(self.rebuild_smc(job["symbol"],job["timeframes"]))
+                self.add_task(self.rebuild_elliott(job["symbol"],job["timeframes"]))
             except asyncio.CancelledError:raise
             except Exception as exc:
                 await self.db.execute("UPDATE exchange_history_jobs SET status='FAILED',error=$2,updated_at=now() WHERE id=$1::uuid",job_id,str(exc)[:2000])
@@ -411,15 +411,15 @@ class ExchangeGateway:
             "UPDATE exchange_history_jobs SET timeframe_status=jsonb_set(timeframe_status,ARRAY[$2],$3::jsonb,true),updated_at=now() WHERE id=$1::uuid",
             job_id,timeframe,json.dumps(details),
         )
-    async def rebuild_smc(self,symbol,timeframes):
+    async def rebuild_elliott(self,symbol,timeframes):
         try:
             response=await self.client.post(
-                self.s.smc_service_url+"/internal/rebuild",
+                self.s.elliott_service_url+"/internal/rebuild",
                 json={"symbol":symbol,"timeframes":timeframes,"limit":500},timeout=120,
             )
             response.raise_for_status()
         except Exception as exc:
-            self.last_error=f"smc rebuild: {type(exc).__name__}: {exc}"[:500]
+            self.last_error=f"elliott rebuild: {type(exc).__name__}: {exc}"[:500]
     async def private(self,method,path,payload=None):
         if not all((self.s.okx_api_key,self.s.okx_secret_key,self.s.okx_passphrase)):raise ValueError("OKX API credentials are not configured")
         body=json.dumps(payload,separators=(",",":")) if payload else "";headers=auth_headers(self.s.okx_api_key,self.s.okx_secret_key,self.s.okx_passphrase,method,path,body,self.s.okx_demo)

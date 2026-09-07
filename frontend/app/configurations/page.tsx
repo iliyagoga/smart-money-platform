@@ -111,7 +111,7 @@ export default function ConfigurationsPage() {
         <TextField label="Описание" value={description} onChange={(event)=>setDescription(event.target.value)} multiline minRows={3}
           placeholder="Назначение, рынок и особенности этой конфигурации" slotProps={{ htmlInput:{ maxLength:1000 } }} />
       </Stack></Paper><BacktestSettingsForm isRunning={saving} onChange={setSettings} onRun={()=>void save()} progress={0}
-        settings={settings} templates={[]} elliottOnly submitLabel={editingId ? "Сохранить изменения":"Сохранить конфигурацию"} />
+        settings={settings}   submitLabel={editingId ? "Сохранить изменения":"Сохранить конфигурацию"} />
         <Button disabled={saving} onClick={()=>setEditorOpen(false)}>Закрыть</Button></Stack></DialogContent>
     </Dialog>
   </SectionPage>;

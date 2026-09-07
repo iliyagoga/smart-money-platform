@@ -56,6 +56,10 @@ const buildTheme = (mode: PaletteMode) => createTheme({
   },
   shape: { borderRadius: 12 },
   components: {
+    MuiDialog: {
+      defaultProps: { fullWidth: true, maxWidth: "lg" },
+      styleOverrides: { paper: { margin: 16, width: "calc(100% - 32px)" } },
+    },
     MuiButton: { defaultProps: { disableElevation: true } },
     MuiPaper: {
       styleOverrides: {
