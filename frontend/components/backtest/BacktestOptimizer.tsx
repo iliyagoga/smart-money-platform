@@ -25,6 +25,8 @@ import {
   isBetterEligibleResult,
   isGoodStageResult,
   meetsOptimizationRequirements,
+  optimizationPeriod,
+  OPTIMIZATION_PERIOD_SHARE,
   OPTIMIZER_PARAMETERS,
   parameterApplies,
   setOptimizerValue,
@@ -57,13 +59,6 @@ const timeframeLabels: Record<TimeframeKey, string> = {
 };
 const timeframeRank: Record<string, number> = {
   M1: 1, M5: 5, M15: 15, M30: 30, H1: 60, H4: 240, D1: 1440,
-};
-const day = (value: number) => new Date(value).toISOString().slice(0, 10);
-const optimizationPeriod = (from: string, to: string): Period => {
-  const start = Date.parse(`${from}T00:00:00Z`);
-  const end = Date.parse(`${to}T00:00:00Z`);
-  const split = start + Math.floor((end - start) * .7 / 86_400_000) * 86_400_000;
-  return { from, to: day(split) };
 };
 const formatFactor = (value: number) => Number.isFinite(value) ? value.toFixed(2) : "∞";
 const displayValue = (value: string) => value === "true" ? "вкл." : value === "false" ? "выкл." : value;
@@ -200,7 +195,7 @@ export function BacktestOptimizer({
       }
 
       setCompletedStages(activeParameters.length);
-      setStage("Итоговая проверка на всём периоде");
+      setStage("Итоговая валидация на всём периоде");
       const result = await runCandidate(
         currentSettings,
         { from: testFrom, to: testTo },
@@ -233,6 +228,7 @@ export function BacktestOptimizer({
         Поиск начинает с текущих значений обычного бэктеста. Для каждого параметра он проверяет значения
         сначала вниз от исходного, затем вверх. Сначала результат фильтруется по обязательным условиям;
         только после этого оценивается его кривая и остальные метрики. Модель входа проверяется первой.
+        Перебор выполняется на первых {OPTIMIZATION_PERIOD_SHARE * 100}% периода, итоговая валидация — на всём периоде.
       </Alert>
       <Alert severity="warning" sx={{ mb: 2 }}>
         Комиссии, funding, проскальзывание, задержка и биржевые ограничения берутся из основной формы
@@ -335,7 +331,8 @@ export function BacktestOptimizer({
           форме. RR перебирается от 0.5 до 5 с шагом 0.5.
         </Typography>
         <Typography variant="body2" sx={{ mt: 1 }}>
-          Перебор: {searchPeriod.from}–{searchPeriod.to}. Итоговая проверка: {testFrom}–{testTo}.
+          Перебор ({OPTIMIZATION_PERIOD_SHARE * 100}%): {searchPeriod.from}–{searchPeriod.to}.
+          Итоговая валидация (100%): {testFrom}–{testTo}.
         </Typography>
         <Typography variant="body2">
           Максимум {maximumRuns.toLocaleString("ru-RU")} запусков; ранняя остановка обычно заметно сокращает их число.
@@ -364,7 +361,7 @@ export function BacktestOptimizer({
     {finalResult && <Paper variant="outlined" sx={{ p: 3 }}>
       <Typography variant="h6">Итоговый вариант</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mt: .5 }}>
-        Получен за {finalResult.attempts} запусков. Метрики рассчитаны на всём выбранном периоде.
+        Получен за {finalResult.attempts} запусков. Итоговые метрики валидированы на всём выбранном периоде.
       </Typography>
       <Alert severity={finalResult.passedRequirements ? "success" : "error"} sx={{ mt: 2 }}>
         {finalResult.passedRequirements

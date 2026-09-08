@@ -8,6 +8,8 @@ import {
   isBetterEligibleResult,
   isGoodStageResult,
   meetsOptimizationRequirements,
+  optimizationPeriod,
+  OPTIMIZATION_PERIOD_SHARE,
   OPTIMIZER_PARAMETERS,
   setOptimizerValue,
   validOptimizerSettings,
@@ -46,6 +48,14 @@ const result = (equity: number[], overrides: Partial<BacktestResult> = {}): Back
 };
 
 describe("optimizer exploration", () => {
+  it("uses the first 70 percent for optimization", () => {
+    expect(OPTIMIZATION_PERIOD_SHARE).toBe(.7);
+    expect(optimizationPeriod("2026-01-01", "2026-01-11")).toEqual({
+      from: "2026-01-01",
+      to: "2026-01-08",
+    });
+  });
+
   it("starts below the regular backtest value and then searches above it", () => {
     const parameter = OPTIMIZER_PARAMETERS.find((item) => item.key === "atrPeriod")!;
     expect(explorationValues(parameter, defaultBacktestSettings)).toEqual([

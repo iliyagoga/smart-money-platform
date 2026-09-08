@@ -1,5 +1,16 @@
 import type { BacktestResult, BacktestSettings, ElliottSettings } from "./types";
 
+export const OPTIMIZATION_PERIOD_SHARE = .7;
+
+export function optimizationPeriod(from: string, to: string): { from: string; to: string } {
+  const start = Date.parse(`${from}T00:00:00Z`);
+  const end = Date.parse(`${to}T00:00:00Z`);
+  const split = start + Math.floor(
+    (end - start) * OPTIMIZATION_PERIOD_SHARE / 86_400_000,
+  ) * 86_400_000;
+  return { from, to: new Date(split).toISOString().slice(0, 10) };
+}
+
 export type OptimizerKey = "entryModel" | "directionMode" | "atrPeriod" | "zigzagReversalAtr"
   | "minSwingAtr" | "wave1MinAtr" | "wave1MinEfficiency" | "wave2MinRetracement"
   | "wave2MaxRetracement" | "entryRetracement" | "entryExpiryBars" | "breakoutBufferAtr"
