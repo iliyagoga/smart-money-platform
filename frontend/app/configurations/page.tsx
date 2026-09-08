@@ -101,7 +101,7 @@ export default function ConfigurationsPage() {
             <Typography variant="body2" color="text.secondary" sx={{ mt:.5 }}>{item.description || "Без описания"}</Typography></Box>
             <Chip size="small" label={item.config.elliott?.entryModel ?? "ELLIOTT"} /></Stack>
           <Typography variant="caption" color="text.secondary">Обновлено {new Date(item.updated_at).toLocaleString("ru-RU")}</Typography>
-          <Stack direction="row" spacing={1}><Button variant="contained" size="small" onClick={()=>edit(item)}>Редактировать</Button>
+          <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap:"wrap" }}><Button variant="contained" size="small" onClick={()=>edit(item)}>Редактировать</Button>
             <Button variant="outlined" size="small" onClick={()=>void copy(item)}>Копировать</Button>
             <Button variant="outlined" size="small" onClick={()=>download(item)}>Скачать JSON</Button>
             <Button color="error" size="small" onClick={()=>void remove(item)}>Удалить</Button></Stack>

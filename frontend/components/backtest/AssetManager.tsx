@@ -69,7 +69,7 @@ export function AssetManager(props: AssetManagerProps) {
       <Button variant="outlined" onClick={() => setIsOpen(true)} disabled={!canManage}>+ Добавить актив</Button>
     </Stack>
     {error && !isOpen && <Alert severity="error" sx={{ mt: 2 }}>{error}</Alert>}
-    <Dialog open={isOpen} onClose={() => !isSaving && setIsOpen(false)} fullWidth maxWidth="sm">
+    <Dialog open={isOpen} onClose={() => !isSaving && setIsOpen(false)} maxWidth="md">
       <DialogTitle>Добавить торговый актив</DialogTitle>
       <DialogContent>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>

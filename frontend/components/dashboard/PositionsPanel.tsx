@@ -1,4 +1,4 @@
-import { Button, Table, TableBody, TableCell, TableHead, TablePagination, TableRow } from "@mui/material";
+import { Button, Table, TableBody, TableCell, TableContainer, TableHead, TablePagination, TableRow } from "@mui/material";
 import { usePagination } from "../../hooks/usePagination";
 import type { Position } from "../../lib/types";
 import { EmptyState } from "../ui/EmptyState";
@@ -16,7 +16,7 @@ export function PositionsPanel({ canClose = false, closingId = "", onClose, posi
   return (
     <Panel title="Открытые позиции" meta={`${positions.length} ACTIVE`}>
       {positions.length === 0 ? <EmptyState text="Открытых позиций нет" /> : (
-        <Table size="small">
+        <TableContainer><Table size="small" sx={{ minWidth: canClose ? 720 : 600 }}>
           <TableHead><TableRow>
             <TableCell>Инструмент</TableCell><TableCell>Направление</TableCell><TableCell>Вход</TableCell>
             <TableCell>Количество</TableCell><TableCell>Статус</TableCell>
@@ -40,7 +40,7 @@ export function PositionsPanel({ canClose = false, closingId = "", onClose, posi
               </TableCell>}
             </TableRow>
           ))}</TableBody>
-        </Table>
+        </Table></TableContainer>
       )}
       {positions.length > 0 && <TablePagination component="div" {...pagination.paginationProps} />}
     </Panel>

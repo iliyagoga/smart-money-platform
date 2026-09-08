@@ -116,7 +116,7 @@ export default function TradesPage() {
         </Button></Stack>
       </Stack>
       <TradeStatisticsGrid statistics={statisticsResource.data} />
-      <Box sx={{ my: 1.5, maxWidth: 680 }}>
+      <Box sx={{ my: 1.5 }}>
         <OrderTicket canTrade={canTrade} isSubmitting={isSubmittingOrder} onSubmit={(order) => void submitOrder(order)} />
       </Box>
       <OrdersPanel orders={ordersResource.data?.orders ?? []} canCancel={canTrade} onCancel={(order) => void cancelOrder(order)} />
@@ -127,7 +127,7 @@ export default function TradesPage() {
       </Grid>
       <TradeHistory trades={historyResource.data?.trades ?? []} />
       <TradeAnalyzer analysis={analysisResource.data} />
-      <Dialog open={Boolean(closingPosition)} onClose={() => !isClosing && setClosingPosition(undefined)}>
+      <Dialog open={Boolean(closingPosition)} onClose={() => !isClosing && setClosingPosition(undefined)} maxWidth="sm">
         <DialogTitle>Закрыть позицию?</DialogTitle>
         <DialogContent>
           <Stack spacing={1} sx={{ pt: 1 }}>

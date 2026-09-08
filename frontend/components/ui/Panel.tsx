@@ -10,7 +10,8 @@ export function Panel({ children, title, meta, minHeight = 300 }: PanelProps) {
       sx={{
         minHeight,
         minWidth: 0,
-        p: { xs: 2, md: 2.75 },
+        overflow: "hidden",
+        p: { xs: 1.5, sm: 2, md: 2.5 },
         boxShadow: (theme) => theme.palette.mode === "light" ? "0 10px 35px rgba(32, 54, 44, 0.05)" : "none",
       }}
     >

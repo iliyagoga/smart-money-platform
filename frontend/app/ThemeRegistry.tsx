@@ -82,10 +82,47 @@ const buildTheme = (mode: PaletteMode, palette: PaletteName) => createTheme({
         },
       },
     },
+    MuiDialog: {
+      defaultProps: { fullWidth: true, maxWidth: "md" },
+      styleOverrides: {
+        paper: {
+          width: "calc(100% - 32px)",
+          maxHeight: "calc(100% - 32px)",
+          margin: 16,
+          "@media (min-width:600px)": {
+            width: "calc(100% - 48px)",
+            maxHeight: "calc(100% - 48px)",
+            margin: 24,
+          },
+        },
+      },
+    },
+    MuiDialogTitle: {
+      styleOverrides: { root: { padding: "24px 28px 16px" } },
+    },
+    MuiDialogContent: {
+      styleOverrides: { root: { padding: "24px 28px" } },
+    },
+    MuiDialogActions: {
+      styleOverrides: { root: { padding: "16px 28px 24px", gap: 8 } },
+    },
     MuiTableCell: {
       styleOverrides: {
         head: { fontSize: 12, fontWeight: 700, letterSpacing: "0.04em", whiteSpace: "nowrap" },
         root: { borderColor: mode === "light" ? "#e7ece9" : "#22302b" },
+      },
+    },
+    MuiTableContainer: {
+      styleOverrides: { root: { overflowX: "auto" } },
+    },
+    MuiTablePagination: {
+      styleOverrides: {
+        toolbar: {
+          minHeight: 56,
+          paddingLeft: 8,
+          paddingRight: 8,
+          flexWrap: "wrap",
+        },
       },
     },
     MuiTextField: { defaultProps: { size: "small" } },

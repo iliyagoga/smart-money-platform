@@ -35,7 +35,7 @@ export function DashboardHeader({ isLive, username }: DashboardHeaderProps) {
       position="sticky"
       color="inherit"
       elevation={0}
-      sx={{ top: 0, zIndex: 10, borderBottom: 1, borderColor: "divider", backdropFilter: "blur(18px)", bgcolor: "background.paper" }}
+      sx={{ top: 0, zIndex: 10, borderBottom: 1, borderColor: "divider", backdropFilter: "blur(18px)", bgcolor: "background.paper", px: { xs: .5, sm: 0 } }}
     >
       <Toolbar disableGutters sx={{ minHeight: "76px !important", justifyContent: "space-between" }}>
         <Stack component={Link} href="/" direction="row" spacing={1.5} sx={{ alignItems: "center", color: "inherit", textDecoration: "none" }}>
@@ -61,9 +61,9 @@ export function DashboardHeader({ isLive, username }: DashboardHeaderProps) {
             </Button>
           ))}
         </Stack>
-        <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+        <Stack direction="row" spacing={{ xs: .25, sm: 1 }} sx={{ alignItems: "center" }}>
           <IconButton onClick={() => setIsMenuOpen(true)} aria-label="Открыть меню" sx={{ display: { xl: "none" } }}>☰</IconButton>
-          {isLive !== undefined && <Chip icon={<StatusDot active={isLive} />} label={isLive ? "Live" : "Подключение"} size="small" variant="outlined" />}
+          {isLive !== undefined && <Chip icon={<StatusDot active={isLive} />} label={isLive ? "Live" : "Подключение"} size="small" variant="outlined" sx={{ display: { xs: "none", sm: "inline-flex" } }} />}
           <Typography variant="caption" sx={{ display: { xs: "none", md: "block" }, maxWidth: 130 }} noWrap>{username}</Typography>
           <Tooltip title={mode === "light" ? "Включить тёмную тему" : "Включить светлую тему"}>
             <IconButton onClick={toggleColorMode} aria-label="Переключить цветовую тему" size="small">
@@ -71,13 +71,13 @@ export function DashboardHeader({ isLive, username }: DashboardHeaderProps) {
             </IconButton>
           </Tooltip>
           <Tooltip title="Цветовая палитра"><IconButton onClick={() => setPaletteOpen(true)} aria-label="Настроить цветовую палитру" size="small">◉</IconButton></Tooltip>
-          <Button onClick={() => void logout()} disabled={isLoggingOut} color="secondary" size="small">
+          <Button onClick={() => void logout()} disabled={isLoggingOut} color="secondary" size="small" sx={{ minWidth: { xs: 40, sm: 64 }, px: { xs: .75, sm: 1.5 } }}>
             {isLoggingOut ? "Выходим…" : "Выйти"}
           </Button>
         </Stack>
       </Toolbar>
       <Drawer anchor="right" open={isMenuOpen} onClose={() => setIsMenuOpen(false)}>
-        <Stack component="nav" spacing={1} sx={{ width: 280, p: 3 }}>
+        <Stack component="nav" spacing={1} sx={{ width: { xs: "min(88vw, 340px)", sm: 340 }, p: { xs: 2.5, sm: 3 } }}>
           <Typography variant="h6" sx={{ mb: 1 }}>Навигация</Typography>
           <Divider />
           {navigation.map((item) => (
@@ -95,7 +95,7 @@ export function DashboardHeader({ isLive, username }: DashboardHeaderProps) {
           ))}
         </Stack>
       </Drawer>
-      <Dialog open={paletteOpen} onClose={() => setPaletteOpen(false)} fullWidth maxWidth="xs">
+      <Dialog open={paletteOpen} onClose={() => setPaletteOpen(false)} maxWidth="sm">
         <DialogTitle>Цветовая палитра</DialogTitle><DialogContent>
           <FormControl><RadioGroup value={palette} onChange={event => setPalette(event.target.value as typeof palette)}>
             <FormControlLabel value="lime" control={<Radio />} label="Лайм" />

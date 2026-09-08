@@ -57,9 +57,9 @@ export default function Dashboard() {
   }, [loadDashboard]);
 
   return (
-    <Container component="main" maxWidth={false} sx={{ width: "100%", pb: 7.5, px: { xs: 2, md: 3, xl: 4 } }}>
+    <Container component="main" maxWidth={false} sx={{ maxWidth: 1920, width: "100%", mx: "auto", pb: { xs: 4, md: 7.5 }, px: { xs: 1.5, sm: 2.5, md: 3, lg: 4 } }}>
       <DashboardHeader isLive={isLive} username={username} />
-      <Stack id="overview" direction={{ xs: "column", md: "row" }} spacing={2.5} sx={{ py: { xs: 4, md: 6 }, justifyContent: "space-between" }}>
+      <Stack id="overview" direction={{ xs: "column", md: "row" }} spacing={2.5} sx={{ py: { xs: 3, md: 4.5 }, justifyContent: "space-between" }}>
         <Box>
           <Typography className="eyebrow">COMMAND CENTER · {new Date().toLocaleDateString("ru-RU")}</Typography>
           <Typography component="h1" variant="h3" sx={{ my: 1.25, fontSize: { xs: 32, md: 44 } }}>Добрый день, {username}.</Typography>

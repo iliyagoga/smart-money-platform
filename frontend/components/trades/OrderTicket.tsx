@@ -1,6 +1,6 @@
 "use client";
 
-import { Alert, Button, MenuItem, Paper, Stack, TextField, Typography } from "@mui/material";
+import { Alert, Button, Grid, MenuItem, Paper, TextField, Typography } from "@mui/material";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { useTradingAssets } from "../../hooks/useTradingAssets";
@@ -40,21 +40,24 @@ export function OrderTicket({ canTrade, isSubmitting, onSubmit }: OrderTicketPro
   };
 
   return (
-    <Paper component="form" onSubmit={submit} variant="outlined" sx={{ p: 3 }}>
+    <Paper component="form" onSubmit={submit} variant="outlined" sx={{ p: { xs: 2, md: 2.5 } }}>
       <Typography variant="h6">Новый paper-ордер</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 2.5 }}>Ордер исполняется только в тестовом контуре.</Typography>
       {!canTrade && <Alert severity="info" sx={{ mb: 2 }}>Для создания ордеров необходима роль trader или admin.</Alert>}
-      <Stack spacing={2}>
-        <TextField
-          select
-          label="Инструмент"
-          value={selectedSymbol}
-          onChange={(event) => setSymbol(event.target.value)}
-          disabled={!canTrade}
-        >
-          {assets.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}
-        </TextField>
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+      <Grid container spacing={1.5}>
+        <Grid size={{ xs: 12, md: 4 }}>
+          <TextField
+            select
+            fullWidth
+            label="Инструмент"
+            value={selectedSymbol}
+            onChange={(event) => setSymbol(event.target.value)}
+            disabled={!canTrade}
+          >
+            {assets.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}
+          </TextField>
+        </Grid>
+        <Grid size={{ xs: 6, md: 2 }}>
           <TextField
             select
             fullWidth
@@ -65,6 +68,8 @@ export function OrderTicket({ canTrade, isSubmitting, onSubmit }: OrderTicketPro
           >
             <MenuItem value="BUY">BUY</MenuItem><MenuItem value="SELL">SELL</MenuItem>
           </TextField>
+        </Grid>
+        <Grid size={{ xs: 6, md: 2 }}>
           <TextField
             select
             fullWidth
@@ -75,23 +80,27 @@ export function OrderTicket({ canTrade, isSubmitting, onSubmit }: OrderTicketPro
           >
             <MenuItem value="MARKET">Market</MenuItem><MenuItem value="LIMIT">Limit</MenuItem><MenuItem value="STOP">Stop</MenuItem>
           </TextField>
-        </Stack>
-        <TextField label="Количество" value={quantity} onChange={(event) => setQuantity(event.target.value)} type="number"
+        </Grid>
+        <Grid size={{ xs: 12, sm: 6, md: 2 }}><TextField fullWidth label="Количество" value={quantity} onChange={(event) => setQuantity(event.target.value)} type="number"
           required disabled={!canTrade} slotProps={{ htmlInput: { min: 0, step: "any" } }} />
-        <TextField label="Цена" value={price} onChange={(event) => setPrice(event.target.value)} type="number"
+        </Grid>
+        <Grid size={{ xs: 12, sm: 6, md: 2 }}><TextField fullWidth label="Цена" value={price} onChange={(event) => setPrice(event.target.value)} type="number"
           required={type !== "MARKET"} disabled={!canTrade || type === "MARKET"}
           slotProps={{ htmlInput: { min: 0, step: "any" } }} />
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+        </Grid>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
           <TextField fullWidth label="Stop Loss" value={stopLoss} onChange={(event) => setStopLoss(event.target.value)}
             type="number" disabled={!canTrade} />
+        </Grid>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
           <TextField fullWidth label="Take Profit" value={takeProfit} onChange={(event) => setTakeProfit(event.target.value)}
             type="number" disabled={!canTrade} />
-        </Stack>
-        <Button type="submit" variant="contained" color={side === "BUY" ? "success" : "error"}
+        </Grid>
+        <Grid size={{ xs: 12, md: 6 }}><Button fullWidth type="submit" variant="contained" color={side === "BUY" ? "success" : "error"}
           disabled={!canTrade || isSubmitting || Number(quantity) <= 0 || (type !== "MARKET" && Number(price) <= 0)}>
           {isSubmitting ? "Отправляем…" : `${side} ${selectedSymbol}`}
-        </Button>
-      </Stack>
+        </Button></Grid>
+      </Grid>
     </Paper>
   );
 }

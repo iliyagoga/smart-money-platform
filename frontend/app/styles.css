@@ -8,6 +8,12 @@ body {
   min-width: 320px;
 }
 
+html,
+body {
+  max-width: 100%;
+  overflow-x: clip;
+}
+
 ::selection {
   background: color-mix(in srgb, currentColor 18%, transparent);
 }
@@ -28,10 +34,6 @@ body {
   font-weight: 700;
   letter-spacing: 0.18em;
 }
-
-body { min-width: 320px; }
-
-:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
 
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }

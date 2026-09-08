@@ -432,7 +432,7 @@ export default function BacktestPage() {
     }
   };
 
-  return <SectionPage wide title="Бэктест" description="Проверка торговых стратегий на исторических данных без отправки ордеров.">
+  return <SectionPage title="Бэктест" description="Проверка торговых стратегий на исторических данных без отправки ордеров.">
     <Paper variant="outlined" sx={{ mb: 2, px: { xs: 1, md: 2 }, bgcolor: "background.paper" }}>
       <Tabs value={workspaceTab} onChange={(_,value) => setWorkspaceTab(value)} variant="scrollable" scrollButtons="auto">
         <Tab label="1. Данные" /><Tab label="2. Настройка и запуск" />
