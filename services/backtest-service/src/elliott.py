@@ -6,6 +6,7 @@ from statistics import mean, pstdev
 from uuid import NAMESPACE_URL, uuid5
 
 from .models import BacktestConfig, DirectionMode, ElliottEntryModel, ElliottMacroFilter
+from .performance import extended_performance
 
 TIMEFRAME_MILLISECONDS = {
     "M1": 60_000, "M5": 300_000, "M15": 900_000, "M30": 1_800_000,
@@ -776,6 +777,7 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
                                            / float(evaluation_entry[0]["close"]) - 1) * 100
                                           if evaluation_entry else 0),
             "trades": trades, "equity": equity, "decisions": [], "scenarios": [],
+            **extended_performance(config.initial_capital, capital, equity),
             "chart_candles": entry[-50000:],
             "chart_candles_by_timeframe": {key: sorted(value, key=lambda item: item["timestamp"])[-50000:] for key, value in candles_by_tf.items()},
             "elliott_patterns": serialized,

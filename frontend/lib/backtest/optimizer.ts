@@ -8,7 +8,7 @@ export type OptimizerKey = "entryModel" | "directionMode" | "atrPeriod" | "zigza
   | "volumeExpansionRatio" | "volumeExpansionMinBodyRatio" | "chochMinAtr"
   | "chochMinBodyRatio" | "adxPeriod" | "adxMin" | "requireDiConfirmation"
   | "stopBufferAtr" | "minimumRr" | "takeProfitCount" | "takeProfitRr"
-  | "secondTakeProfitRr" | "firstTakeAction" | "initialCapital" | "useMargin"
+  | "secondTakeProfitRr" | "firstTakeAction" | "useMargin"
   | "reinvestProfits" | "leverage" | "riskPerTradePercent";
 
 type Parameter = {
@@ -20,6 +20,8 @@ type Parameter = {
 
 const quarterSteps = (minimum: number, maximum: number) =>
   Array.from({ length: Math.round((maximum - minimum) / .25) + 1 }, (_, index) => minimum + index * .25);
+const halfSteps = (minimum: number, maximum: number) =>
+  Array.from({ length: Math.round((maximum - minimum) / .5) + 1 }, (_, index) => minimum + index * .5);
 
 const entryModels: ElliottSettings["entryModel"][] = [
   "CHOCH_MARKET", "CHOCH_RETRACE", "WAVE1_BREAK_RETRACE", "WAVE1_BREAK_MARKET",
@@ -60,25 +62,25 @@ export const OPTIMIZER_PARAMETERS: readonly Parameter[] = [
   { key: "adxMin", label: "Минимальный ADX", values: [0, 10, 15, 20, 25, 30, 40, 50] },
   { key: "requireDiConfirmation", label: "Подтверждение +DI/-DI", values: [false, true] },
   { key: "stopBufferAtr", label: "Буфер стопа, ATR", values: [0, .1, .2, .25, .5, .75, 1, 1.5, 2, 3, 5, 10] },
-  { key: "minimumRr", label: "Минимальный RR", values: [.5, 1, 1.5, 2, 3, 4, 5, 8, 10] },
+  { key: "minimumRr", label: "Минимальный RR", values: halfSteps(.5, 5) },
   { key: "takeProfitCount", label: "Количество тейков", values: [1, 2] },
-  { key: "takeProfitRr", label: "TP1, RR", values: [.5, 1, 1.5, 2, 3, 4, 5, 8, 10] },
-  { key: "secondTakeProfitRr", label: "TP2, RR", values: [1, 1.5, 2, 3, 4, 5, 8, 10, 20], applies: (settings) => settings.elliott.takeProfitCount === 2 },
+  { key: "takeProfitRr", label: "TP1, RR", values: halfSteps(.5, 5) },
+  { key: "secondTakeProfitRr", label: "TP2, RR", values: halfSteps(.5, 5), applies: (settings) => settings.elliott.takeProfitCount === 2 },
   { key: "firstTakeAction", label: "Действие на TP1", values: ["PARTIAL_CLOSE", "MOVE_TO_BREAK_EVEN"], applies: (settings) => settings.elliott.takeProfitCount === 2 },
-  { key: "initialCapital", label: "Начальный капитал", values: [100, 500, 1_000, 5_000, 10_000, 25_000, 50_000, 100_000, 1_000_000] },
+  // Risk is evaluated before leverage because leverage may not exceed the selected risk percentage.
+  { key: "riskPerTradePercent", label: "Риск на сделку, %", values: [1, 2, 3, 4, 5] },
   { key: "useMargin", label: "Режим позиции", values: [false, true] },
   { key: "reinvestProfits", label: "Реинвестирование прибыли", values: [false, true] },
-  { key: "leverage", label: "Плечо", values: [1, 2, 3, 5, 10, 20, 50, 100], applies: (settings) => settings.elliott.useMargin },
-  { key: "riskPerTradePercent", label: "Риск на сделку, %", values: [0, .25, .5, 1, 1.5, 2, 3, 5, 10] },
+  { key: "leverage", label: "Плечо и маржа", values: [1, 2, 3, 4, 5] },
 ] as const;
 
-const rootKeys = new Set<OptimizerKey>(["directionMode", "initialCapital", "leverage", "riskPerTradePercent"]);
+const rootKeys = new Set<OptimizerKey>(["directionMode", "leverage", "riskPerTradePercent"]);
 const stringKeys = new Set<OptimizerKey>(["entryModel", "directionMode", "firstTakeAction"]);
 const booleanKeys = new Set<OptimizerKey>(["requireDiConfirmation", "useMargin", "reinvestProfits"]);
 
 export function getOptimizerValue(settings: BacktestSettings, key: OptimizerKey): string {
   return String(rootKeys.has(key)
-    ? settings[key as "initialCapital"]
+    ? settings[key as "directionMode" | "leverage" | "riskPerTradePercent"]
     : settings.elliott[key as keyof ElliottSettings]);
 }
 
@@ -89,6 +91,9 @@ export function setOptimizerValue(settings: BacktestSettings, key: OptimizerKey,
   const updated = rootKeys.has(key)
     ? { ...settings, [key]: value } as BacktestSettings
     : { ...settings, elliott: { ...settings.elliott, [key]: value } as ElliottSettings };
+  if (key === "leverage" && Number(value) > 1) {
+    return { ...updated, elliott: { ...updated.elliott, useMargin: true } };
+  }
   return updated.elliott.useMargin ? updated : { ...updated, leverage: 1 };
 }
 
@@ -120,6 +125,7 @@ export function validOptimizerSettings(settings: BacktestSettings): boolean {
   return settings.initialCapital > 0
     && settings.leverage >= 1
     && settings.riskPerTradePercent >= 0
+    && (!elliott.useMargin || settings.leverage <= settings.riskPerTradePercent)
     && timeframeRank[elliott.entryTimeframe] < timeframeRank[elliott.structureTimeframe]
     && timeframeRank[elliott.structureTimeframe] < timeframeRank[elliott.macroTimeframe]
     && elliott.wave2MinRetracement < elliott.wave2MaxRetracement
@@ -129,6 +135,7 @@ export function validOptimizerSettings(settings: BacktestSettings): boolean {
 
 export interface ResultAssessment {
   curveScore: number;
+  curveDeviationPercent: number;
   lateSlowdown: number;
   losingMonths: number;
   profitFactor: number;
@@ -138,6 +145,18 @@ export interface ResultAssessment {
   hasTrades: boolean;
   profitable: boolean;
 }
+
+export interface OptimizationRequirements {
+  minimumTrades: number;
+  minimumProfitPercent: number;
+  maximumLosingMonths: number;
+}
+
+export const DEFAULT_OPTIMIZATION_REQUIREMENTS: OptimizationRequirements = {
+  minimumTrades: 3,
+  minimumProfitPercent: 0,
+  maximumLosingMonths: 2,
+};
 
 const clamp = (value: number, minimum = 0, maximum = 1) => Math.min(maximum, Math.max(minimum, value));
 
@@ -156,29 +175,32 @@ function countLosingMonths(result: BacktestResult): number {
 }
 
 export function assessResult(result: BacktestResult): ResultAssessment {
-  const equity = [...result.equity]
-    .sort((left, right) => left.timestamp - right.timestamp)
-    .map((point) => point.equity);
+  const points = [...result.equity].sort((left, right) => left.timestamp - right.timestamp);
+  const equity = points.map((point) => point.equity);
   const values = [result.initialCapital, ...equity];
-  let upwardMovement = 0;
-  let downwardMovement = 0;
-  let peak = values[0] || 1;
-  let underwaterPoints = 0;
-  for (let index = 1; index < values.length; index += 1) {
-    const change = (values[index] - values[index - 1]) / Math.max(Math.abs(values[index - 1]), 1e-12);
-    if (change >= 0) upwardMovement += change;
-    else downwardMovement += Math.abs(change);
-    peak = Math.max(peak, values[index]);
-    if (values[index] < peak) underwaterPoints += 1;
-  }
+  const endingCapital = values.at(-1) ?? result.finalCapital;
+  const totalMove = endingCapital - result.initialCapital;
+  const inferredStep = points.length > 1 ? points[1].timestamp - points[0].timestamp : 1;
+  const startTime = result.dataset?.testFrom ?? ((points[0]?.timestamp ?? 1) - inferredStep);
+  const endTime = result.dataset?.testTo ?? points.at(-1)?.timestamp ?? startTime + 1;
+  const duration = Math.max(1, endTime - startTime);
+  const capitalScale = Math.max(Math.abs(totalMove), Math.abs(result.initialCapital) * .01, 1e-12);
+  const normalizedEnd = totalMove / capitalScale;
+  const lineLength = Math.sqrt(1 + normalizedEnd ** 2);
+  const perpendicularDistances = points.map((point) => {
+    const normalizedTime = clamp((point.timestamp - startTime) / duration);
+    const normalizedCapital = (point.equity - result.initialCapital) / capitalScale;
+    return Math.abs(normalizedEnd * normalizedTime - normalizedCapital) / lineLength;
+  });
+  const rootMeanSquaredDistance = Math.sqrt(
+    perpendicularDistances.reduce((sum, distance) => sum + distance ** 2, 0)
+      / Math.max(1, perpendicularDistances.length),
+  );
+  const curveDeviationPercent = rootMeanSquaredDistance * 100;
+  const curveScore = Math.exp(-.5 * (rootMeanSquaredDistance / .1) ** 2) * 100;
   const netGrowth = values.length > 1
     ? (values.at(-1)! - values[0]) / Math.max(Math.abs(values[0]), 1e-12)
     : result.totalReturnPercent / 100;
-  const pathEfficiency = netGrowth > 0
-    ? clamp(netGrowth / Math.max(upwardMovement + downwardMovement, 1e-12))
-    : 0;
-  const drawdownQuality = Math.exp(-Math.max(0, result.maxDrawdownPercent) / 15);
-  const aboveWaterQuality = values.length > 1 ? 1 - underwaterPoints / (values.length - 1) : 0;
   const recentStart = Math.max(0, Math.floor((values.length - 1) * 2 / 3));
   const overallPerStep = netGrowth / Math.max(1, values.length - 1);
   const recentGrowth = values.length > 1
@@ -186,14 +208,12 @@ export function assessResult(result: BacktestResult): ResultAssessment {
     : 0;
   const recentPerStep = recentGrowth / Math.max(1, values.length - 1 - recentStart);
   const lateSlowdown = overallPerStep > 0 ? clamp((overallPerStep - recentPerStep) / overallPerStep) : 0;
-  const curveScore = clamp(
-    .45 * pathEfficiency + .35 * drawdownQuality + .2 * aboveWaterQuality - .05 * lateSlowdown,
-  ) * 100;
   const hasTrades = result.totalTrades > 0;
   const profitable = hasTrades && result.totalReturnPercent > 0;
   const profitFactor = result.profitFactor ?? (profitable ? Number.POSITIVE_INFINITY : 0);
   return {
     curveScore,
+    curveDeviationPercent,
     lateSlowdown,
     losingMonths: countLosingMonths(result),
     profitFactor,
@@ -210,26 +230,47 @@ const compareNumber = (left: number, right: number, tolerance = 1e-9) => {
   return left > right ? 1 : -1;
 };
 
+export function meetsOptimizationRequirements(
+  result: BacktestResult,
+  requirements: OptimizationRequirements,
+): boolean {
+  return result.totalTrades >= requirements.minimumTrades
+    && result.totalReturnPercent >= requirements.minimumProfitPercent
+    && countLosingMonths(result) <= requirements.maximumLosingMonths;
+}
+
 export function compareResults(left: BacktestResult, right: BacktestResult): number {
   const a = assessResult(left);
   const b = assessResult(right);
   const comparisons = [
-    compareNumber(Number(a.hasTrades), Number(b.hasTrades)),
-    compareNumber(Number(a.profitable), Number(b.profitable)),
-    compareNumber(a.curveScore, b.curveScore, .05),
     compareNumber(a.totalReturnPercent, b.totalReturnPercent),
-    compareNumber(a.profitFactor, b.profitFactor),
+    compareNumber(a.curveScore, b.curveScore, .05),
     compareNumber(-a.losingMonths, -b.losingMonths),
+    compareNumber(a.profitFactor, b.profitFactor),
     compareNumber(a.winRate, b.winRate),
     compareNumber(a.sharpeRatio, b.sharpeRatio),
   ];
   return comparisons.find((comparison) => comparison !== 0) ?? 0;
 }
 
-export function isGoodStageResult(candidate: BacktestResult, baseline: BacktestResult): boolean {
+export function isBetterEligibleResult(
+  candidate: BacktestResult,
+  current: BacktestResult,
+  requirements: OptimizationRequirements,
+): boolean {
+  if (!meetsOptimizationRequirements(candidate, requirements)) return false;
+  if (!meetsOptimizationRequirements(current, requirements)) return true;
+  return compareResults(candidate, current) > 0;
+}
+
+export function isGoodStageResult(
+  candidate: BacktestResult,
+  baseline: BacktestResult,
+  requirements: OptimizationRequirements = DEFAULT_OPTIMIZATION_REQUIREMENTS,
+): boolean {
+  if (!isBetterEligibleResult(candidate, baseline, requirements)) return false;
   const assessment = assessResult(candidate);
-  return compareResults(candidate, baseline) > 0
-    && assessment.profitable
+  return assessment.profitable
     && assessment.curveScore >= 60
     && candidate.maxDrawdownPercent <= 25;
 }

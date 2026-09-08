@@ -19,16 +19,18 @@ import {
 import { useMemo, useState } from "react";
 import {
   assessResult,
-  compareResults,
+  DEFAULT_OPTIMIZATION_REQUIREMENTS,
   explorationValues,
   getOptimizerValue,
+  isBetterEligibleResult,
   isGoodStageResult,
+  meetsOptimizationRequirements,
   OPTIMIZER_PARAMETERS,
   parameterApplies,
   setOptimizerValue,
   validOptimizerSettings,
 } from "../../lib/backtest/optimizer";
-import type { OptimizerKey, ResultAssessment } from "../../lib/backtest/optimizer";
+import type { OptimizationRequirements, OptimizerKey, ResultAssessment } from "../../lib/backtest/optimizer";
 import type { BacktestResult, BacktestSettings } from "../../lib/backtest/types";
 
 type Period = { from: string; to: string };
@@ -39,6 +41,8 @@ type FinalResult = {
   assessment: ResultAssessment;
   acceptedChanges: string[];
   attempts: number;
+  requirements: OptimizationRequirements;
+  passedRequirements: boolean;
 };
 
 const timeframeOptions: Record<TimeframeKey, string[]> = {
@@ -75,6 +79,7 @@ interface Props {
     period: Period,
     asset: string,
     timeframes: string[],
+    persistResult?: boolean,
   ) => Promise<BacktestResult>;
 }
 
@@ -92,6 +97,13 @@ export function BacktestOptimizer({
     entryTimeframe: settings.elliott.entryTimeframe,
   });
   const [excluded, setExcluded] = useState<OptimizerKey[]>([]);
+  const [minimumTrades, setMinimumTrades] = useState(DEFAULT_OPTIMIZATION_REQUIREMENTS.minimumTrades);
+  const [minimumProfitPercent, setMinimumProfitPercent] = useState(
+    DEFAULT_OPTIMIZATION_REQUIREMENTS.minimumProfitPercent,
+  );
+  const [maximumLosingMonths, setMaximumLosingMonths] = useState(
+    DEFAULT_OPTIMIZATION_REQUIREMENTS.maximumLosingMonths,
+  );
   const [running, setRunning] = useState(false);
   const [stage, setStage] = useState("Ожидание запуска");
   const [completedStages, setCompletedStages] = useState(0);
@@ -128,6 +140,11 @@ export function BacktestOptimizer({
     setAttempts(0);
     setCompletedStages(0);
     setTotalStages(activeParameters.length);
+    const requirements: OptimizationRequirements = {
+      minimumTrades,
+      minimumProfitPercent,
+      maximumLosingMonths,
+    };
     try {
       let currentSettings = selectedSettings;
       let runCount = 0;
@@ -160,18 +177,19 @@ export function BacktestOptimizer({
           );
           runCount += 1;
           setAttempts(runCount);
-          if (compareResults(candidateResult, stageResult) > 0) {
+          if (!meetsOptimizationRequirements(candidateResult, requirements)) continue;
+          if (isBetterEligibleResult(candidateResult, stageResult, requirements)) {
             stageSettings = candidateSettings;
             stageResult = candidateResult;
           }
-          if (isGoodStageResult(candidateResult, baselineResult)) {
+          if (isGoodStageResult(candidateResult, baselineResult, requirements)) {
             stageSettings = candidateSettings;
             stageResult = candidateResult;
-            break;
+            if (parameter.key !== "riskPerTradePercent" && parameter.key !== "leverage") break;
           }
         }
 
-        if (compareResults(stageResult, baselineResult) > 0) {
+        if (isBetterEligibleResult(stageResult, baselineResult, requirements)) {
           changes.push(
             `${parameter.label}: ${displayValue(getOptimizerValue(baselineSettings, parameter.key))}`
             + ` → ${displayValue(getOptimizerValue(stageSettings, parameter.key))}`,
@@ -188,6 +206,7 @@ export function BacktestOptimizer({
         { from: testFrom, to: testTo },
         initialAsset,
         selectedTimeframes,
+        true,
       );
       runCount += 1;
       setAttempts(runCount);
@@ -197,6 +216,8 @@ export function BacktestOptimizer({
         assessment: assessResult(result),
         acceptedChanges: changes,
         attempts: runCount,
+        requirements,
+        passedRequirements: meetsOptimizationRequirements(result, requirements),
       });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -210,8 +231,8 @@ export function BacktestOptimizer({
       <Typography variant="h5">Последовательный перебор параметров Elliott</Typography>
       <Alert severity="info" sx={{ my: 2 }}>
         Поиск начинает с текущих значений обычного бэктеста. Для каждого параметра он проверяет значения
-        сначала вниз от исходного, затем вверх и переходит дальше при первом хорошем улучшении.
-        Модель входа проверяется первой.
+        сначала вниз от исходного, затем вверх. Сначала результат фильтруется по обязательным условиям;
+        только после этого оценивается его кривая и остальные метрики. Модель входа проверяется первой.
       </Alert>
       <Alert severity="warning" sx={{ mb: 2 }}>
         Комиссии, funding, проскальзывание, задержка и биржевые ограничения берутся из основной формы
@@ -262,11 +283,56 @@ export function BacktestOptimizer({
       </FormControl>
 
       <Paper variant="outlined" sx={{ p: 2, mt: 2 }}>
+        <Typography variant="subtitle2" sx={{ mb: 1.5 }}>Обязательные условия результата</Typography>
+        <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
+          <TextField
+            fullWidth
+            type="number"
+            disabled={running}
+            label="Минимум сделок"
+            value={minimumTrades}
+            slotProps={{ htmlInput: { min: 1, step: 1 } }}
+            onChange={(event) => setMinimumTrades(Math.max(1, Math.floor(Number(event.target.value) || 1)))}
+          />
+          <TextField
+            fullWidth
+            type="number"
+            disabled={running}
+            label="Минимальная прибыль, %"
+            value={minimumProfitPercent}
+            slotProps={{ htmlInput: { step: .1 } }}
+            onChange={(event) => setMinimumProfitPercent(Number(event.target.value) || 0)}
+          />
+          <TextField
+            fullWidth
+            type="number"
+            disabled={running}
+            label="Максимум убыточных месяцев"
+            value={maximumLosingMonths}
+            slotProps={{ htmlInput: { min: 0, step: 1 } }}
+            onChange={(event) => setMaximumLosingMonths(Math.max(0, Math.floor(Number(event.target.value) || 0)))}
+          />
+        </Stack>
+        <FormHelperText sx={{ mt: 1 }}>
+          Вариант, который не проходит хотя бы одно условие, не считается хорошим даже при высокой оценке кривой.
+        </FormHelperText>
+      </Paper>
+
+      <Paper variant="outlined" sx={{ p: 2, mt: 2 }}>
         <Typography variant="subtitle2">Как выбирается результат</Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mt: .5 }}>
-          Решающая оценка equity-кривой учитывает глубину просадок, движение вниз и время ниже максимума.
-          Замедление в конце снижает оценку умеренно; резкий рост вверх не считается недостатком.
-          Затем сравниваются прибыль, Profit Factor, убыточные месяцы, Win Rate и Sharpe Ratio.
+          После обязательного фильтра главным критерием является итоговая прибыль. Затем оценивается
+          equity-кривая. Время и капитал нормализуются, после чего для каждой точки считается
+          перпендикулярное расстояние до прямой между началом и концом. Используется среднеквадратичное
+          расстояние RMSE, поэтому крупные отклонения штрафуются сильнее. Score рассчитывается по
+          гауссовой формуле 100 × exp(−0.5 × (RMSE / 0.1)²). Следом сравниваются убыточные месяцы,
+          Profit Factor, Win Rate и Sharpe Ratio.
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mt: .5 }}>
+          Риск на сделку, режим без маржи/с маржой и размер плеча также перебираются автоматически.
+          Риск и плечо перебираются от 1 до 5; плечо не может превышать риск. Для них проверяется весь
+          диапазон, чтобы выбрать максимальную прибыль. Начальный капитал остаётся таким, как в основной
+          форме. RR перебирается от 0.5 до 5 с шагом 0.5.
         </Typography>
         <Typography variant="body2" sx={{ mt: 1 }}>
           Перебор: {searchPeriod.from}–{searchPeriod.to}. Итоговая проверка: {testFrom}–{testTo}.
@@ -300,12 +366,28 @@ export function BacktestOptimizer({
       <Typography variant="body2" color="text.secondary" sx={{ mt: .5 }}>
         Получен за {finalResult.attempts} запусков. Метрики рассчитаны на всём выбранном периоде.
       </Typography>
+      <Alert severity={finalResult.passedRequirements ? "success" : "error"} sx={{ mt: 2 }}>
+        {finalResult.passedRequirements
+          ? "Итоговая оценка: хороший вариант — все обязательные условия выполнены."
+          : "Итоговая оценка: условия не выполнены. Это лучший найденный вариант, но он не считается хорошим."}
+      </Alert>
       <Stack direction={{ xs: "column", md: "row" }} spacing={2} sx={{ mt: 2, flexWrap: "wrap" }}>
-        <Typography>Прибыль: {finalResult.result.netProfit.toFixed(2)} ({finalResult.result.totalReturnPercent.toFixed(2)}%)</Typography>
-        <Typography>Кривая: {finalResult.assessment.curveScore.toFixed(1)}/100</Typography>
+        <Typography>
+          Сделок: {finalResult.result.totalTrades} / минимум {finalResult.requirements.minimumTrades}
+        </Typography>
+        <Typography>
+          Прибыль: {finalResult.result.netProfit.toFixed(2)} ({finalResult.result.totalReturnPercent.toFixed(2)}%)
+          {` / минимум ${finalResult.requirements.minimumProfitPercent.toFixed(2)}%`}
+        </Typography>
+        <Typography>
+          Кривая: {finalResult.assessment.curveScore.toFixed(1)}/100
+          {` · отклонение ${finalResult.assessment.curveDeviationPercent.toFixed(1)}%`}
+        </Typography>
         <Typography>Max DD: {finalResult.result.maxDrawdownPercent.toFixed(2)}%</Typography>
         <Typography>Profit Factor: {formatFactor(finalResult.assessment.profitFactor)}</Typography>
-        <Typography>Убыточных месяцев: {finalResult.assessment.losingMonths}</Typography>
+        <Typography>
+          Убыточных месяцев: {finalResult.assessment.losingMonths} / максимум {finalResult.requirements.maximumLosingMonths}
+        </Typography>
         <Typography>Win Rate: {finalResult.result.winRate.toFixed(1)}%</Typography>
         <Typography>Sharpe: {(finalResult.result.sharpeRatio ?? 0).toFixed(2)}</Typography>
       </Stack>

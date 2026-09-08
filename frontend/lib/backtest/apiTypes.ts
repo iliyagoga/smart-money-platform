@@ -1,4 +1,5 @@
 import type { BacktestResult, BacktestTrade, EquityPoint } from "./types";
+import { extendedPerformance } from "./performance";
 
 export interface BacktestRunSummary {
   id: string;
@@ -66,6 +67,13 @@ export interface BackendBacktestResult {
   average_trade: number;
   sharpe_ratio: number;
   benchmark_return_percent: number;
+  average_monthly_return_percent?: number;
+  annualized_return_percent?: number;
+  losing_months?: number;
+  losing_months_percent?: number;
+  average_losing_month_percent?: number;
+  equity_curve_r_squared?: number;
+  recovery_factor?: number;
   trades: BackendTrade[];
   equity: BackendEquityPoint[];
   request_config?: SavedBacktestRequest;
@@ -137,6 +145,7 @@ export function mapBacktestResult(result: BackendBacktestResult): BacktestResult
     reason: trade.reason,
   }));
   const equity: EquityPoint[] = result.equity;
+  const calculated = extendedPerformance(result.initial_capital, result.final_capital, equity);
   return {
     initialCapital: result.initial_capital,
     finalCapital: result.final_capital,
@@ -149,6 +158,13 @@ export function mapBacktestResult(result: BackendBacktestResult): BacktestResult
     averageTrade: result.average_trade,
     sharpeRatio: result.sharpe_ratio,
     benchmarkReturnPercent: result.benchmark_return_percent,
+    averageMonthlyReturnPercent: result.average_monthly_return_percent ?? calculated.averageMonthlyReturnPercent,
+    annualizedReturnPercent: result.annualized_return_percent ?? calculated.annualizedReturnPercent,
+    losingMonths: result.losing_months ?? calculated.losingMonths,
+    losingMonthsPercent: result.losing_months_percent ?? calculated.losingMonthsPercent,
+    averageLosingMonthPercent: result.average_losing_month_percent ?? calculated.averageLosingMonthPercent,
+    equityCurveRSquared: result.equity_curve_r_squared ?? calculated.equityCurveRSquared,
+    recoveryFactor: result.recovery_factor ?? calculated.recoveryFactor,
     trades,
     equity,
     dataset: result.dataset ? {

@@ -101,6 +101,13 @@ export interface BacktestResult {
   averageTrade: number;
   sharpeRatio?: number;
   benchmarkReturnPercent?: number;
+  averageMonthlyReturnPercent: number;
+  annualizedReturnPercent: number;
+  losingMonths: number;
+  losingMonthsPercent: number;
+  averageLosingMonthPercent: number;
+  equityCurveRSquared: number;
+  recoveryFactor?: number;
   trades: BacktestTrade[];
   equity: EquityPoint[];
   dataset?: {
