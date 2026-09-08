@@ -184,7 +184,7 @@ export default function BacktestPage() {
     onProgress?: (value: number) => void,
     runAsset = selectedAsset,
     runTimeframes = selectedTimeframes,
-    summary = false,
+    persistResult = true,
   ): Promise<BacktestResult> => {
     const periodMilliseconds = Math.max(
       0,
@@ -270,9 +270,12 @@ export default function BacktestPage() {
       });
       let completed: BacktestRun | undefined;
       for (let attempt = 0; attempt < 3_600; attempt += 1) {
-        const current = await api<BacktestRun>(`/api/v1/backtest/backtests/${created.id}${summary ? "?summary=true" : ""}`);
+        const current = await api<BacktestRun>(`/api/v1/backtest/backtests/${created.id}`);
         onProgress?.(current.progress);
-        if (current.status === "FAILED") throw new Error(current.error ?? "Бэктест завершился с ошибкой");
+        if (current.status === "FAILED") {
+          if (!persistResult) await api(`/api/v1/backtest/backtests/${created.id}`, { method: "DELETE" });
+          throw new Error(current.error ?? "Бэктест завершился с ошибкой");
+        }
         if (current.status === "COMPLETED") {
           completed = current;
           break;
@@ -280,7 +283,9 @@ export default function BacktestPage() {
         await new Promise((resolve) => window.setTimeout(resolve, 1_000));
       }
       if (!completed?.result) throw new Error("Расчёт выполняется дольше часа. Его результат останется в истории запусков.");
-      return mapBacktestResult(completed.result);
+      const mapped = mapBacktestResult(completed.result);
+      if (!persistResult) await api(`/api/v1/backtest/backtests/${created.id}`, { method: "DELETE" });
+      return mapped;
     } finally { /* the caller owns its loading state */ }
   };
 
@@ -553,17 +558,16 @@ export default function BacktestPage() {
       p: { xs: 1, md: 2 }, borderRadius: 2, bgcolor: "action.hover",
     }}>
       <BacktestOptimizer
+        key={`${selectedAsset}:${testFrom}:${testTo}:${JSON.stringify(settings)}`}
         settings={settings}
-        assets={assets}
         initialAsset={selectedAsset}
-        initialTimeframes={selectedTimeframes}
         testFrom={testFrom}
         testTo={testTo}
-        runCandidate={async (candidateSettings, period, optimizerAsset, optimizerTimeframes, summary) => {
+        runCandidate={async (candidateSettings, period, optimizerAsset, optimizerTimeframes, persistResult = false) => {
           const candidateResult = await executeBacktest(
-            candidateSettings, period, undefined, optimizerAsset, optimizerTimeframes, summary,
+            candidateSettings, period, undefined, optimizerAsset, optimizerTimeframes, persistResult,
           );
-          runsResource.reload();
+          if (persistResult) runsResource.reload();
           return candidateResult;
         }}
         onApply={(candidateSettings, candidateResult) => {

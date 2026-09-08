@@ -16,7 +16,7 @@ const navigation = [
   { label: "Replay", href: "/replay" },
 ];
 
-interface DashboardHeaderProps { isLive: boolean; username: string }
+interface DashboardHeaderProps { isLive?: boolean; username: string }
 
 export function DashboardHeader({ isLive, username }: DashboardHeaderProps) {
   const [isLoggingOut, setIsLoggingOut] = useState(false);
@@ -54,16 +54,16 @@ export function DashboardHeader({ isLive, username }: DashboardHeaderProps) {
           </Box>
           <Typography sx={{ display: { xs: "none", sm: "block" }, fontWeight: 700 }}>Elliott Wave</Typography>
         </Stack>
-        <Stack component="nav" direction="row" spacing={0.5} sx={{ display: { xs: "none", lg: "flex" } }}>
+        <Stack component="nav" direction="row" spacing={0.5} sx={{ display: { xs: "none", xl: "flex" } }}>
           {navigation.map((item) => (
-            <Button component={Link} href={item.href} key={item.label} color={pathname === item.href ? "primary" : "secondary"} size="small">
+            <Button component={Link} href={item.href} aria-current={pathname === item.href ? "page" : undefined} key={item.label} color={pathname === item.href ? "primary" : "secondary"} size="small">
               {item.label}
             </Button>
           ))}
         </Stack>
         <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-          <IconButton onClick={() => setIsMenuOpen(true)} aria-label="Открыть меню" sx={{ display: { lg: "none" } }}>☰</IconButton>
-          <Chip icon={<StatusDot active={isLive} />} label={isLive ? "Live" : "Подключение"} size="small" variant="outlined" />
+          <IconButton onClick={() => setIsMenuOpen(true)} aria-label="Открыть меню" sx={{ display: { xl: "none" } }}>☰</IconButton>
+          {isLive !== undefined && <Chip icon={<StatusDot active={isLive} />} label={isLive ? "Live" : "Подключение"} size="small" variant="outlined" />}
           <Typography variant="caption" sx={{ display: { xs: "none", md: "block" }, maxWidth: 130 }} noWrap>{username}</Typography>
           <Tooltip title={mode === "light" ? "Включить тёмную тему" : "Включить светлую тему"}>
             <IconButton onClick={toggleColorMode} aria-label="Переключить цветовую тему" size="small">
@@ -84,6 +84,7 @@ export function DashboardHeader({ isLive, username }: DashboardHeaderProps) {
             <Button
               component={Link}
               href={item.href}
+              aria-current={pathname === item.href ? "page" : undefined}
               key={item.label}
               onClick={() => setIsMenuOpen(false)}
               variant={pathname === item.href ? "contained" : "text"}

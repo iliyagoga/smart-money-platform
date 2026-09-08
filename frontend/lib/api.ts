@@ -15,7 +15,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
   if (!response.ok) {
     const detail = await response.text();
-    throw new Error(detail || `Сервис вернул ошибку ${response.status}`);
+    throw new Error(detail ? `${response.status}: ${detail}` : `Сервис вернул ошибку ${response.status}`);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;

@@ -54,3 +54,8 @@ docker-data/
 *.key
 *.crt
 secrets/
+
+# Build and browser test output
+target/
+playwright-report/
+test-results/

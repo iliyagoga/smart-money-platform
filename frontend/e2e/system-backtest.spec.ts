@@ -17,8 +17,6 @@ test("admin loads real candles and sees a completed backtest report", async ({ p
   await page.getByRole("button", { name: /Sign In|Войти/ }).click();
   await page.goto("/backtest");
 
-  await page.getByLabel("Обучение: начало").fill("2025-08-01");
-  await page.getByLabel("Обучение: конец").fill("2025-08-07");
   await page.getByLabel("Бэктест: начало").fill("2025-08-08");
   await page.getByLabel("Бэктест: конец").fill("2025-08-14");
   await page.waitForTimeout(2_000);

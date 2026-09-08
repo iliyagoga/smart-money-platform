@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from math import ceil, floor, sqrt
 from statistics import mean, pstdev
-from .performance import extended_performance
 from uuid import NAMESPACE_URL, uuid5
 
 from .models import BacktestConfig, DirectionMode, ElliottEntryModel, ElliottMacroFilter
+from .performance import extended_performance
 
 TIMEFRAME_MILLISECONDS = {
     "M1": 60_000, "M5": 300_000, "M15": 900_000, "M30": 1_800_000,
@@ -436,7 +436,7 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
             return
         trades.append({**position, "id": len(trades) + 1, "exit_time": timestamp, "exit_price": exit_price,
                        # Report return on position margin, consistently with
-                       # portfolio reports (not return on risk budget).
+                       # indicator and SMC replays (not return on risk budget).
                        "pnl": position["realized"],
                        "pnl_percent": position["realized"] / max(
                            position["entry_price"] * position["quantity"] / (config.leverage if ec.use_margin else 1), 1e-12,
@@ -681,8 +681,10 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
                     config.risk_per_trade_percent, config.position_size_percent,
                     ec.use_margin, config.leverage, ec.reinvest_profits, config.lot_size,
                 )
+                quantity = min(quantity, float(candle.get("volume", 0)) * config.volume_participation_percent / 100)
+                quantity = floor(quantity / config.lot_size) * config.lot_size
                 risk_capital = risk * quantity
-                if quantity > 0:
+                if quantity >= config.minimum_order_size:
                     traded.add(pattern.id)
                     position = {"pattern_id": pattern.id, "direction": pattern.direction, "entry_time": timestamp,
                                 "entry_price": entry_price, "quantity": quantity, "stop": stop, "initial_stop": stop,
@@ -774,7 +776,7 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
             "benchmark_return_percent": ((float(evaluation_entry[-1]["close"])
                                            / float(evaluation_entry[0]["close"]) - 1) * 100
                                           if evaluation_entry else 0),
-            "trades": trades, "equity": equity,
+            "trades": trades, "equity": equity, "decisions": [], "scenarios": [],
             **extended_performance(config.initial_capital, capital, equity),
             "chart_candles": entry[-50000:],
             "chart_candles_by_timeframe": {key: sorted(value, key=lambda item: item["timestamp"])[-50000:] for key, value in candles_by_tf.items()},
@@ -795,6 +797,7 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
                                      "macro_filter_uses_closed_candles_only": True,
                                      "entry_uses_next_candle_open": True,
                                      "excluded_v1_patterns": ["DIAGONAL", "FLAT", "TRIANGLE", "DOUBLE_THREE", "TRIPLE_THREE"]},
+            "pattern_diagnostics": [], "template_distribution": {},
             "dataset": {
                 "candles_by_timeframe": {key: len(value) for key, value in candles_by_tf.items()},
                 "test_candles": len(evaluation_entry),

@@ -46,7 +46,7 @@ export default function Dashboard() {
     void loadDashboard();
     // На обзорной странице нужны только события, требующие внимания. Рыночный
     // поток candle/trade/orderbook остаётся на странице «Рынок».
-    const socket = new EventSocket(["scenario.*", "position.*", "model.*", "bandit.*"]);
+    const socket = new EventSocket(["scenario.*", "position.*"]);
     socket.subscribeStatus(setIsLive);
     socket.subscribe((event) => {
       setEvents((currentEvents) => [event, ...currentEvents].slice(0, 8));
@@ -57,7 +57,7 @@ export default function Dashboard() {
   }, [loadDashboard]);
 
   return (
-    <Container component="main" maxWidth={false} sx={{ maxWidth: 1500, pb: 7.5, px: { xs: 2, md: 4.75 } }}>
+    <Container component="main" maxWidth={false} sx={{ width: "100%", pb: 7.5, px: { xs: 2, md: 3, xl: 4 } }}>
       <DashboardHeader isLive={isLive} username={username} />
       <Stack id="overview" direction={{ xs: "column", md: "row" }} spacing={2.5} sx={{ py: { xs: 4, md: 6 }, justifyContent: "space-between" }}>
         <Box>
