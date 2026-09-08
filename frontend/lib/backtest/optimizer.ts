@@ -1,0 +1,235 @@
+import type { BacktestResult, BacktestSettings, ElliottSettings } from "./types";
+
+export type OptimizerKey = "entryModel" | "directionMode" | "atrPeriod" | "zigzagReversalAtr"
+  | "minSwingAtr" | "wave1MinAtr" | "wave1MinEfficiency" | "wave2MinRetracement"
+  | "wave2MaxRetracement" | "entryRetracement" | "entryExpiryBars" | "breakoutBufferAtr"
+  | "retestZoneAtr" | "displacementMinAtr" | "displacementMinBodyRatio"
+  | "displacementRetracement" | "sweepMinWickRatio" | "volatilityExpansionRatio"
+  | "volumeExpansionRatio" | "volumeExpansionMinBodyRatio" | "chochMinAtr"
+  | "chochMinBodyRatio" | "adxPeriod" | "adxMin" | "requireDiConfirmation"
+  | "stopBufferAtr" | "minimumRr" | "takeProfitCount" | "takeProfitRr"
+  | "secondTakeProfitRr" | "firstTakeAction" | "initialCapital" | "useMargin"
+  | "reinvestProfits" | "leverage" | "riskPerTradePercent";
+
+type Parameter = {
+  key: OptimizerKey;
+  label: string;
+  values: Array<string | number | boolean>;
+  applies?: (settings: BacktestSettings) => boolean;
+};
+
+const quarterSteps = (minimum: number, maximum: number) =>
+  Array.from({ length: Math.round((maximum - minimum) / .25) + 1 }, (_, index) => minimum + index * .25);
+
+const entryModels: ElliottSettings["entryModel"][] = [
+  "CHOCH_MARKET", "CHOCH_RETRACE", "WAVE1_BREAK_RETRACE", "WAVE1_BREAK_MARKET",
+  "WAVE1_BREAK_STOP", "WAVE1_BREAK_RETEST_CONFIRM", "MICRO_WAVE3", "DISPLACEMENT_RETRACE",
+  "P2_LIQUIDITY_SWEEP", "WAVE2_TRENDLINE_BREAK", "ADX_ACCELERATION",
+  "VOLATILITY_EXPANSION", "VOLUME_EXPANSION",
+];
+
+const modelIs = (...models: ElliottSettings["entryModel"][]) => (settings: BacktestSettings) =>
+  models.includes(settings.elliott.entryModel);
+
+// Entry model is intentionally first. The remaining fields follow BacktestSettingsForm.
+// Exchange costs and execution assumptions are intentionally absent from this list.
+export const OPTIMIZER_PARAMETERS: readonly Parameter[] = [
+  { key: "entryModel", label: "Модель входа", values: entryModels },
+  { key: "directionMode", label: "Направление", values: ["BOTH", "LONG", "SHORT"] },
+  { key: "atrPeriod", label: "ATR период", values: [7, 10, 14, 20, 21, 28, 50, 100, 200] },
+  { key: "zigzagReversalAtr", label: "Разворот ZigZag, ATR", values: quarterSteps(.25, 10) },
+  { key: "minSwingAtr", label: "Мин. swing, ATR", values: quarterSteps(0, 10) },
+  { key: "wave1MinAtr", label: "Wave 1 мин., ATR", values: [0, .5, 1, 1.5, 2, 3, 5, 10, 20] },
+  { key: "wave1MinEfficiency", label: "Wave 1 efficiency", values: [0, .25, .35, .45, .5, .6, .75, 1] },
+  { key: "wave2MinRetracement", label: "Wave 2 retracement от", values: [0, .236, .382, .5, .618, .786] },
+  { key: "wave2MaxRetracement", label: "Wave 2 retracement до", values: [.236, .382, .5, .618, .786, .9, .99] },
+  { key: "entryRetracement", label: "Доля импульса от CHOCH", values: [0, .236, .382, .5, .618, .786, 1], applies: modelIs("CHOCH_RETRACE") },
+  { key: "entryExpiryBars", label: "Ждать вход, свечей", values: [1, 2, 3, 4, 5, 8, 10, 15, 20, 50, 100] },
+  { key: "breakoutBufferAtr", label: "Буфер пробоя P1, ATR", values: [0, .1, .2, .3], applies: modelIs("WAVE1_BREAK_MARKET", "WAVE1_BREAK_STOP") },
+  { key: "retestZoneAtr", label: "Зона ретеста P1, ATR", values: [.1, .2, .25, .3, .4, .5], applies: modelIs("WAVE1_BREAK_RETEST_CONFIRM") },
+  { key: "displacementMinAtr", label: "Displacement, ATR", values: [.5, .75, 1, 1.25, 1.5, 2], applies: modelIs("DISPLACEMENT_RETRACE") },
+  { key: "displacementMinBodyRatio", label: "Displacement body ratio", values: [.5, .6, .65, .7, .8], applies: modelIs("DISPLACEMENT_RETRACE") },
+  { key: "displacementRetracement", label: "Откат displacement", values: [.382, .5, .618], applies: modelIs("DISPLACEMENT_RETRACE") },
+  { key: "sweepMinWickRatio", label: "Мин. тень sweep P2", values: [.3, .4, .5, .6], applies: modelIs("P2_LIQUIDITY_SWEEP") },
+  { key: "volatilityExpansionRatio", label: "Расширение ATR", values: [1.2, 1.5, 2, 2.5], applies: modelIs("VOLATILITY_EXPANSION") },
+  { key: "volumeExpansionRatio", label: "Расширение объёма", values: [1.2, 1.5, 2, 2.5, 3], applies: modelIs("VOLUME_EXPANSION") },
+  { key: "volumeExpansionMinBodyRatio", label: "Volume body ratio", values: [.5, .6, .65, .7, .8], applies: modelIs("VOLUME_EXPANSION") },
+  { key: "chochMinAtr", label: "CHOCH displacement, ATR", values: [0, .25, .5, .75, 1, 1.5, 2, 3, 5, 10] },
+  { key: "chochMinBodyRatio", label: "Мин. тело свечи", values: [0, .25, .35, .5, .6, .75, 1] },
+  { key: "adxPeriod", label: "Период ADX", values: [7, 10, 14, 20, 21, 28, 50, 100] },
+  { key: "adxMin", label: "Минимальный ADX", values: [0, 10, 15, 20, 25, 30, 40, 50] },
+  { key: "requireDiConfirmation", label: "Подтверждение +DI/-DI", values: [false, true] },
+  { key: "stopBufferAtr", label: "Буфер стопа, ATR", values: [0, .1, .2, .25, .5, .75, 1, 1.5, 2, 3, 5, 10] },
+  { key: "minimumRr", label: "Минимальный RR", values: [.5, 1, 1.5, 2, 3, 4, 5, 8, 10] },
+  { key: "takeProfitCount", label: "Количество тейков", values: [1, 2] },
+  { key: "takeProfitRr", label: "TP1, RR", values: [.5, 1, 1.5, 2, 3, 4, 5, 8, 10] },
+  { key: "secondTakeProfitRr", label: "TP2, RR", values: [1, 1.5, 2, 3, 4, 5, 8, 10, 20], applies: (settings) => settings.elliott.takeProfitCount === 2 },
+  { key: "firstTakeAction", label: "Действие на TP1", values: ["PARTIAL_CLOSE", "MOVE_TO_BREAK_EVEN"], applies: (settings) => settings.elliott.takeProfitCount === 2 },
+  { key: "initialCapital", label: "Начальный капитал", values: [100, 500, 1_000, 5_000, 10_000, 25_000, 50_000, 100_000, 1_000_000] },
+  { key: "useMargin", label: "Режим позиции", values: [false, true] },
+  { key: "reinvestProfits", label: "Реинвестирование прибыли", values: [false, true] },
+  { key: "leverage", label: "Плечо", values: [1, 2, 3, 5, 10, 20, 50, 100], applies: (settings) => settings.elliott.useMargin },
+  { key: "riskPerTradePercent", label: "Риск на сделку, %", values: [0, .25, .5, 1, 1.5, 2, 3, 5, 10] },
+] as const;
+
+const rootKeys = new Set<OptimizerKey>(["directionMode", "initialCapital", "leverage", "riskPerTradePercent"]);
+const stringKeys = new Set<OptimizerKey>(["entryModel", "directionMode", "firstTakeAction"]);
+const booleanKeys = new Set<OptimizerKey>(["requireDiConfirmation", "useMargin", "reinvestProfits"]);
+
+export function getOptimizerValue(settings: BacktestSettings, key: OptimizerKey): string {
+  return String(rootKeys.has(key)
+    ? settings[key as "initialCapital"]
+    : settings.elliott[key as keyof ElliottSettings]);
+}
+
+export function setOptimizerValue(settings: BacktestSettings, key: OptimizerKey, raw: string): BacktestSettings {
+  const value: string | number | boolean = booleanKeys.has(key)
+    ? raw === "true"
+    : stringKeys.has(key) ? raw : Number(raw);
+  const updated = rootKeys.has(key)
+    ? { ...settings, [key]: value } as BacktestSettings
+    : { ...settings, elliott: { ...settings.elliott, [key]: value } as ElliottSettings };
+  return updated.elliott.useMargin ? updated : { ...updated, leverage: 1 };
+}
+
+export function parameterApplies(parameter: Parameter, settings: BacktestSettings): boolean {
+  return parameter.applies?.(settings) ?? true;
+}
+
+export function explorationValues(parameter: Parameter, settings: BacktestSettings): string[] {
+  const current = getOptimizerValue(settings, parameter.key);
+  const values = [...new Set(parameter.values.map(String))];
+  if (!values.includes(current)) {
+    if (!Number.isNaN(Number(current)) && values.every((value) => !Number.isNaN(Number(value)))) {
+      values.push(current);
+      values.sort((left, right) => Number(left) - Number(right));
+    } else {
+      values.unshift(current);
+    }
+  }
+  const currentIndex = values.indexOf(current);
+  return [
+    ...values.slice(0, currentIndex).reverse(),
+    ...values.slice(currentIndex + 1),
+  ];
+}
+
+export function validOptimizerSettings(settings: BacktestSettings): boolean {
+  const timeframeRank: Record<string, number> = { M1: 1, M5: 5, M15: 15, M30: 30, H1: 60, H4: 240, D1: 1440 };
+  const elliott = settings.elliott;
+  return settings.initialCapital > 0
+    && settings.leverage >= 1
+    && settings.riskPerTradePercent >= 0
+    && timeframeRank[elliott.entryTimeframe] < timeframeRank[elliott.structureTimeframe]
+    && timeframeRank[elliott.structureTimeframe] < timeframeRank[elliott.macroTimeframe]
+    && elliott.wave2MinRetracement < elliott.wave2MaxRetracement
+    && elliott.takeProfitRr >= elliott.minimumRr
+    && (elliott.takeProfitCount === 1 || elliott.secondTakeProfitRr > elliott.takeProfitRr);
+}
+
+export interface ResultAssessment {
+  curveScore: number;
+  lateSlowdown: number;
+  losingMonths: number;
+  profitFactor: number;
+  totalReturnPercent: number;
+  winRate: number;
+  sharpeRatio: number;
+  hasTrades: boolean;
+  profitable: boolean;
+}
+
+const clamp = (value: number, minimum = 0, maximum = 1) => Math.min(maximum, Math.max(minimum, value));
+
+function countLosingMonths(result: BacktestResult): number {
+  const monthlyCloses = new Map<string, number>();
+  for (const point of [...result.equity].sort((left, right) => left.timestamp - right.timestamp)) {
+    monthlyCloses.set(new Date(point.timestamp).toISOString().slice(0, 7), point.equity);
+  }
+  let previous = result.initialCapital;
+  let losingMonths = 0;
+  for (const equity of monthlyCloses.values()) {
+    if (equity < previous) losingMonths += 1;
+    previous = equity;
+  }
+  return losingMonths;
+}
+
+export function assessResult(result: BacktestResult): ResultAssessment {
+  const equity = [...result.equity]
+    .sort((left, right) => left.timestamp - right.timestamp)
+    .map((point) => point.equity);
+  const values = [result.initialCapital, ...equity];
+  let upwardMovement = 0;
+  let downwardMovement = 0;
+  let peak = values[0] || 1;
+  let underwaterPoints = 0;
+  for (let index = 1; index < values.length; index += 1) {
+    const change = (values[index] - values[index - 1]) / Math.max(Math.abs(values[index - 1]), 1e-12);
+    if (change >= 0) upwardMovement += change;
+    else downwardMovement += Math.abs(change);
+    peak = Math.max(peak, values[index]);
+    if (values[index] < peak) underwaterPoints += 1;
+  }
+  const netGrowth = values.length > 1
+    ? (values.at(-1)! - values[0]) / Math.max(Math.abs(values[0]), 1e-12)
+    : result.totalReturnPercent / 100;
+  const pathEfficiency = netGrowth > 0
+    ? clamp(netGrowth / Math.max(upwardMovement + downwardMovement, 1e-12))
+    : 0;
+  const drawdownQuality = Math.exp(-Math.max(0, result.maxDrawdownPercent) / 15);
+  const aboveWaterQuality = values.length > 1 ? 1 - underwaterPoints / (values.length - 1) : 0;
+  const recentStart = Math.max(0, Math.floor((values.length - 1) * 2 / 3));
+  const overallPerStep = netGrowth / Math.max(1, values.length - 1);
+  const recentGrowth = values.length > 1
+    ? (values.at(-1)! - values[recentStart]) / Math.max(Math.abs(values[recentStart]), 1e-12)
+    : 0;
+  const recentPerStep = recentGrowth / Math.max(1, values.length - 1 - recentStart);
+  const lateSlowdown = overallPerStep > 0 ? clamp((overallPerStep - recentPerStep) / overallPerStep) : 0;
+  const curveScore = clamp(
+    .45 * pathEfficiency + .35 * drawdownQuality + .2 * aboveWaterQuality - .05 * lateSlowdown,
+  ) * 100;
+  const hasTrades = result.totalTrades > 0;
+  const profitable = hasTrades && result.totalReturnPercent > 0;
+  const profitFactor = result.profitFactor ?? (profitable ? Number.POSITIVE_INFINITY : 0);
+  return {
+    curveScore,
+    lateSlowdown,
+    losingMonths: countLosingMonths(result),
+    profitFactor,
+    totalReturnPercent: result.totalReturnPercent,
+    winRate: result.winRate,
+    sharpeRatio: result.sharpeRatio ?? 0,
+    hasTrades,
+    profitable,
+  };
+}
+
+const compareNumber = (left: number, right: number, tolerance = 1e-9) => {
+  if (Object.is(left, right) || Math.abs(left - right) <= tolerance) return 0;
+  return left > right ? 1 : -1;
+};
+
+export function compareResults(left: BacktestResult, right: BacktestResult): number {
+  const a = assessResult(left);
+  const b = assessResult(right);
+  const comparisons = [
+    compareNumber(Number(a.hasTrades), Number(b.hasTrades)),
+    compareNumber(Number(a.profitable), Number(b.profitable)),
+    compareNumber(a.curveScore, b.curveScore, .05),
+    compareNumber(a.totalReturnPercent, b.totalReturnPercent),
+    compareNumber(a.profitFactor, b.profitFactor),
+    compareNumber(-a.losingMonths, -b.losingMonths),
+    compareNumber(a.winRate, b.winRate),
+    compareNumber(a.sharpeRatio, b.sharpeRatio),
+  ];
+  return comparisons.find((comparison) => comparison !== 0) ?? 0;
+}
+
+export function isGoodStageResult(candidate: BacktestResult, baseline: BacktestResult): boolean {
+  const assessment = assessResult(candidate);
+  return compareResults(candidate, baseline) > 0
+    && assessment.profitable
+    && assessment.curveScore >= 60
+    && candidate.maxDrawdownPercent <= 25;
+}

@@ -572,10 +572,9 @@ export default function BacktestPage() {
       p: { xs: 1, md: 2 }, borderRadius: 2, bgcolor: "action.hover",
     }}>
       <BacktestOptimizer
+        key={`${selectedAsset}:${testFrom}:${testTo}:${JSON.stringify(settings)}`}
         settings={settings}
-        assets={assets}
         initialAsset={selectedAsset}
-        initialTimeframes={selectedTimeframes}
         testFrom={testFrom}
         testTo={testTo}
         runCandidate={async (candidateSettings, period, optimizerAsset, optimizerTimeframes) => {
