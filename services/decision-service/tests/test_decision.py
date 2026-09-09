@@ -1,7 +1,6 @@
 from src.models import *
 from src.resolver import ConflictResolver
 from src.risk import RiskManager
-from src.service import simulated_elliott_scenario
 
 def scenario(id,direction,confidence):return Scenario(id=id,symbol="BTC-USDT",timeframe="M15",direction=direction,setup_type="TEST",confidence=confidence,entry_zone_low=99,entry_zone_high=101,stop_loss_price=95,take_profit_prices=[110],expires_at=9999999999999)
 def test_conflict_rejects_inconclusive_directions():
@@ -13,6 +12,24 @@ def test_conflict_selects_clear_winner():
 def test_risk_position_size():
     signal=ConflictResolver().signal(scenario("a","LONG",.7));decision=RiskManager().calculate(signal,10000,RiskConfig())
     assert decision.approved and decision.risk_amount==100 and decision.position_size==20
+def test_strategy_risk_and_capital_capacity_match_backtest_sizing():
+    signal=ConflictResolver().signal(scenario("a","LONG",1)).model_copy(update={"entry_price":100,"stop_loss_price":90})
+    cash=RiskManager().calculate(signal,10000,RiskConfig(),risk_percent_override=0,
+      allocation_percent=50,use_margin=False,lot_size=.1)
+    margin=RiskManager().calculate(signal,10000,RiskConfig(),risk_percent_override=50,
+      allocation_percent=25,use_margin=True,leverage_override=2,lot_size=.1)
+    assert cash.approved and cash.position_size==50 and cash.leverage==1
+    assert margin.approved and margin.position_size==50 and margin.leverage==2
+def test_strategy_sizing_respects_lot_and_exchange_minimum():
+    signal=ConflictResolver().signal(scenario("a","LONG",1)).model_copy(update={"entry_price":100,"stop_loss_price":99})
+    decision=RiskManager().calculate(signal,100,RiskConfig(min_position_size=.0001),
+      risk_percent_override=1,use_margin=False,lot_size=.1,minimum_order_size=2)
+    assert not decision.approved and decision.position_size==1
+def test_disabled_reinvestment_caps_sizing_capital_at_initial_balance():
+    signal=ConflictResolver().signal(scenario("a","LONG",1)).model_copy(update={"entry_price":100,"stop_loss_price":90})
+    decision=RiskManager().calculate(signal,20000,RiskConfig(),risk_percent_override=0,
+      allocation_percent=100,use_margin=False,capital_ceiling=10000)
+    assert decision.approved and decision.position_size==100
 def test_signal_preserves_scenario_entry_type():
     item=scenario("market","LONG",.7).model_copy(update={"entry_type":"MARKET"})
     assert ConflictResolver().signal(item).entry_type=="MARKET"
@@ -48,13 +65,6 @@ def test_demo_simulation_still_rejects_an_active_trade():
     signal=ConflictResolver().signal(scenario("a","LONG",.7))
     decision=RiskManager().calculate(signal,10000,RiskConfig(),open_positions=1,ignore_loss_limits=True)
     assert not decision.approved and decision.rejection_reason=="Another trade is still active"
-def test_simulated_elliott_scenario_has_uuid_and_consistent_timestamps():
-    item=simulated_elliott_scenario(SimulatedElliottSignalRequest(symbol="aave-usdt-swap",direction="LONG"),100,1_000)
-    assert item.id and item.symbol=="AAVE-USDT-SWAP"
-    assert item.created_at==1_000 and item.expires_at==301_000
-    assert item.stop_loss_price==99 and item.take_profit_prices==[102]
-
-
 def test_elliott_confidence_is_preserved_without_model_scoring():
     import asyncio
     from unittest.mock import AsyncMock
@@ -70,4 +80,22 @@ def test_elliott_confidence_is_preserved_without_model_scoring():
         assert item.confidence == 1
         await asyncio.gather(*service.pending.values())
         assert await service.evaluate(scenario("other", "LONG", 1)) is None
+    asyncio.run(check())
+
+
+def test_waiting_signals_retry_sequentially_after_position_closes():
+    import asyncio
+    from unittest.mock import AsyncMock
+    from src.service import DecisionService
+
+    async def check():
+        service=DecisionService("unused","unused")
+        first=ConflictResolver().signal(scenario("first","LONG",1))
+        second=ConflictResolver().signal(scenario("second","LONG",1))
+        first=first.model_copy(update={"created_at":1});second=second.model_copy(update={"created_at":2})
+        service.signals={first.signal_id:first,second.signal_id:second}
+        service.waiting={first.signal_id,second.signal_id}
+        service.assess=AsyncMock(return_value=RiskDecision(signal_id=first.signal_id,approved=True))
+        await service.retry_waiting()
+        service.assess.assert_awaited_once_with(first)
     asyncio.run(check())

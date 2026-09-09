@@ -11,7 +11,6 @@ import { EventsPanel } from "./dashboard/EventsPanel";
 import { MetricsGrid } from "./dashboard/MetricsGrid";
 import { PositionsPanel } from "./dashboard/PositionsPanel";
 import { ServicesPanel } from "./dashboard/ServicesPanel";
-import { SignalPanel } from "./dashboard/SignalPanel";
 
 export default function Dashboard() {
   const [portfolio, setPortfolio] = useState<Portfolio>();
@@ -22,6 +21,7 @@ export default function Dashboard() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [loadError, setLoadError] = useState("");
   const { username } = useAuth();
+  const healthy = services.length > 0 && services.every((service) => service.status === "UP");
 
   const loadDashboard = useCallback(async () => {
     setIsRefreshing(true);
@@ -63,13 +63,9 @@ export default function Dashboard() {
         <Box>
           <Typography className="eyebrow">COMMAND CENTER · {new Date().toLocaleDateString("ru-RU")}</Typography>
           <Typography component="h1" variant="h3" sx={{ my: 1.25, fontSize: { xs: 32, md: 44 } }}>Добрый день, {username}.</Typography>
-          <Typography color="text.secondary">Торговый контур работает в штатном режиме.</Typography>
+          <Typography color="text.secondary">{healthy ? "Все сервисы доступны, торговый контур готов." : "Проверяем состояние торгового контура…"}</Typography>
         </Box>
         <Stack direction="row" spacing={1.5} sx={{ alignItems: "center", alignSelf: { md: "flex-end" } }}>
-          <Box sx={{ borderLeft: 2, borderColor: "primary.main", pl: 2.25 }}>
-            <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>РЕЖИМ ИСПОЛНЕНИЯ</Typography>
-            <Typography variant="caption" color="primary.main" sx={{ fontWeight: 700 }}>PAPER</Typography>
-          </Box>
           <Button variant="outlined" onClick={() => void loadDashboard()} disabled={isRefreshing}>
             {isRefreshing ? "Обновляем…" : "↻ Обновить"}
           </Button>
@@ -80,8 +76,7 @@ export default function Dashboard() {
       <Grid container spacing={1.5} sx={{ mt: 0 }}>
         <Grid id="positions" size={{ xs: 12, lg: 8 }} sx={{ scrollMarginTop: 92 }}><PositionsPanel positions={positions} /></Grid>
         <Grid id="services" size={{ xs: 12, lg: 4 }} sx={{ scrollMarginTop: 92 }}><ServicesPanel services={services} /></Grid>
-        <Grid id="events" size={{ xs: 12, lg: 8 }} sx={{ scrollMarginTop: 92 }}><EventsPanel events={events} isLive={isLive} /></Grid>
-        <Grid id="insights" size={{ xs: 12, lg: 4 }} sx={{ scrollMarginTop: 92 }}><SignalPanel /></Grid>
+        <Grid id="events" size={{ xs: 12 }} sx={{ scrollMarginTop: 92 }}><EventsPanel events={events} isLive={isLive} /></Grid>
       </Grid>
     </Container>
   );

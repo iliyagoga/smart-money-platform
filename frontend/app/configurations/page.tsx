@@ -1,6 +1,6 @@
 "use client";
 
-import { Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, Chip, Dialog, DialogContent, DialogTitle, Paper, Stack, TablePagination, TextField, Typography } from "@mui/material";
+import { Alert, Box, Button, Chip, Dialog, DialogContent, DialogTitle, Paper, Stack, TablePagination, TextField, Typography } from "@mui/material";
 import { useEffect, useState } from "react";
 import { BacktestSettingsForm } from "../../components/backtest/BacktestSettingsForm";
 import { SectionPage } from "../../components/layout/SectionPage";
@@ -105,9 +105,7 @@ export default function ConfigurationsPage() {
             <Button variant="outlined" size="small" onClick={()=>void copy(item)}>Копировать</Button>
             <Button variant="outlined" size="small" onClick={()=>download(item)}>Скачать JSON</Button>
             <Button color="error" size="small" onClick={()=>void remove(item)}>Удалить</Button></Stack>
-          <Accordion disableGutters><AccordionSummary expandIcon={<Typography>⌄</Typography>}><Typography variant="body2">Просмотреть JSON</Typography></AccordionSummary>
-            <AccordionDetails><Box component="pre" sx={{ m:0,p:1.5,overflow:"auto",bgcolor:"action.hover",fontSize:11 }}>{JSON.stringify(item.config,null,2)}</Box></AccordionDetails>
-          </Accordion></Stack></Paper>)}
+        </Stack></Paper>)}
         <TablePagination component="div" count={configurations.length} page={page} rowsPerPage={rowsPerPage}
           rowsPerPageOptions={[5,10,25,50]} labelRowsPerPage="Конфигураций на странице"
           onPageChange={(_,value)=>setPage(value)} onRowsPerPageChange={(event)=>{setRowsPerPage(Number(event.target.value));setPage(0);}} />

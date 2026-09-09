@@ -123,7 +123,7 @@ async def save_trading_config(request: TradingConfigCreate):
 async def delete_trading_config(symbol: str):
     symbol=symbol.strip().upper()
     if not symbol:raise HTTPException(422,"symbol must not be empty")
-    has_order=any(item.symbol==symbol and item.status in {"PENDING","OPEN"} for item in service.orders.values())
+    has_order=any(item.symbol==symbol and item.status in {"PENDING","OPEN","SUBMITTING","PARTIALLY_FILLED","CANCEL_REQUESTED"} for item in service.orders.values())
     has_position=any(item.symbol==symbol and item.status!="CLOSED" for item in service.positions.values())
     if has_order or has_position:
         raise HTTPException(409,"Close the active order or position before removing the trading asset")

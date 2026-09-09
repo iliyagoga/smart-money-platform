@@ -26,8 +26,8 @@ export function SectionPage({ children, description, error = "", isLoading = fal
         pb: { xs: 4, md: 7.5 },
         px: { xs: 1.5, sm: 2.5, md: 3, lg: 4 },
       }}>
-        <DashboardHeader isLive username={username} />
-        <Stack direction={{ xs: "column", sm: "row" }} sx={{ py: { xs: 3, md: 4.5 }, justifyContent: "space-between", gap: 2 }}>
+        <DashboardHeader username={username} />
+        <Stack direction={{ xs: "column", sm: "row" }} sx={{ py: { xs: 2.5, md: 3.5 }, justifyContent: "space-between", gap: 2 }}>
           <Box sx={{ minWidth: 0 }}>
             <Typography className="eyebrow" color="primary.main">ELLIOTT WAVE</Typography>
             <Typography component="h1" variant="h3" sx={{ mt: 1, fontSize: { xs: 30, sm: 36, md: 44 } }}>{title}</Typography>

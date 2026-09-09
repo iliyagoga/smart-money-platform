@@ -1,17 +1,19 @@
 from __future__ import annotations
 import asyncio,json,logging
+from math import ceil,floor
 from time import time
 from uuid import uuid4
 import asyncpg
 from redis.asyncio import Redis
-from .manager import PositionManager
+from .manager import PositionManager,fee_adjusted_break_even
 from .models import *
 log=logging.getLogger(__name__)
+ACTIVE_ORDER_STATUSES={"PENDING","OPEN","SUBMITTING","PARTIALLY_FILLED","CANCEL_REQUESTED"}
 def decode_json(value):return json.loads(value) if isinstance(value,str) else value
 def actionable_candle(candle:Candle,created_at:int):
     # Several timeframes describe the same market interval. Applying an H4/M15
     # high or low to a newly opened position reuses price action from before entry.
-    return candle.timeframe=="M1" and candle.timestamp>=created_at
+    return candle.timeframe=="M1" and candle.timestamp+60_000>created_at
 
 class ExecutionService:
     def __init__(self,database_url,redis_url,group="execution-service",consumer="execution-1",mode="paper"):
@@ -33,7 +35,7 @@ class ExecutionService:
             updated_at timestamptz NOT NULL DEFAULT now(),UNIQUE(owner_id,name));
         """)
         await self.db.execute("UPDATE trading_configs SET mode='PAPER' WHERE mode IN ('SIMULATION','paper')")
-        for row in await self.db.fetch("SELECT data FROM orders WHERE status IN ('PENDING','OPEN')"):
+        for row in await self.db.fetch("SELECT data FROM orders WHERE status IN ('PENDING','OPEN','SUBMITTING','PARTIALLY_FILLED','CANCEL_REQUESTED')"):
             o=Order.model_validate(decode_json(row["data"]));self.orders[o.id]=o
         for row in await self.db.fetch("SELECT data FROM positions WHERE status!='CLOSED'"):
             p=Position.model_validate(decode_json(row["data"]));self.positions[p.id]=p;await self.redis.sadd("positions:open",p.id)
@@ -85,37 +87,65 @@ class ExecutionService:
     async def on_approved(self,payload):
         signal_id=payload["signal_id"]
         if any(x.signal_id==signal_id for x in self.orders.values()):return
-        row=await self.db.fetchrow("""SELECT ts.data,tc.config,tc.mode FROM trade_signals ts JOIN scenarios s ON s.id=ts.scenario_id
+        row=await self.db.fetchrow("""SELECT ts.data,tc.config,tc.mode,ta.tick_size,ta.lot_size,ta.minimum_order_size,ta.maker_fee_rate,ta.taker_fee_rate,ta.funding_rate FROM trade_signals ts JOIN scenarios s ON s.id=ts.scenario_id
           JOIN trading_configs tc ON tc.symbol=ts.symbol AND tc.status='ACTIVE'
+          LEFT JOIN trading_assets ta ON ta.symbol=ts.symbol
           WHERE ts.id=$1::uuid AND s.data->>'setup_type'='ELLIOTT_WAVE3'""",signal_id)
         if not row:raise ValueError(f"Signal {signal_id} not found")
         s=decode_json(row["data"]);config=decode_json(row["config"]);elliott=config.get("elliott",{});use_margin=elliott.get("useMargin",elliott.get("use_margin",False))
         leverage=int(config.get("leverage",payload.get("leverage",1))) if use_margin else 1
-        order=Order(symbol=s["symbol"],side="BUY" if s["direction"]=="LONG" else "SELL",type=s["entry_type"],price=s["entry_price"],quantity=payload["position_size"],stop_loss_price=s["stop_loss_price"],take_profit_prices=s["take_profit_prices"],signal_id=signal_id,target_allocations=s.get("target_allocations",[]),break_even_rule=s.get("break_even_rule","ONE_R"),move_stop_to_break_even_after_target=s.get("move_stop_to_break_even_after_target",1),deduplication_key=s.get("deduplication_key"),leverage=leverage,margin_mode=config.get("marginMode",config.get("margin_mode","cross")),execution_mode=row["mode"])
+        maker=abs(float(row["maker_fee_rate"]))*100 if row["maker_fee_rate"] is not None else float(config.get("makerFeePercent",config.get("maker_fee_percent",config.get("feePercent",config.get("fee_percent",0)))))
+        taker=abs(float(row["taker_fee_rate"]))*100 if row["taker_fee_rate"] is not None else float(config.get("takerFeePercent",config.get("taker_fee_percent",config.get("feePercent",config.get("fee_percent",0)))))
+        funding=float(row["funding_rate"])*300 if row["funding_rate"] is not None else float(config.get("fundingPercentPerDay",config.get("funding_percent_per_day",0)))
+        order=Order(symbol=s["symbol"],side="BUY" if s["direction"]=="LONG" else "SELL",type=s["entry_type"],price=s["entry_price"],quantity=payload["position_size"],stop_loss_price=s["stop_loss_price"],take_profit_prices=s["take_profit_prices"],signal_id=signal_id,target_allocations=s.get("target_allocations",[]),target_rrs=s.get("target_rrs",[]),break_even_rule=s.get("break_even_rule","ONE_R"),move_stop_to_break_even_after_target=s.get("move_stop_to_break_even_after_target",1),deduplication_key=s.get("deduplication_key"),leverage=leverage,margin_mode=config.get("marginMode",config.get("margin_mode","cross")),execution_mode=row["mode"],expires_at=s.get("expires_at"),slippage_percent=float(config.get("slippagePercent",config.get("slippage_percent",0))),tick_size=float(row["tick_size"] or config.get("tickSize",config.get("tick_size",.01))),lot_size=float(row["lot_size"] or config.get("lotSize",config.get("lot_size",.000001))),minimum_order_size=float(row["minimum_order_size"] or config.get("minimumOrderSize",config.get("minimum_order_size",.000001))),volume_participation_percent=float(config.get("volumeParticipationPercent",config.get("volume_participation_percent",5))),maker_fee_percent=maker,taker_fee_percent=taker,funding_percent_per_day=funding,funding_interval_hours=int(config.get("fundingIntervalHours",config.get("funding_interval_hours",8))),maintenance_margin_percent=float(config.get("maintenanceMarginPercent",config.get("maintenance_margin_percent",.5))),liquidation_fee_percent=float(config.get("liquidationFeePercent",config.get("liquidation_fee_percent",.5))))
         await self.create_order(order)
     async def create_order(self,order:Order):
         existing=next((x for x in self.orders.values() if order.signal_id and x.signal_id==order.signal_id),None)
         if existing:return existing
-        active_order=any(x.status in {"PENDING","OPEN"} for x in self.orders.values())
+        active_order=any(x.status in ACTIVE_ORDER_STATUSES for x in self.orders.values())
         active_position=any(x.status!="CLOSED" for x in self.positions.values())
         if active_order or active_position:raise ValueError("Another trade is still active")
-        self.orders[order.id]=order;await self.save_order(order);await self.stream("order.request",order.model_dump(mode="json"))
+        self.orders[order.id]=order;await self.save_order(order)
         if order.execution_mode=="PAPER":
-            if order.type=="MARKET":await self.fill(order,order.price or 0)
-            else:order.status="OPEN";await self.save_order(order)
-        else:order.status="SUBMITTING";await self.save_order(order)
+            order.status="OPEN";await self.save_order(order)
+        elif order.type=="STOP":
+            # OKX regular orders do not support STOP as an order type. Keep the
+            # trigger locally, then submit a MARKET order when a new M1 candle crosses it.
+            order.status="OPEN";await self.save_order(order)
+        else:
+            order.status="SUBMITTING";await self.save_order(order);await self.stream("order.request",order.model_dump(mode="json"))
         return order
     async def save_order(self,o):await self.db.execute("INSERT INTO orders(id,signal_id,symbol,status,data,created_at) VALUES($1::uuid,$2::uuid,$3,$4,$5::jsonb,to_timestamp($6/1000.0)) ON CONFLICT(id) DO UPDATE SET status=excluded.status,data=excluded.data,updated_at=now()",o.id,o.signal_id,o.symbol,o.status,json.dumps(o.model_dump(mode="json")),o.created_at)
-    async def fill(self,o:Order,price:float,exchange_order_id:str|None=None):
+    async def fill(self,o:Order,price:float,exchange_order_id:str|None=None,executed_at:int|None=None):
         if o.status=="FILLED":return
-        o.status="FILLED";o.filled_at=int(time()*1000);o.filled_price=price;o.exchange_order_id=exchange_order_id or f"paper-{o.id}";await self.save_order(o)
+        if o.type=="MARKET" and o.stop_loss_price is not None and o.target_rrs:
+            side=1 if o.side=="BUY" else -1;risk=abs(price-o.stop_loss_price)
+            o.take_profit_prices=[(ceil((price+side*risk*rr)/o.tick_size) if side==1
+                                    else floor((price+side*risk*rr)/o.tick_size))*o.tick_size
+                                   for rr in o.target_rrs]
+        o.status="FILLED";o.filled_at=executed_at or int(time()*1000);o.filled_price=price;o.exchange_order_id=exchange_order_id or f"paper-{o.id}";await self.save_order(o)
         event={"order_id":o.id,"signal_id":o.signal_id,"exchange_order_id":o.exchange_order_id,"symbol":o.symbol,"side":o.side,"price":price,"quantity":o.quantity,"filled_price":price,"filled_quantity":o.quantity,"status":"FILLED","executed_at":o.filled_at};await self.publish("order.executed",event)
         scenario_id=None
         if o.signal_id:
             row=await self.db.fetchrow("""SELECT ts.scenario_id FROM trade_signals ts JOIN scenarios s ON s.id=ts.scenario_id
               WHERE ts.id=$1::uuid AND s.data->>'setup_type'='ELLIOTT_WAVE3'""",o.signal_id);scenario_id=str(row["scenario_id"]) if row else None
             if not scenario_id:raise ValueError("Only Elliott signals can be executed")
-        p=Position(signal_id=o.signal_id,scenario_id=scenario_id,order_id=o.id,strategy="ELLIOTT",setup_type="ELLIOTT_WAVE3",symbol=o.symbol,direction="LONG" if o.side=="BUY" else "SHORT",entry_price=price,current_price=price,quantity=o.quantity,initial_quantity=o.quantity,stop_loss_price=o.stop_loss_price,initial_stop_loss_price=o.stop_loss_price,take_profit_prices=list(o.take_profit_prices),target_allocations=list(o.target_allocations),break_even_rule=o.break_even_rule,move_stop_to_break_even_after_target=o.move_stop_to_break_even_after_target)
+        entry_fee=o.maker_fee_percent if o.type=="LIMIT" else o.taker_fee_percent
+        p=Position(signal_id=o.signal_id,scenario_id=scenario_id,order_id=o.id,
+          strategy="ELLIOTT",setup_type="ELLIOTT_WAVE3",symbol=o.symbol,
+          direction="LONG" if o.side=="BUY" else "SHORT",entry_price=price,current_price=price,
+          quantity=o.quantity,initial_quantity=o.quantity,leverage=o.leverage,
+          execution_mode=o.execution_mode,margin_mode=o.margin_mode,
+          stop_loss_price=o.stop_loss_price,initial_stop_loss_price=o.stop_loss_price,
+          take_profit_prices=list(o.take_profit_prices),target_allocations=list(o.target_allocations),
+          break_even_rule=o.break_even_rule,
+          move_stop_to_break_even_after_target=o.move_stop_to_break_even_after_target,
+          entry_fee_percent=entry_fee,maker_fee_percent=o.maker_fee_percent,
+          taker_fee_percent=o.taker_fee_percent,slippage_percent=o.slippage_percent,
+          tick_size=o.tick_size,funding_percent_per_day=o.funding_percent_per_day,
+          funding_interval_hours=o.funding_interval_hours,
+          maintenance_margin_percent=o.maintenance_margin_percent,
+          liquidation_fee_percent=o.liquidation_fee_percent,last_funding_at=o.filled_at)
         self.positions[p.id]=p;await self.redis.sadd("positions:open",p.id);await self.save_position(p,None,"OPENED","ORDER_EXECUTED")
         await self.publish("position.opened",{"position_id":p.id,"signal_id":p.signal_id,"symbol":p.symbol,"direction":p.direction,"entry_price":p.entry_price,"quantity":p.quantity,"leverage":p.leverage,"stop_loss_price":p.stop_loss_price,"take_profit_prices":p.take_profit_prices,"opened_at":p.opened_at})
     async def save_position(self,p,old,new,trigger):
@@ -123,10 +153,37 @@ class ExecutionService:
         if old!=new:await self.db.execute("INSERT INTO position_state_history(position_id,from_state,to_state,trigger,price) VALUES($1::uuid,$2,$3,$4,$5)",p.id,old,new,trigger,p.current_price)
     async def on_candle(self,c:Candle):
         for o in list(self.orders.values()):
-            if (o.execution_mode=="PAPER" and o.status=="OPEN" and o.symbol==c.symbol and o.price is not None
-                    and actionable_candle(c,o.created_at) and c.low<=o.price<=c.high):await self.fill(o,o.price)
+            if o.status not in {"OPEN","PENDING","SUBMITTING"} or o.symbol!=c.symbol:continue
+            if o.expires_at is not None and c.timestamp>o.expires_at:
+                await self.request_cancel(o);continue
+            if not actionable_candle(c,o.created_at):continue
+            side=1 if o.side=="BUY" else -1
+            if o.execution_mode!="PAPER":
+                if o.type=="STOP" and o.price is not None and (c.high>=o.price if o.side=="BUY" else c.low<=o.price):
+                    o.type="MARKET";o.status="SUBMITTING";await self.save_order(o);await self.stream("order.request",o.model_dump(mode="json"))
+                continue
+            fill_price=None
+            if o.type=="MARKET":
+                fill_price=c.open*(1+side*o.slippage_percent/100)
+            elif o.price is not None:
+                touched=((c.low<=o.price if o.side=="BUY" else c.high>=o.price) if o.type=="LIMIT"
+                         else (c.high>=o.price if o.side=="BUY" else c.low<=o.price))
+                if touched:fill_price=o.price
+            if fill_price is None:continue
+            capacity=c.volume*o.volume_participation_percent/100
+            quantity=floor((min(o.quantity,capacity)+o.lot_size*1e-9)/o.lot_size)*o.lot_size
+            if quantity+1e-12<o.minimum_order_size:
+                await self.request_cancel(o);continue
+            o.quantity=quantity;await self.fill(o,fill_price,executed_at=c.timestamp)
         for p in list(self.positions.values()):
             if p.status=="CLOSED" or p.symbol!=c.symbol or not actionable_candle(c,p.opened_at):continue
+            interval=p.funding_interval_hours*3_600_000
+            available_at=c.timestamp+60_000
+            funding_events=max(0,(available_at-(p.last_funding_at or p.opened_at))//interval)
+            if funding_events:
+                funding=p.entry_price*p.quantity*p.funding_percent_per_day/100*p.funding_interval_hours/24*funding_events
+                signed=funding*(1 if p.direction=="LONG" else -1)
+                p.realized_pnl-=signed;p.funding+=signed;p.last_funding_at=(p.last_funding_at or p.opened_at)+funding_events*interval
             old=p.status
             for action,data in self.manager.update(p,c):
                 if action=="close":await self.close(p,data["quantity"],data["price"],data["reason"])
@@ -135,18 +192,26 @@ class ExecutionService:
                     await self.save_position(p,old,p.status,"ONE_R_REACHED");await self.publish("position.updated",{"position_id":p.id,"changes":data,"current_price":p.current_price,"unrealized_pnl":p.unrealized(),"unrealized_pnl_percent":p.unrealized()/max(p.entry_price*p.quantity,1e-12)*100,"updated_at":int(time()*1000)})
             if p.status!="CLOSED":await self.save_position(p,p.status,p.status,"PRICE_UPDATE")
     async def close(self,p:Position,quantity:float,price:float,reason:str):
-        qty=min(quantity,p.quantity);pnl=(price-p.entry_price)*qty*(1 if p.direction=="LONG" else -1);p.realized_pnl+=pnl;p.quantity-=qty
+        qty=min(quantity,p.quantity);side=1 if p.direction=="LONG" else -1
+        target=reason in {"TAKE_PROFIT","FIXED_RR_TARGET"}
+        exit_price=price if target else price*(1-side*p.slippage_percent/100)
+        exit_fee_rate=(p.maker_fee_percent if target else p.taker_fee_percent)/100
+        fees=(p.entry_price*qty*p.entry_fee_percent/100+exit_price*qty*exit_fee_rate)
+        liquidation_fee=exit_price*qty*p.liquidation_fee_percent/100 if reason=="LIQUIDATION" else 0
+        fees+=liquidation_fee
+        pnl=(exit_price-p.entry_price)*qty*side-fees;p.realized_pnl+=pnl;p.fees+=fees;p.quantity-=qty
         if p.quantity>1e-12:
-            p.partial_takes.append({"price":price,"quantity":qty,"time":int(time()*1000),"pnl":pnl})
+            p.partial_takes.append({"price":exit_price,"quantity":qty,"time":int(time()*1000),"pnl":pnl,"fees":fees})
             if (p.break_even_rule=="AFTER_TARGET" and p.move_stop_to_break_even_after_target is not None
                     and p.targets_hit>=p.move_stop_to_break_even_after_target):
-                p.stop_loss_price=p.entry_price;p.protected=True
+                p.stop_loss_price=fee_adjusted_break_even(p);p.protected=True
             p.status="PARTIAL_TP";await self.save_position(p,"OPENED",p.status,reason)
-            await self.publish("position.partial_closed",{"position_id":p.id,"closed_quantity":qty,"closing_price":price,"remaining_quantity":p.quantity,"realized_pnl":pnl,"new_stop_loss_price":p.stop_loss_price,"timestamp":int(time()*1000)})
+            await self.publish("position.partial_closed",{"position_id":p.id,"closed_quantity":qty,"closing_price":exit_price,"remaining_quantity":p.quantity,"realized_pnl":pnl,"fees":fees,"new_stop_loss_price":p.stop_loss_price,"timestamp":int(time()*1000)})
         else:
             old=p.status;p.status="CLOSED";p.closed_at=int(time()*1000);await self.redis.srem("positions:open",p.id);await self.save_position(p,old,"CLOSED",reason)
             duration=max(0,(p.closed_at-p.opened_at)//1000);risk_per_unit=abs(p.entry_price-p.initial_stop_loss_price) if p.initial_stop_loss_price is not None else 0;initial_risk=risk_per_unit*p.initial_quantity
-            payload={"position_id":p.id,"signal_id":p.signal_id,"scenario_id":p.scenario_id,"strategy":p.strategy,"setup_type":p.setup_type,"symbol":p.symbol,"direction":p.direction,"entry_price":p.entry_price,"initial_stop_loss_price":p.initial_stop_loss_price,"exit_price":price,"quantity":p.initial_quantity,"pnl":p.realized_pnl,"pnl_percent":p.realized_pnl/max(p.entry_price*p.initial_quantity,1e-12)*100,"r_multiple":p.realized_pnl/initial_risk if initial_risk>0 else None,"reason":reason,"duration_seconds":duration,"max_unrealized_pnl":p.max_unrealized_pnl,"max_unrealized_loss":p.max_unrealized_loss,"closed_at":p.closed_at}
+            margin=p.entry_price*p.initial_quantity/(p.leverage if p.leverage>1 else 1)
+            payload={"position_id":p.id,"signal_id":p.signal_id,"scenario_id":p.scenario_id,"strategy":p.strategy,"setup_type":p.setup_type,"symbol":p.symbol,"direction":p.direction,"entry_price":p.entry_price,"initial_stop_loss_price":p.initial_stop_loss_price,"exit_price":exit_price,"quantity":p.initial_quantity,"pnl":p.realized_pnl,"pnl_percent":p.realized_pnl/max(margin,1e-12)*100,"fees":p.fees,"funding":p.funding,"r_multiple":p.realized_pnl/initial_risk if initial_risk>0 else None,"reason":reason,"duration_seconds":duration,"max_unrealized_pnl":p.max_unrealized_pnl,"max_unrealized_loss":p.max_unrealized_loss,"closed_at":p.closed_at}
             await self.db.execute("INSERT INTO closed_trades(id,position_id,symbol,pnl,data,closed_at) VALUES($1::uuid,$2::uuid,$3,$4,$5::jsonb,to_timestamp($6/1000.0)) ON CONFLICT(id) DO NOTHING",str(uuid4()),p.id,p.symbol,p.realized_pnl,json.dumps(payload),p.closed_at);await self.publish("position.closed",payload)
         return qty,p.quantity,pnl
     async def on_exchange_order(self,payload):
@@ -159,9 +224,13 @@ class ExecutionService:
             await self.fill(order,price,order.exchange_order_id)
         elif status in {"OPEN","PARTIALLY_FILLED","CANCELLED","REJECTED"}:
             order.status=status;await self.save_order(order)
+            if status in {"CANCELLED","REJECTED"}:
+                await self.publish(f"order.{status.lower()}",{"order_id":order.id,"signal_id":order.signal_id,"symbol":order.symbol})
     async def request_cancel(self,order:Order):
         if order.status=="FILLED":raise ValueError("Filled order cannot be cancelled")
-        if order.execution_mode=="PAPER":order.status="CANCELLED";await self.save_order(order)
+        if order.execution_mode=="PAPER" or order.exchange_order_id is None:
+            order.status="CANCELLED";await self.save_order(order)
+            await self.publish("order.cancelled",{"order_id":order.id,"signal_id":order.signal_id,"symbol":order.symbol})
         else:
             order.status="CANCEL_REQUESTED";await self.save_order(order)
             await self.stream("order.cancel_requested",{"order_id":order.id,"symbol":order.symbol,"exchange_order_id":order.exchange_order_id})

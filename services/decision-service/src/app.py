@@ -28,7 +28,3 @@ async def risk_calculate(request:RiskCalculateRequest):
     return await service.assess(signal,request.capital)
 @app.post("/internal/scenarios/evaluate")
 async def evaluate(scenario:Scenario):return await service.evaluate(scenario)
-@app.post("/signals/simulate-elliott",status_code=201)
-async def simulate_elliott(request:SimulatedElliottSignalRequest):
-    try:return await service.simulate_elliott(request)
-    except ValueError as exc:raise HTTPException(409,str(exc)) from exc

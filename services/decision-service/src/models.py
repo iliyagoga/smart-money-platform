@@ -9,7 +9,7 @@ class Scenario(BaseModel):
     id:str;symbol:str;timeframe:str;direction:str;setup_type:str;confidence:float=0
     entry_zone_low:float;entry_zone_high:float;stop_loss_price:float;take_profit_prices:list[float]
     status:str="ACTIVE";reasons:list[str]=[];objections:list[str]=[];objects_used:list[dict]=[]
-    target_allocations:list[float]=[];break_even_rule:str="ONE_R";move_stop_to_break_even_after_target:int|None=1
+    target_allocations:list[float]=[];target_rrs:list[float]=[];break_even_rule:str="ONE_R";move_stop_to_break_even_after_target:int|None=1
     entry_type:str="LIMIT"
     one_trade_per_zone:bool=False;cooldown_bars_after_stop:int=0;deduplication_key:str|None=None
     created_at:int=Field(default_factory=now_ms);expires_at:int
@@ -21,9 +21,9 @@ class Scenario(BaseModel):
 class TradeSignal(BaseModel):
     signal_id:str=Field(default_factory=lambda:str(uuid4()));scenario_id:str;symbol:str;direction:str
     entry_price:float;entry_type:str="LIMIT";stop_loss_price:float;take_profit_prices:list[float]
-    target_allocations:list[float]=[];break_even_rule:str="ONE_R";move_stop_to_break_even_after_target:int|None=1
+    target_allocations:list[float]=[];target_rrs:list[float]=[];break_even_rule:str="ONE_R";move_stop_to_break_even_after_target:int|None=1
     one_trade_per_zone:bool=False;cooldown_bars_after_stop:int=0;deduplication_key:str|None=None
-    confidence:float;created_at:int=Field(default_factory=now_ms)
+    confidence:float;created_at:int=Field(default_factory=now_ms);expires_at:int|None=None
 
 class RiskConfig(BaseModel):
     max_daily_loss_percent:float=Field(default=5,gt=0,le=100);max_positions:int=Field(default=1,ge=1,le=100)
@@ -44,13 +44,6 @@ class RiskConfigPatch(BaseModel):
     daily_stop_hours:int|None=Field(default=None,ge=1,le=168)
 
 class RiskCalculateRequest(BaseModel):signal_id:str;capital:float|None=Field(default=None,gt=0)
-class SimulatedElliottSignalRequest(BaseModel):
-    symbol:str;direction:str="LONG";risk_percent:float=Field(default=1,gt=0,le=10);reward_r:float=Field(default=2,gt=0,le=20)
-    @model_validator(mode="after")
-    def valid(self):
-        self.symbol=self.symbol.strip().upper();self.direction=self.direction.upper()
-        if self.direction not in {"LONG","SHORT"}:raise ValueError("direction must be LONG or SHORT")
-        return self
 class RiskDecision(BaseModel):
     signal_id:str;approved:bool;position_size:float=0;position_value:float=0;leverage:int=1
     risk_amount:float=0;risk_percent_of_capital:float=0;rejection_reason:str|None=None;timestamp:int=Field(default_factory=now_ms)

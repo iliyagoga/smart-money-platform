@@ -112,9 +112,3 @@ async def scenario(scenario_id:str):
     item=next((x for x in service.scenarios.values() if x.id==scenario_id),None)
     if not item:raise HTTPException(404,"Scenario not found")
     return item
-
-@app.post("/scenarios/{scenario_id}/recalculate")
-async def recalculate(scenario_id:str):
-    item=next((x for x in service.scenarios.values() if x.id==scenario_id),None)
-    if not item:raise HTTPException(404,"Scenario not found")
-    return {"updated":True,"confidence":item.confidence}

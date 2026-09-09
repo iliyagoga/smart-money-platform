@@ -1,6 +1,6 @@
 "use client";
 
-import { Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, FormControl, Grid, InputLabel, MenuItem, Select, Snackbar, Stack, Typography } from "@mui/material";
+import { Button, Dialog, DialogActions, DialogContent, DialogTitle, FormControl, Grid, InputLabel, MenuItem, Select, Snackbar, Stack, Typography } from "@mui/material";
 import { useState } from "react";
 import { useAuth } from "../../components/auth/AuthProvider";
 import { PositionsPanel } from "../../components/dashboard/PositionsPanel";
@@ -9,14 +9,12 @@ import { TradeHistory } from "../../components/trades/TradeHistory";
 import { TradeStatisticsGrid } from "../../components/trades/TradeStatisticsGrid";
 import { TradeAnalyzer } from "../../components/trades/TradeAnalyzer";
 import { OrdersPanel } from "../../components/trades/OrdersPanel";
-import { OrderTicket } from "../../components/trades/OrderTicket";
 import { useApiResource } from "../../hooks/useApiResource";
 import { api } from "../../lib/api";
-import type { OrderDraft, OrdersResponse, Position, PositionsResponse, TradeAnalysisResponse, TradeAssetsResponse, TradeStatistics, TradesResponse, TradingOrder } from "../../lib/types";
+import type { OrdersResponse, Position, PositionsResponse, TradeAnalysisResponse, TradeAssetsResponse, TradeStatistics, TradesResponse, TradingOrder } from "../../lib/types";
 
 export default function TradesPage() {
   const [symbol, setSymbol] = useState("");
-  const [direction, setDirection] = useState<"LONG" | "SHORT">("LONG");
   const symbolQuery = symbol ? `?symbol=${encodeURIComponent(symbol)}&limit=1000` : "?limit=1000";
   const positionsResource = useApiResource<PositionsResponse | Position[]>("/api/v1/execution/positions");
   const assetsResource = useApiResource<TradeAssetsResponse>("/api/v1/execution/trades/assets");
@@ -28,9 +26,7 @@ export default function TradesPage() {
   const [actionError, setActionError] = useState("");
   const [closingPosition, setClosingPosition] = useState<Position>();
   const [isClosing, setIsClosing] = useState(false);
-  const [isSimulating, setIsSimulating] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
-  const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
   const positions = Array.isArray(positionsResource.data)
     ? positionsResource.data
     : (positionsResource.data?.positions ?? []);
@@ -47,34 +43,11 @@ export default function TradesPage() {
     assetsResource.reload();
     ordersResource.reload();
   };
-  const simulateSignal = async () => {
-    if (!symbol) return;
-    setIsSimulating(true);setActionError("");
-    try {
-      const result = await api<{ approved: boolean; risk?: { rejection_reason?: string | null } }>("/api/v1/decision/signals/simulate-elliott", {
-        method: "POST", body: JSON.stringify({ symbol, direction }),
-      });
-      if (result.approved) setSuccessMessage("Elliott-сигнал принят и отправлен на исполнение");
-      else setActionError(`Сигнал не исполнен: ${result.risk?.rejection_reason ?? "неизвестная причина"}`);
-      reloadTradingData();
-    } catch (reason) { setActionError(reason instanceof Error ? reason.message : String(reason)); }
-    finally { setIsSimulating(false); }
-  };
   const cancelOrder = async (order: TradingOrder) => {
     setActionError("");
     try { await api(`/api/v1/execution/orders/${order.id}/cancel`, { method: "POST" }); setSuccessMessage("Отмена ордера отправлена"); reloadTradingData(); }
     catch (reason) { setActionError(reason instanceof Error ? reason.message : String(reason)); }
   };
-  const submitOrder = async (order: OrderDraft) => {
-    setIsSubmittingOrder(true);setActionError("");
-    try {
-      await api("/api/v1/execution/orders", { method: "POST", body: JSON.stringify(order) });
-      setSuccessMessage("Ордер успешно отправлен в paper-контур");
-      reloadTradingData();
-    } catch (reason) { setActionError(reason instanceof Error ? reason.message : String(reason)); }
-    finally { setIsSubmittingOrder(false); }
-  };
-
   const closePosition = async () => {
     if (!closingPosition) return;
     setIsClosing(true);
@@ -107,18 +80,11 @@ export default function TradesPage() {
     >
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mb: 1.5, justifyContent: "space-between", alignItems: { sm: "center" } }}>
         <Typography variant="body2" color="text.secondary">Показаны {symbol ? `сделки по ${symbol}` : "сделки по всем активам"}</Typography>
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}><FormControl size="small" sx={{ minWidth: 220 }}><InputLabel id="trade-asset-label">Актив</InputLabel><Select labelId="trade-asset-label" value={symbol} label="Актив" onChange={(event) => setSymbol(event.target.value)}>
+        <FormControl size="small" sx={{ minWidth: 220 }}><InputLabel id="trade-asset-label">Актив</InputLabel><Select labelId="trade-asset-label" value={symbol} label="Актив" onChange={(event) => setSymbol(event.target.value)}>
           <MenuItem value="">Все активы</MenuItem>{symbols.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}
-        </Select></FormControl><Select size="small" inputProps={{ "aria-label": "Направление" }} value={direction} onChange={(event) => setDirection(event.target.value as "LONG" | "SHORT")}>
-          <MenuItem value="LONG">LONG</MenuItem><MenuItem value="SHORT">SHORT</MenuItem>
-        </Select><Button variant="contained" disabled={!canTrade || !symbol || isSimulating} onClick={() => void simulateSignal()}>
-          {isSimulating ? "Создаём…" : "Имитировать сигнал"}
-        </Button></Stack>
+        </Select></FormControl>
       </Stack>
       <TradeStatisticsGrid statistics={statisticsResource.data} />
-      <Box sx={{ my: 1.5 }}>
-        <OrderTicket canTrade={canTrade} isSubmitting={isSubmittingOrder} onSubmit={(order) => void submitOrder(order)} />
-      </Box>
       <OrdersPanel orders={ordersResource.data?.orders ?? []} canCancel={canTrade} onCancel={(order) => void cancelOrder(order)} />
       <Grid container spacing={1.5} sx={{ mt: 0 }}>
         <Grid size={{ xs: 12 }}>

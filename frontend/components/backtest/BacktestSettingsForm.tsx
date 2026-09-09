@@ -1,6 +1,6 @@
 "use client";
 
-import { Button, Checkbox, FormControl, FormControlLabel, InputLabel, ListItemText, MenuItem, Paper, Select, Stack, TextField, Typography } from "@mui/material";
+import { Accordion, AccordionDetails, AccordionSummary, Button, Checkbox, FormControlLabel, MenuItem, Paper, Stack, TextField, Typography } from "@mui/material";
 import type { BacktestSettings, DirectionMode } from "../../lib/backtest/types";
 
 interface BacktestSettingsFormProps {
@@ -23,24 +23,11 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
     && (settings.elliott.takeProfitCount === 1 || settings.elliott.secondTakeProfitRr > settings.elliott.takeProfitRr);
   const updateElliottNumber = (key: keyof BacktestSettings["elliott"], value: string) =>
     onChange({ ...settings, elliott: { ...settings.elliott, [key]: Number(value) } });
-  const checkedValue = (value: unknown, display = String(value)) =>
-    <Stack direction="row" spacing={1} sx={{ width: "100%", alignItems: "center" }}>
-      <Checkbox checked size="small" tabIndex={-1} sx={{ p: 0, pointerEvents: "none" }} />
-      <Typography component="span">{display}</Typography>
-    </Stack>;
   const elliottChoice = (label: string, key: keyof BacktestSettings["elliott"], options: number[]) =>
-    <FormControl fullWidth><InputLabel>{label}</InputLabel>
-      <Select label={label} value={settings.elliott[key] as number}
-        renderValue={(selected) => <Stack direction="row" spacing={1} sx={{ width: "100%", alignItems: "center" }}>
-          <Checkbox checked size="small" tabIndex={-1} sx={{ p: 0, pointerEvents: "none" }} />
-          <Typography component="span">{String(selected)}</Typography>
-        </Stack>}
-        onChange={(event) => updateElliottNumber(key, String(event.target.value))}>
-        {options.map((option) => <MenuItem key={option} value={option}>
-          <Checkbox checked={settings.elliott[key] === option} /><ListItemText primary={option} />
-        </MenuItem>)}
-      </Select>
-    </FormControl>;
+    <TextField fullWidth select label={label} value={settings.elliott[key] as number}
+      onChange={(event) => updateElliottNumber(key, String(event.target.value))}>
+      {options.map((option) => <MenuItem key={option} value={option}>{option}</MenuItem>)}
+    </TextField>;
   const entryModel = settings.elliott.entryModel;
   const usesChochRetracement = entryModel === "CHOCH_RETRACE";
   const usesBreakoutBuffer = entryModel === "WAVE1_BREAK_MARKET" || entryModel === "WAVE1_BREAK_STOP";
@@ -66,17 +53,14 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
       >
         <MenuItem value="BOTH">Long и Short</MenuItem><MenuItem value="LONG">Только Long</MenuItem><MenuItem value="SHORT">Только Short</MenuItem>
       </TextField>
-      {settings.strategy === "ELLIOTT" && <Stack spacing={1.5}>
+      <Stack spacing={1.5}>
         <Typography variant="subtitle2">Архитектура Elliott и ATR ZigZag</Typography>
         <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
           {(["macroTimeframe", "structureTimeframe", "entryTimeframe"] as const).map((key) =>
             <TextField key={key} fullWidth select label={{ macroTimeframe: "Macro TF", structureTimeframe: "Structure TF", entryTimeframe: "Entry TF" }[key]}
               value={settings.elliott[key]}
-              slotProps={{ select: { renderValue: (selected) => checkedValue(selected) } }}
               onChange={(event) => onChange({ ...settings, elliott: { ...settings.elliott, [key]: event.target.value } })}>
-              {timeframeOptions(key).map((tf) => <MenuItem key={tf} value={tf}>
-                <Checkbox checked={settings.elliott[key] === tf} /><ListItemText primary={tf} />
-              </MenuItem>)}
+              {timeframeOptions(key).map((tf) => <MenuItem key={tf} value={tf}>{tf}</MenuItem>)}
             </TextField>)}
         </Stack>
         <Stack direction="row" spacing={1.5}>
@@ -95,31 +79,22 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
         <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
           <TextField fullWidth select label="Модель входа" value={settings.elliott.entryModel}
             sx={{ flex: 2, minWidth: { md: 360 } }}
-            slotProps={{ select: { renderValue: (selected) => checkedValue(selected, {
-              CHOCH_MARKET: "CHOCH market", CHOCH_RETRACE: "CHOCH retrace",
-              WAVE1_BREAK_RETRACE: "P1 break + retrace",
-              WAVE1_BREAK_MARKET: "Пробой P1 → market", WAVE1_BREAK_STOP: "Stop-order за P1",
-              WAVE1_BREAK_RETEST_CONFIRM: "Пробой P1 + подтверждённый ретест", MICRO_WAVE3: "Micro Wave 1→2→3",
-              DISPLACEMENT_RETRACE: "Displacement + retracement", P2_LIQUIDITY_SWEEP: "Ложный пробой P2",
-              WAVE2_TRENDLINE_BREAK: "Пробой трендовой Wave 2", ADX_ACCELERATION: "Ускорение ADX",
-              VOLATILITY_EXPANSION: "Сжатие → расширение ATR", VOLUME_EXPANSION: "Расширение объёма",
-            }[String(selected)] ?? String(selected)) } }}
             onChange={(e) => onChange({ ...settings, elliott: {
               ...settings.elliott, entryModel: e.target.value as typeof settings.elliott.entryModel,
             } })}>
-            <MenuItem value="CHOCH_MARKET"><Checkbox checked={settings.elliott.entryModel === "CHOCH_MARKET"} /><ListItemText primary="CHOCH market" /></MenuItem>
-            <MenuItem value="CHOCH_RETRACE"><Checkbox checked={settings.elliott.entryModel === "CHOCH_RETRACE"} /><ListItemText primary="CHOCH retrace" /></MenuItem>
-            <MenuItem value="WAVE1_BREAK_RETRACE"><Checkbox checked={settings.elliott.entryModel === "WAVE1_BREAK_RETRACE"} /><ListItemText primary="P1 break + retrace" /></MenuItem>
-            <MenuItem value="WAVE1_BREAK_MARKET"><Checkbox checked={settings.elliott.entryModel === "WAVE1_BREAK_MARKET"} /><ListItemText primary="Пробой Wave 1 High/Low → market" /></MenuItem>
-            <MenuItem value="WAVE1_BREAK_STOP"><Checkbox checked={settings.elliott.entryModel === "WAVE1_BREAK_STOP"} /><ListItemText primary="Stop-order за Wave 1 High/Low" /></MenuItem>
-            <MenuItem value="WAVE1_BREAK_RETEST_CONFIRM"><Checkbox checked={settings.elliott.entryModel === "WAVE1_BREAK_RETEST_CONFIRM"} /><ListItemText primary="Пробой P1 + подтверждённый ретест" /></MenuItem>
-            <MenuItem value="MICRO_WAVE3"><Checkbox checked={settings.elliott.entryModel === "MICRO_WAVE3"} /><ListItemText primary="Micro Wave 1 → Wave 2 → Wave 3" /></MenuItem>
-            <MenuItem value="DISPLACEMENT_RETRACE"><Checkbox checked={settings.elliott.entryModel === "DISPLACEMENT_RETRACE"} /><ListItemText primary="Displacement + retracement" /></MenuItem>
-            <MenuItem value="P2_LIQUIDITY_SWEEP"><Checkbox checked={settings.elliott.entryModel === "P2_LIQUIDITY_SWEEP"} /><ListItemText primary="Ложный пробой экстремума Wave 2" /></MenuItem>
-            <MenuItem value="WAVE2_TRENDLINE_BREAK"><Checkbox checked={settings.elliott.entryModel === "WAVE2_TRENDLINE_BREAK"} /><ListItemText primary="Пробой локальной трендовой Wave 2" /></MenuItem>
-            <MenuItem value="ADX_ACCELERATION"><Checkbox checked={settings.elliott.entryModel === "ADX_ACCELERATION"} /><ListItemText primary="ADX acceleration" /></MenuItem>
-            <MenuItem value="VOLATILITY_EXPANSION"><Checkbox checked={settings.elliott.entryModel === "VOLATILITY_EXPANSION"} /><ListItemText primary="Volatility expansion" /></MenuItem>
-            <MenuItem value="VOLUME_EXPANSION"><Checkbox checked={settings.elliott.entryModel === "VOLUME_EXPANSION"} /><ListItemText primary="Volume expansion" /></MenuItem>
+            <MenuItem value="CHOCH_MARKET">CHOCH market</MenuItem>
+            <MenuItem value="CHOCH_RETRACE">CHOCH retrace</MenuItem>
+            <MenuItem value="WAVE1_BREAK_RETRACE">P1 break + retrace</MenuItem>
+            <MenuItem value="WAVE1_BREAK_MARKET">Пробой Wave 1 High/Low → market</MenuItem>
+            <MenuItem value="WAVE1_BREAK_STOP">Stop-order за Wave 1 High/Low</MenuItem>
+            <MenuItem value="WAVE1_BREAK_RETEST_CONFIRM">Пробой P1 + подтверждённый ретест</MenuItem>
+            <MenuItem value="MICRO_WAVE3">Micro Wave 1 → Wave 2 → Wave 3</MenuItem>
+            <MenuItem value="DISPLACEMENT_RETRACE">Displacement + retracement</MenuItem>
+            <MenuItem value="P2_LIQUIDITY_SWEEP">Ложный пробой экстремума Wave 2</MenuItem>
+            <MenuItem value="WAVE2_TRENDLINE_BREAK">Пробой локальной трендовой Wave 2</MenuItem>
+            <MenuItem value="ADX_ACCELERATION">ADX acceleration</MenuItem>
+            <MenuItem value="VOLATILITY_EXPANSION">Volatility expansion</MenuItem>
+            <MenuItem value="VOLUME_EXPANSION">Volume expansion</MenuItem>
           </TextField>
           {usesChochRetracement && elliottChoice("Доля импульса от CHOCH (0 = ретест уровня)", "entryRetracement", [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1])}
           {elliottChoice("Ждать вход, свечей", "entryExpiryBars", [1, 2, 3, 4, 5, 8, 10, 15, 20, 50, 100])}
@@ -208,12 +183,12 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
             </Typography>}
           </Stack>
         </Paper>
-      </Stack>}
-      <TextField label="Начальный капитал" value={settings.initialCapital} type="number"
-        onChange={(event) => updateNumber("initialCapital", event.target.value)} />
-      {settings.strategy === "ELLIOTT" && <Paper variant="outlined" sx={{ p: 2 }}>
+      </Stack>
+      <Paper variant="outlined" sx={{ p: 2 }}>
         <Stack spacing={1.5}>
           <Typography variant="subtitle2">Капитал, риск и маржа</Typography>
+          <TextField fullWidth label="Начальный капитал" value={settings.initialCapital} type="number"
+            onChange={(event) => updateNumber("initialCapital", event.target.value)} />
           <TextField fullWidth select label="Режим позиции" value={settings.elliott.useMargin ? "MARGIN" : "CASH"}
             onChange={(event) => onChange({ ...settings, elliott: {
               ...settings.elliott, useMargin: event.target.value === "MARGIN",
@@ -249,11 +224,13 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
             с маржой — капитал × плечо. Комиссии считаются со всего номинала.
           </Typography>
         </Stack>
-      </Paper>}
+      </Paper>
       <Typography variant="body2" color="text.secondary">
         Stop Loss рассчитывается за структурной границей Elliott, тейки — по заданному Risk/Reward.
       </Typography>
-      <><Stack direction="row" spacing={1.5}>
+      <Accordion disableGutters variant="outlined"><AccordionSummary expandIcon={<Typography>⌄</Typography>}>
+        <Stack><Typography variant="subtitle2">Исполнение и комиссии</Typography><Typography variant="caption" color="text.secondary">Дополнительные параметры симуляции</Typography></Stack>
+      </AccordionSummary><AccordionDetails><Stack spacing={1.5}><Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
         <TextField fullWidth label="Maker, %" value={settings.makerFeePercent} type="number"
           onChange={(event) => updateNumber("makerFeePercent", event.target.value)} />
         <TextField fullWidth label="Taker, %" value={settings.takerFeePercent} type="number"
@@ -261,24 +238,20 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
         <TextField fullWidth label="Проскальзывание, %" value={settings.slippagePercent} type="number"
           onChange={(event) => updateNumber("slippagePercent", event.target.value)} />
       </Stack>
-      <Stack direction="row" spacing={1.5}>
+      <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
         <TextField fullWidth label="Funding в день, %" value={settings.fundingPercentPerDay} type="number"
           onChange={(event) => updateNumber("fundingPercentPerDay", event.target.value)} />
         <TextField fullWidth label="Funding интервал, ч" value={settings.fundingIntervalHours} type="number"
           onChange={(event) => updateNumber("fundingIntervalHours", event.target.value)} />
       </Stack>
-      <Stack direction="row" spacing={1.5}>
+      <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
         <TextField fullWidth label="Задержка, мс" value={settings.executionLatencyMs} type="number"
           onChange={(event) => updateNumber("executionLatencyMs", event.target.value)} />
       </Stack>
-      <Stack direction="row" spacing={1.5}>
-        <TextField fullWidth label="Шаг цены" value={settings.tickSize} type="number"
-          onChange={(event) => updateNumber("tickSize", event.target.value)} />
-      </Stack>
-      <Stack direction="row" spacing={1.5}>
+      <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
         <TextField fullWidth label="Ликвидация, %" value={settings.liquidationFeePercent} type="number"
           onChange={(event) => updateNumber("liquidationFeePercent", event.target.value)} />
-      </Stack></>
+      </Stack></Stack></AccordionDetails></Accordion>
       <Button variant="contained" size="large" disabled={!isValid || isRunning} onClick={onRun}>
         {isRunning ? (progress > 0 ? `Выполняем расчёт… ${progress}%` : "Сохраняем…") : submitLabel}
       </Button>

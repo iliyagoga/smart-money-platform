@@ -17,43 +17,10 @@ import { mapBacktestResult } from "../../lib/backtest/apiTypes";
 import type { BacktestCreateResponse, BacktestRun, BacktestRunsResponse, SavedBacktestRequest } from "../../lib/backtest/apiTypes";
 import type { BacktestResult, BacktestSettings } from "../../lib/backtest/types";
 import { mergeSettingsConfig } from "../../lib/backtest/configClipboard";
+import { toBackendBacktestConfig } from "../../lib/backtest/backendConfig";
+import { defaultBacktestSettings as defaultSettings } from "../../lib/backtest/defaultSettings";
 import { useAuth } from "../../components/auth/AuthProvider";
 import { useRouter } from "next/navigation";
-
-const defaultSettings: BacktestSettings = {
-  initialCapital: 10_000,
-  strategy: "ELLIOTT",
-  feePercent: 0.05,
-  makerFeePercent: 0.02,
-  takerFeePercent: 0.05,
-  slippagePercent: 0.02,
-  positionSizePercent: 25,
-  leverage: 1,
-  fundingPercentPerDay: 0,
-  fundingIntervalHours: 8,
-  executionLatencyMs: 0,
-  tickSize: 0.01,
-  lotSize: 0.000001,
-  minimumOrderSize: 0.000001,
-  volumeParticipationPercent: 5,
-  liquidationFeePercent: 0.5,
-  directionMode: "BOTH",
-  riskPerTradePercent: 1,
-  elliott: {
-    useMargin: false,
-    reinvestProfits: true,
-    macroTimeframe: "H4", structureTimeframe: "H1", entryTimeframe: "M15", atrPeriod: 14,
-    zigzagReversalAtr: 1.5, minSwingAtr: 1, wave1MinAtr: 1.5, wave1MinEfficiency: 0.45,
-    wave2MinRetracement: 0.382, wave2MaxRetracement: 0.786, entryModel: "CHOCH_RETRACE",
-    entryRetracement: 0.5, entryExpiryBars: 4, breakoutBufferAtr: 0.1, retestZoneAtr: 0.25,
-    displacementMinAtr: 1, displacementMinBodyRatio: 0.65, displacementRetracement: 0.5,
-    sweepMinWickRatio: 0.4, volatilityExpansionRatio: 1.5, volumeExpansionRatio: 1.5,
-    volumeExpansionMinBodyRatio: 0.6, chochMinAtr: 0.5, chochMinBodyRatio: 0.5,
-    macroFilter: "STRUCTURE", adxPeriod: 14, adxMin: 0, requireDiConfirmation: false,
-    stopBufferAtr: 0.2, takeProfitCount: 2, takeProfitRr: 2, secondTakeProfitRr: 3,
-    minimumRr: 1.5, breakEvenAtOneR: false, firstTakeAction: "PARTIAL_CLOSE",
-  },
-};
 
 const timeframes = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
 const timeframeMilliseconds: Record<string, number> = {
@@ -205,67 +172,11 @@ export default function BacktestPage() {
           candle_limit: effectiveCandleLimit,
           test_from: Date.parse(`${period.from}T00:00:00Z`),
           test_to: Date.parse(`${period.to}T23:59:59Z`),
-          config: {
-            ...restoredConfig.current,
-            strategy: candidateSettings.strategy,
-            initial_capital: candidateSettings.initialCapital,
-            position_size_percent: candidateSettings.positionSizePercent,
-            leverage: candidateSettings.leverage,
-            fee_percent: candidateSettings.feePercent,
-            maker_fee_percent: candidateSettings.makerFeePercent,
-            taker_fee_percent: candidateSettings.takerFeePercent,
-            slippage_percent: candidateSettings.slippagePercent,
-            funding_percent_per_day: candidateSettings.fundingPercentPerDay,
-            funding_interval_hours: candidateSettings.fundingIntervalHours,
-            execution_latency_ms: candidateSettings.executionLatencyMs,
-            tick_size: runAssetDetails?.tick_size ?? candidateSettings.tickSize,
-            lot_size: runAssetDetails?.lot_size ?? candidateSettings.lotSize,
-            minimum_order_size: runAssetDetails?.minimum_order_size ?? candidateSettings.minimumOrderSize,
-            volume_participation_percent: candidateSettings.volumeParticipationPercent,
-            liquidation_fee_percent: candidateSettings.liquidationFeePercent,
-            direction_mode: candidateSettings.directionMode,
-            risk_per_trade_percent: candidateSettings.riskPerTradePercent,
-            elliott: {
-              ...(restoredConfig.current?.elliott ?? {}),
-              use_margin: candidateSettings.elliott.useMargin,
-              reinvest_profits: candidateSettings.elliott.reinvestProfits,
-              macro_timeframe: candidateSettings.elliott.macroTimeframe,
-              structure_timeframe: candidateSettings.elliott.structureTimeframe,
-              entry_timeframe: candidateSettings.elliott.entryTimeframe,
-              atr_period: candidateSettings.elliott.atrPeriod,
-              zigzag_reversal_atr: candidateSettings.elliott.zigzagReversalAtr,
-              min_swing_atr: candidateSettings.elliott.minSwingAtr,
-              wave1_min_atr: candidateSettings.elliott.wave1MinAtr,
-              wave1_min_efficiency: candidateSettings.elliott.wave1MinEfficiency,
-              wave2_min_retracement: candidateSettings.elliott.wave2MinRetracement,
-              wave2_max_retracement: candidateSettings.elliott.wave2MaxRetracement,
-              entry_model: candidateSettings.elliott.entryModel,
-              entry_retracement: candidateSettings.elliott.entryRetracement,
-              entry_expiry_bars: candidateSettings.elliott.entryExpiryBars,
-              breakout_buffer_atr: candidateSettings.elliott.breakoutBufferAtr,
-              retest_zone_atr: candidateSettings.elliott.retestZoneAtr,
-              displacement_min_atr: candidateSettings.elliott.displacementMinAtr,
-              displacement_min_body_ratio: candidateSettings.elliott.displacementMinBodyRatio,
-              displacement_retracement: candidateSettings.elliott.displacementRetracement,
-              sweep_min_wick_ratio: candidateSettings.elliott.sweepMinWickRatio,
-              volatility_expansion_ratio: candidateSettings.elliott.volatilityExpansionRatio,
-              volume_expansion_ratio: candidateSettings.elliott.volumeExpansionRatio,
-              volume_expansion_min_body_ratio: candidateSettings.elliott.volumeExpansionMinBodyRatio,
-              choch_min_atr: candidateSettings.elliott.chochMinAtr,
-              choch_min_body_ratio: candidateSettings.elliott.chochMinBodyRatio,
-              macro_filter: candidateSettings.elliott.macroFilter,
-              adx_period: candidateSettings.elliott.adxPeriod,
-              adx_min: candidateSettings.elliott.adxMin,
-              require_di_confirmation: candidateSettings.elliott.requireDiConfirmation,
-              stop_buffer_atr: candidateSettings.elliott.stopBufferAtr,
-              take_profit_count: candidateSettings.elliott.takeProfitCount,
-              take_profit_rr: candidateSettings.elliott.takeProfitRr,
-              second_take_profit_rr: candidateSettings.elliott.secondTakeProfitRr,
-              first_take_action: candidateSettings.elliott.firstTakeAction,
-              minimum_rr: candidateSettings.elliott.minimumRr,
-              break_even_at_one_r: candidateSettings.elliott.breakEvenAtOneR,
-            },
-          },
+          config: toBackendBacktestConfig(candidateSettings, {
+            tickSize: runAssetDetails?.tick_size,
+            lotSize: runAssetDetails?.lot_size,
+            minimumOrderSize: runAssetDetails?.minimum_order_size,
+          }, restoredConfig.current),
         }),
       });
       let completed: BacktestRun | undefined;
@@ -489,7 +400,7 @@ export default function BacktestPage() {
     </Box>}
     {workspaceTab === 1 && <Box sx={{ p: { xs: 1, md: 2 }, borderRadius: 2, bgcolor: "action.hover" }}>
       <Grid container spacing={2}>
-      <Grid size={{ xs: 12, xl: 5 }}>
+      <Grid size={{ xs: 12 }} sx={{ maxWidth: 1100, mx: "auto" }}>
         <Button variant="outlined" disabled={isRunning || historyBusy} onClick={() => void pasteRunConfig()} sx={{ mb: 1.5 }}>
           Вставить конфигурацию в настройки
         </Button>
@@ -500,18 +411,6 @@ export default function BacktestPage() {
           isRunning={isRunning}
           progress={progress}
         />
-      </Grid>
-      <Grid size={{ xs: 12, xl: 7 }}>
-        <Paper variant="outlined" sx={{ p: 3, position: { xl: "sticky" }, top: { xl: 16 } }}>
-          <Typography variant="h5">Параметры запуска</Typography>
-          <Typography color="text.secondary" sx={{ mt: 1 }}>
-            {selectedAsset} · {selectedTimeframes.join(", ")} · тест {testFrom} — {testTo}
-          </Typography>
-          <Alert severity={isRunning ? "warning" : "info"} sx={{ mt: 2 }}>
-            {isRunning ? `Расчёт выполняется: ${progress}%` : "После завершения система автоматически откроет вкладку результатов."}
-          </Alert>
-          <Button variant="outlined" sx={{ mt: 2 }} onClick={() => setWorkspaceTab(0)}>Изменить данные и периоды</Button>
-        </Paper>
       </Grid>
     </Grid>
     </Box>}

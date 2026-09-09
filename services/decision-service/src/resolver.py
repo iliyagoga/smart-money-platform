@@ -18,7 +18,8 @@ class ConflictResolver:
           entry_type=s.entry_type,
           stop_loss_price=s.stop_loss_price,take_profit_prices=s.take_profit_prices,confidence=s.confidence,
           target_allocations=s.target_allocations,
+          target_rrs=s.target_rrs,
           break_even_rule=s.break_even_rule,
           move_stop_to_break_even_after_target=s.move_stop_to_break_even_after_target,
           one_trade_per_zone=s.one_trade_per_zone,cooldown_bars_after_stop=s.cooldown_bars_after_stop,
-          deduplication_key=s.deduplication_key)
+          deduplication_key=s.deduplication_key,expires_at=s.expires_at)

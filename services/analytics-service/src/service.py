@@ -40,7 +40,12 @@ class AnalyticsService:
         return equity,today_pnl
     async def snapshot(self):
         equity,today=await self.sync_portfolio();rows=await self.db.fetch("SELECT data FROM positions WHERE status!='CLOSED'");positions=[decode(x["data"]) for x in rows]
-        unrealized=sum((p["current_price"]-p["entry_price"])*p["quantity"]*(1 if p["direction"]=="LONG" else -1) for p in positions);locked=sum(p["entry_price"]*p["quantity"]/max(p.get("leverage",1),1) for p in positions)
-        return {"total_equity":equity+unrealized,"available_balance":max(0,equity-locked),"locked_margin":locked,"unrealized_pnl":unrealized,"realized_pnl_today":today}
+        unrealized=sum((p["current_price"]-p["entry_price"])*p["quantity"]*(1 if p["direction"]=="LONG" else -1)
+          -p["entry_price"]*p["quantity"]*p.get("entry_fee_percent",0)/100 for p in positions)
+        open_realized=sum(float(p.get("realized_pnl",0)) for p in positions)
+        locked=sum(p["entry_price"]*p["quantity"]/max(p.get("leverage",1),1) for p in positions)
+        return {"total_equity":equity+open_realized+unrealized,
+          "available_balance":max(0,equity+open_realized-locked),"locked_margin":locked,
+          "unrealized_pnl":unrealized,"realized_pnl_today":today+open_realized}
     async def report(self,symbol=None,from_ts=None,to_ts=None):
         trades=await self.trades(symbol,from_ts,to_ts);curve=equity_curve(self.initial,trades);return trades,curve,{**statistics(trades),**drawdown(curve)}

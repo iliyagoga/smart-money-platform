@@ -1,23 +1,25 @@
-from src.manager import PositionManager
+from src.manager import PositionManager,fee_adjusted_break_even,liquidation_price
 from src.service import actionable_candle
 from src.models import *
 from src.service import ExecutionService
 import asyncio
 import pytest
+from unittest.mock import AsyncMock
 
 def position(**changes):
-    data=dict(order_id="o",symbol="BTC-USDT",direction="LONG",entry_price=100,current_price=100,quantity=10,initial_quantity=10,stop_loss_price=95,take_profit_prices=[110])
+    data=dict(order_id="o",symbol="BTC-USDT",direction="LONG",entry_price=100,current_price=100,quantity=10,initial_quantity=10,stop_loss_price=95,initial_stop_loss_price=95,take_profit_prices=[110])
     data.update(changes);return Position(**data)
-def candle(low,high,close):return Candle(symbol="BTC-USDT",timeframe="M1",timestamp=1,open=100,low=low,high=high,close=close)
+def candle(low,high,close):return Candle(symbol="BTC-USDT",timeframe="M1",timestamp=1,open=100,low=low,high=high,close=close,volume=1000)
 
 def test_only_new_m1_candles_are_used_for_execution():
-    assert actionable_candle(candle(99,101,100),1)
-    assert not actionable_candle(candle(99,101,100),2)
-    assert not actionable_candle(candle(99,101,100).model_copy(update={"timeframe":"H4","timestamp":10}),2)
+    item=candle(99,101,100).model_copy(update={"timestamp":120_000})
+    assert actionable_candle(item,120_001)
+    assert not actionable_candle(item.model_copy(update={"timestamp":60_000}),120_000)
+    assert not actionable_candle(item.model_copy(update={"timeframe":"H4"}),120_001)
 def test_stop_has_conservative_priority():
-    events=PositionManager().update(position(),candle(94,111,105));assert events[0][0]=="close" and events[0][1]["reason"]=="STOP_LOSS"
+    events=PositionManager().update(position(),candle(94,111,105));assert events[0][0]=="close" and events[0][1]["reason"]=="STRUCTURAL_STOP"
 def test_take_profit_closes_single_target():
-    events=PositionManager().update(position(),candle(99,111,110));assert events[0][0]=="close" and events[0][1]["reason"]=="TAKE_PROFIT"
+    events=PositionManager().update(position(),candle(99,111,110));assert events[0][0]=="close" and events[0][1]["reason"]=="FIXED_RR_TARGET"
 def test_one_r_protects_position():
     p=position(take_profit_prices=[120]);events=PositionManager().update(p,candle(99,106,105));assert p.stop_loss_price==100 and p.status=="PROTECTED" and events[0][0]=="updated"
 def test_move_to_break_even_target_does_not_partially_close():
@@ -26,7 +28,24 @@ def test_move_to_break_even_target_does_not_partially_close():
     assert events[0][0]=="updated" and p.quantity==10 and p.take_profit_prices==[120]
     assert p.stop_loss_price==100 and p.status=="PROTECTED"
 def test_short_stop():
-    p=position(direction="SHORT",stop_loss_price=105,take_profit_prices=[90]);events=PositionManager().update(p,candle(89,106,95));assert events[0][1]["reason"]=="STOP_LOSS"
+    p=position(direction="SHORT",stop_loss_price=105,take_profit_prices=[90]);events=PositionManager().update(p,candle(89,106,95));assert events[0][1]["reason"]=="STRUCTURAL_STOP"
+
+def test_initial_stop_keeps_one_r_stable_after_stop_changes():
+    p=position(stop_loss_price=90,initial_stop_loss_price=95,take_profit_prices=[120])
+    events=PositionManager().update(p,candle(96,106,105))
+    assert events[0][0]=="updated" and p.stop_loss_price==100
+
+def test_all_targets_reached_in_one_candle_match_backtest_sequence():
+    p=position(take_profit_prices=[105,110],target_allocations=[.5,.5],break_even_rule="OFF")
+    events=PositionManager().update(p,candle(99,111,110))
+    assert [event[0] for event in events]==["partial","close"]
+    assert [event[1]["price"] for event in events]==[105,110]
+
+def test_fee_adjusted_break_even_and_liquidation_match_replay_math():
+    p=position(entry_fee_percent=.02,taker_fee_percent=.05,slippage_percent=.1,tick_size=.01,
+      leverage=10,maintenance_margin_percent=.5,liquidation_fee_percent=.5)
+    assert fee_adjusted_break_even(p)==pytest.approx(100.18)
+    assert liquidation_price(p)==pytest.approx((1000-100+5+.2)/(10*(1-.0055)))
 def test_second_order_is_rejected_while_first_is_active():
     service=ExecutionService("postgresql://unused","redis://unused")
     first=Order(symbol="BTC-USDT",side="BUY",type="LIMIT",price=100,quantity=1,status="OPEN")
@@ -34,3 +53,58 @@ def test_second_order_is_rejected_while_first_is_active():
     second=Order(symbol="ETH-USDT",side="BUY",type="LIMIT",price=100,quantity=1)
     with pytest.raises(ValueError,match="Another trade is still active"):
         asyncio.run(service.create_order(second))
+
+def test_submitting_order_also_reserves_the_trading_slot():
+    service=ExecutionService("postgresql://unused","redis://unused")
+    first=Order(symbol="BTC-USDT",side="BUY",type="MARKET",price=100,quantity=1,status="SUBMITTING")
+    service.orders[first.id]=first;service.save_order=AsyncMock();service.stream=AsyncMock()
+    second=Order(symbol="ETH-USDT",side="BUY",type="MARKET",price=100,quantity=1)
+    with pytest.raises(ValueError,match="Another trade is still active"):
+        asyncio.run(service.create_order(second))
+
+def test_paper_market_waits_for_next_candle_and_applies_slippage():
+    async def check():
+        service=ExecutionService("postgresql://unused","redis://unused")
+        service.save_order=AsyncMock();service.stream=AsyncMock();service.fill=AsyncMock()
+        order=Order(symbol="BTC-USDT",side="BUY",type="MARKET",price=100,quantity=1,
+                    execution_mode="PAPER",created_at=1,slippage_percent=.1)
+        await service.create_order(order)
+        assert order.status=="OPEN"
+        service.fill.assert_not_awaited()
+        await service.on_candle(candle(99,102,101).model_copy(update={"timestamp":2,"open":100}))
+        service.fill.assert_awaited_once_with(order,100.1,executed_at=2)
+    asyncio.run(check())
+
+def test_expired_order_is_cancelled_and_does_not_fill():
+    async def check():
+        service=ExecutionService("postgresql://unused","redis://unused")
+        order=Order(symbol="BTC-USDT",side="BUY",type="LIMIT",price=100,quantity=1,
+                    status="OPEN",created_at=1,expires_at=10)
+        service.orders[order.id]=order;service.request_cancel=AsyncMock();service.fill=AsyncMock()
+        await service.on_candle(candle(99,101,100).model_copy(update={"timestamp":11}))
+        service.request_cancel.assert_awaited_once_with(order)
+        service.fill.assert_not_awaited()
+    asyncio.run(check())
+
+def test_paper_fill_is_capped_by_candle_volume_and_rounded_to_lot():
+    async def check():
+        service=ExecutionService("postgresql://unused","redis://unused")
+        service.save_order=AsyncMock();service.stream=AsyncMock();service.fill=AsyncMock()
+        order=Order(symbol="BTC-USDT",side="BUY",type="MARKET",price=100,quantity=10,
+          execution_mode="PAPER",created_at=1,volume_participation_percent=5,lot_size=.1)
+        await service.create_order(order)
+        await service.on_candle(candle(99,101,100).model_copy(update={"timestamp":2,"volume":23}))
+        assert order.quantity==1.1
+        service.fill.assert_awaited_once()
+    asyncio.run(check())
+
+def test_partial_take_uses_the_same_entry_and_exit_fees_as_backtest():
+    async def check():
+        service=ExecutionService("postgresql://unused","redis://unused")
+        service.save_position=AsyncMock();service.publish=AsyncMock()
+        p=position(entry_fee_percent=.02,maker_fee_percent=.02)
+        _,remaining,pnl=await service.close(p,5,110,"FIXED_RR_TARGET")
+        assert remaining==5
+        assert p.fees==pytest.approx(.21)
+        assert pnl==pytest.approx(49.79)
+    asyncio.run(check())
