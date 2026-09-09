@@ -676,18 +676,21 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
                     break
             if selected:
                 pattern, entry_price, entry_fee_rate, stop, risk, targets = selected
-                quantity = _elliott_position_quantity(
+                capital_quantity = _elliott_position_quantity(
                     capital, config.initial_capital, entry_price, stop,
                     config.risk_per_trade_percent, config.position_size_percent,
                     ec.use_margin, config.leverage, ec.reinvest_profits, config.lot_size,
                 )
-                quantity = min(quantity, float(candle.get("volume", 0)) * config.volume_participation_percent / 100)
+                volume_capacity_quantity = float(candle.get("volume", 0)) * config.volume_participation_percent / 100
+                quantity = min(capital_quantity, volume_capacity_quantity)
                 quantity = floor(quantity / config.lot_size) * config.lot_size
                 risk_capital = risk * quantity
                 if quantity >= config.minimum_order_size:
                     traded.add(pattern.id)
                     position = {"pattern_id": pattern.id, "direction": pattern.direction, "entry_time": timestamp,
                                 "entry_price": entry_price, "quantity": quantity, "stop": stop, "initial_stop": stop,
+                                "capital_quantity": capital_quantity,
+                                "volume_capacity_quantity": volume_capacity_quantity,
                                 "targets": targets, "take_profit_prices": list(targets), "risk_capital": risk_capital,
                                 "target_allocations": ([1.0] if ec.take_profit_count == 1
                                                        else list(ec.take_profit_allocations)),

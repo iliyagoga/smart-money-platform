@@ -12,6 +12,11 @@ class DirectionMode(StrEnum):
     BOTH = "BOTH"
 
 
+class PortfolioCapitalMode(StrEnum):
+    ALLOCATED = "ALLOCATED"
+    SEQUENTIAL = "SEQUENTIAL"
+
+
 class ElliottEntryModel(StrEnum):
     CHOCH_MARKET = "CHOCH_MARKET"
     CHOCH_RETRACE = "CHOCH_RETRACE"
@@ -216,11 +221,13 @@ class PortfolioBacktestAsset(BaseModel):
 class PortfolioBacktestCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     initial_capital: float = Field(default=10000, gt=0, allow_inf_nan=False)
+    capital_mode: PortfolioCapitalMode = PortfolioCapitalMode.ALLOCATED
     assets: list[PortfolioBacktestAsset] = Field(min_length=1, max_length=100)
 
     @model_validator(mode="after")
     def validate_portfolio(self):
-        if sum(asset.allocation_percent for asset in self.assets) > 100 + 1e-9:
+        if self.capital_mode == PortfolioCapitalMode.ALLOCATED \
+                and sum(asset.allocation_percent for asset in self.assets) > 100 + 1e-9:
             raise ValueError("portfolio allocations must not exceed 100%")
         symbols = [asset.request.symbol for asset in self.assets]
         if len(set(symbols)) != len(symbols):

@@ -139,7 +139,6 @@ async def portfolios(x_user_id:str=Header(default="local")):
 async def validated_portfolio_assets(request:PortfolioWrite,x_user_id:str):
     symbols=[item.symbol.strip().upper() for item in request.assets]
     if len(set(symbols))!=len(symbols):raise HTTPException(422,"Portfolio symbols must be unique")
-    if sum(item.allocation_percent for item in request.assets)>100.000001:raise HTTPException(422,"Total allocation must not exceed 100%")
     ids=[item.configuration_id for item in request.assets]
     rows=await service.db.fetch("SELECT id,config FROM strategy_configurations WHERE owner_id=$1 AND id=ANY($2::uuid[])",x_user_id,ids)
     configs={row["id"]:decode_json(row["config"]) for row in rows}
@@ -179,6 +178,8 @@ async def portfolio_to_live(portfolio_id:UUID,request:PortfolioLiveRequest,x_use
     row=await service.db.fetchrow("SELECT assets FROM portfolios WHERE id=$1 AND owner_id=$2",portfolio_id,x_user_id)
     if not row:raise HTTPException(404,"Portfolio not found")
     assets=decode_json(row["assets"])
+    if sum(float(item["allocation_percent"]) for item in assets)>100.000001:
+        raise HTTPException(422,"Live portfolio allocation must not exceed 100%")
     async with service.db.acquire() as connection:
       async with connection.transaction():
         for item in assets:

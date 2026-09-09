@@ -32,6 +32,9 @@ export interface BacktestCreateResponse { id: string; status: string }
 interface BackendTrade {
   symbol?: string;
   leverage?: number;
+  capital_before?: number;
+  allocated_capital?: number;
+  allocation_percent?: number;
   id: number;
   direction: "LONG" | "SHORT";
   entry_time: number;
@@ -56,11 +59,13 @@ interface BackendEquityPoint { timestamp: number; equity: number }
 export interface PortfolioResult {
   name: string;
   cash: number;
+  capital_mode?: "ALLOCATED" | "SEQUENTIAL";
+  skipped_overlapping_trades?: number;
   assets: Array<{
     symbol: string; run_id: string; allocation_percent: number;
     initial_capital: number; final_capital: number; net_profit: number;
     total_return_percent: number; contribution_percent: number;
-    total_trades: number; win_rate: number; max_drawdown_percent: number;
+    total_trades: number; skipped_trades?: number; win_rate: number; max_drawdown_percent: number;
   }>;
 }
 
@@ -121,6 +126,9 @@ export function mapBacktestResult(result: BackendBacktestResult): BacktestResult
     id: trade.id,
     symbol: trade.symbol,
     leverage: trade.leverage,
+    capitalBefore: trade.capital_before,
+    allocatedCapital: trade.allocated_capital,
+    allocationPercent: trade.allocation_percent,
     direction: trade.direction,
     entryTime: trade.entry_time,
     exitTime: trade.exit_time,

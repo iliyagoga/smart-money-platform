@@ -81,6 +81,62 @@ def test_portfolio_rejects_invalid_allocations_symbols_and_periods():
             PortfolioBacktestCreate.model_validate(data)
 
 
+def test_sequential_portfolio_allows_each_asset_to_use_full_capital():
+    data = request().model_dump()
+    data['capital_mode'] = 'SEQUENTIAL'
+    for asset in data['assets']:
+        asset['allocation_percent'] = 100
+    validated = PortfolioBacktestCreate.model_validate(data)
+    assert [asset.allocation_percent for asset in validated.assets] == [100, 100]
+
+
+def test_sequential_portfolio_uses_latest_capital_and_skips_overlaps():
+    data = request().model_dump()
+    data['capital_mode'] = 'SEQUENTIAL'
+    data['assets'][0]['allocation_percent'] = 100
+    data['assets'][1]['allocation_percent'] = 50
+    runs = [
+        {'id': 'aaa', 'result': {
+            'initial_capital': 1000, 'final_capital': 1100,
+            'equity': [{'timestamp': 1000, 'equity': 1000}, {'timestamp': 2000, 'equity': 1100}],
+            'trades': [{'id': 1, 'entry_time': 1000, 'exit_time': 2000, 'entry_price': 100,
+                        'exit_price': 110, 'quantity': 10, 'pnl': 100, 'pnl_percent': 10,
+                        'fees': 0, 'direction': 'LONG', 'reason': 'FIXED_RR_TARGET'}],
+            'total_trades': 1, 'win_rate': 100, 'max_drawdown_percent': 0,
+            'benchmark_return_percent': 10,
+        }},
+        {'id': 'bbb', 'result': {
+            'initial_capital': 500, 'final_capital': 570,
+            'equity': [{'timestamp': 1500, 'equity': 500}, {'timestamp': 1800, 'equity': 520},
+                       {'timestamp': 2500, 'equity': 550}, {'timestamp': 3000, 'equity': 570}],
+            'trades': [
+                {'id': 1, 'entry_time': 1500, 'exit_time': 1800, 'entry_price': 50,
+                 'exit_price': 52, 'quantity': 10, 'pnl': 20, 'pnl_percent': 4,
+                 'fees': 0, 'direction': 'LONG', 'reason': 'FIXED_RR_TARGET'},
+                {'id': 2, 'entry_time': 2500, 'exit_time': 3000, 'entry_price': 50,
+                 'exit_price': 55, 'quantity': 10, 'pnl': 50, 'pnl_percent': 10,
+                 'fees': 0, 'direction': 'LONG', 'reason': 'FIXED_RR_TARGET'},
+            ],
+            'total_trades': 2, 'win_rate': 100, 'max_drawdown_percent': 0,
+            'benchmark_return_percent': 14,
+        }},
+    ]
+    result = aggregate_portfolio(data, runs)
+    # BBB's first trade overlaps AAA and is ignored. Its next trade requests
+    # 50% of the now-current 1100 balance, not 50% of the original balance.
+    assert [(trade['symbol'], trade['entry_time']) for trade in result['trades']] == [
+        ('AAA', 1000), ('BBB', 2500),
+    ]
+    assert result['trades'][1]['allocated_capital'] == pytest.approx(550)
+    assert result['trades'][1]['quantity'] == pytest.approx(550 / 520 * 10)
+    assert result['final_capital'] == pytest.approx(1100 + 50 * 550 / 520)
+    assert result['portfolio']['capital_mode'] == 'SEQUENTIAL'
+    assert result['portfolio']['skipped_overlapping_trades'] == 1
+    assert result['portfolio']['assets'][1]['skipped_trades'] == 1
+    assert all(left['exit_time'] <= right['entry_time']
+               for left, right in zip(result['trades'], result['trades'][1:]))
+
+
 @pytest.mark.skipif(not os.environ.get('DATABASE_URL'), reason='Requires PostgreSQL')
 def test_portfolio_lifecycle_and_history_isolation():
     async def check():

@@ -53,6 +53,9 @@ export interface BacktestSettings {
 export interface BacktestTrade {
   symbol?: string;
   leverage?: number;
+  capitalBefore?: number;
+  allocatedCapital?: number;
+  allocationPercent?: number;
   id: number;
   direction: TradeDirection;
   entryTime: number;

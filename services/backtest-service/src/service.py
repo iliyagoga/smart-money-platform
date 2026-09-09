@@ -277,6 +277,8 @@ class BacktestService:
                                if request.config.strategy == StrategyType.ELLIOTT else True),
                 "reinvest_profits": (request.config.elliott.reinvest_profits
                                      if request.config.strategy == StrategyType.ELLIOTT else True),
+                "lot_size": request.config.lot_size,
+                "minimum_order_size": request.config.minimum_order_size,
             }
             result["request_config"] = request.model_dump(mode="json")
             result["execution_spec"] = execution_spec
@@ -560,7 +562,8 @@ class BacktestService:
             return "application/json", json.dumps(run, ensure_ascii=False, indent=2)
         output = io.StringIO()
         writer = csv.DictWriter(output, fieldnames=[
-            "id", "symbol", "run_id", "leverage", "direction", "entry_time", "exit_time", "entry_price", "exit_price", "quantity", "pnl",
+            "id", "symbol", "run_id", "leverage", "capital_before", "allocated_capital", "allocation_percent",
+            "direction", "entry_time", "exit_time", "entry_price", "exit_price", "quantity", "pnl",
             "pnl_percent", "fees", "funding", "reason", "scenario_id", "template_id", "confidence",
         ], extrasaction="ignore")
         writer.writeheader()

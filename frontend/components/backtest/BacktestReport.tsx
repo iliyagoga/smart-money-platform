@@ -73,13 +73,16 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
     {result.portfolio && <Paper variant="outlined" sx={{ p: 2.5, mb: 2 }}>
       <Typography variant="h6">Портфель «{result.portfolio.name}» · вклад активов</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ my: 1 }}>
-        Свободные средства: {result.portfolio.cash.toFixed(2)}. Капитал распределён при старте, без перераспределения между активами.
+        {result.portfolio.capital_mode === "SEQUENTIAL"
+          ? `Последовательный режим: одновременно открыта одна сделка; размер каждой позиции рассчитан от актуального капитала. Пересекающихся сделок пропущено: ${result.portfolio.skipped_overlapping_trades ?? 0}. `
+          : `Свободные средства: ${result.portfolio.cash.toFixed(2)}. Капитал распределён при старте, без перераспределения между активами. `}
         Вклад в доходность — PnL актива / стартовый капитал портфеля; сумма вкладов равна доходности портфеля.
         Просадка рассчитана по общей кривой капитала на временных отметках свечей. Sharpe — по дневной доходности (365 дней).
       </Typography>
       <TableContainer><Table size="small"><TableHead><TableRow>
-        {["Актив", "Доля", "Стартовый капитал", "Итоговый капитал", "PnL", "Доходность актива",
+        {["Актив", "Доля", result.portfolio.capital_mode === "SEQUENTIAL" ? "База капитала" : "Стартовый капитал", "Итоговый капитал", "PnL", "Доходность актива",
           "Вклад, п.п.", "Сделок", "Win rate", "Просадка актива"].map(label => <TableCell key={label}>{label}</TableCell>)}
+        {result.portfolio.capital_mode === "SEQUENTIAL" && <TableCell>Пропущено</TableCell>}
       </TableRow></TableHead><TableBody>{result.portfolio.assets.map(asset => <TableRow key={asset.symbol}>
         <TableCell>{asset.symbol}</TableCell><TableCell>{asset.allocation_percent.toFixed(2)}%</TableCell>
         <TableCell>{asset.initial_capital.toFixed(2)}</TableCell><TableCell>{asset.final_capital.toFixed(2)}</TableCell>
@@ -87,6 +90,7 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
         <TableCell>{asset.total_return_percent.toFixed(2)}%</TableCell><TableCell>{asset.contribution_percent.toFixed(2)}</TableCell>
         <TableCell>{asset.total_trades}</TableCell><TableCell>{asset.win_rate.toFixed(1)}%</TableCell>
         <TableCell>{asset.max_drawdown_percent.toFixed(2)}%</TableCell>
+        {result.portfolio?.capital_mode === "SEQUENTIAL" && <TableCell>{asset.skipped_trades ?? 0}</TableCell>}
       </TableRow>)}</TableBody></Table></TableContainer>
     </Paper>}
     <Grid container spacing={1.5}>
@@ -150,6 +154,7 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
       </Stack>
       <TableContainer><Table size="small">
         <TableHead><TableRow><TableCell>#</TableCell>{result.portfolio && <TableCell>Актив</TableCell>}
+          {result.portfolio?.capital_mode === "SEQUENTIAL" && <><TableCell>Капитал до сделки</TableCell><TableCell>Доля в сделке</TableCell></>}
           <TableCell>Вход</TableCell><TableCell>Выход</TableCell><TableCell>Сторона</TableCell>
           <TableCell>Цена входа</TableCell><TableCell>Цена выхода</TableCell><TableCell>Количество</TableCell><TableCell>Общая цена лота</TableCell>
           <TableCell>Маржа</TableCell><TableCell>Тейк, %</TableCell><TableCell>Стоп, %</TableCell>
@@ -162,7 +167,9 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
             ? Math.abs(trade.initialStop-trade.entryPrice)/trade.entryPrice*100
             : undefined;
           return <TableRow key={trade.id}>
-          <TableCell>{trade.id}</TableCell>{result.portfolio && <TableCell>{trade.symbol}</TableCell>}<TableCell>{new Date(trade.entryTime).toLocaleString("ru-RU")}</TableCell>
+          <TableCell>{trade.id}</TableCell>{result.portfolio && <TableCell>{trade.symbol}</TableCell>}
+          {result.portfolio?.capital_mode === "SEQUENTIAL" && <><TableCell>{trade.capitalBefore?.toFixed(2) ?? "—"}</TableCell><TableCell>{trade.allocatedCapital?.toFixed(2) ?? "—"} ({trade.allocationPercent?.toFixed(2) ?? "—"}%)</TableCell></>}
+          <TableCell>{new Date(trade.entryTime).toLocaleString("ru-RU")}</TableCell>
           <TableCell>{new Date(trade.exitTime).toLocaleString("ru-RU")}</TableCell><TableCell>{trade.direction}</TableCell>
           <TableCell>{trade.entryPrice.toFixed(2)}</TableCell><TableCell>{trade.exitPrice.toFixed(2)}</TableCell>
           <TableCell>{trade.quantity.toFixed(6)}</TableCell>

@@ -51,6 +51,7 @@ export default function PortfoliosPage() {
   const [to,setTo]=useState(today());
   const [portfolioRun, setPortfolioRun] = useState<BacktestRun>();
   const [initialCapital, setInitialCapital] = useState(10000);
+  const [capitalMode,setCapitalMode]=useState<"ALLOCATED"|"SEQUENTIAL">("ALLOCATED");
   const [mode,setMode]=useState("PAPER");
   const running = portfolioRun?.status === "QUEUED" || portfolioRun?.status === "RUNNING";
   const report = useMemo(() => portfolioRun?.result ? mapBacktestResult(portfolioRun.result) : undefined, [portfolioRun?.result]);
@@ -95,7 +96,7 @@ export default function PortfoliosPage() {
     try {
       const created = await api<{id:string}>("/api/v1/backtest/portfolio-backtests", {
         method: "POST", body: JSON.stringify({
-          name: portfolio.name, initial_capital: initialCapital,
+          name: portfolio.name, initial_capital: initialCapital, capital_mode: capitalMode,
           assets: portfolio.assets.map(item => {
             const e = item.config.elliott;
             return { allocation_percent: item.allocation_percent, request: {
@@ -126,7 +127,13 @@ export default function PortfoliosPage() {
       <Stack direction={{xs:"column",xl:"row"}} spacing={1.5}><TextField type="date" size="small" label="Начало датасета" value={from} onChange={event=>setFrom(event.target.value)} slotProps={{inputLabel:{shrink:true}}}/><TextField type="date" size="small" label="Конец датасета" value={to} onChange={event=>setTo(event.target.value)} slotProps={{inputLabel:{shrink:true}}}/>
         <TextField type="number" size="small" label="Капитал портфеля" value={initialCapital} disabled={busy || running}
           onChange={event => setInitialCapital(Number(event.target.value))} slotProps={{htmlInput:{min:0.01,step:100}}}/>
-        <Button variant="outlined" disabled={busy || running || !Number.isFinite(initialCapital) || initialCapital <= 0 || !from || !to || from > to} onClick={()=>void run(portfolio)}>Прогнать датасет</Button><Button variant="contained" color={mode==="PRODUCTION"?"error":"primary"} disabled={busy} onClick={()=>void live(portfolio)}>Добавить в live</Button></Stack>
+        <TextField select size="small" label="Режим капитала" value={capitalMode} disabled={busy||running}
+          onChange={event=>setCapitalMode(event.target.value as "ALLOCATED"|"SEQUENTIAL")} sx={{minWidth:250}}>
+          <MenuItem value="ALLOCATED">Параллельно · фиксированные доли</MenuItem>
+          <MenuItem value="SEQUENTIAL">Последовательно · общий капитал</MenuItem>
+        </TextField>
+        <Button variant="outlined" disabled={busy || running || !Number.isFinite(initialCapital) || initialCapital <= 0 || !from || !to || from > to || (capitalMode==="ALLOCATED"&&portfolio.assets.reduce((sum,item)=>sum+item.allocation_percent,0)>100)} onClick={()=>void run(portfolio)}>Прогнать датасет</Button><Button variant="contained" color={mode==="PRODUCTION"?"error":"primary"} disabled={busy||portfolio.assets.reduce((sum,item)=>sum+item.allocation_percent,0)>100} onClick={()=>void live(portfolio)}>Добавить в live</Button></Stack>
+      {capitalMode==="SEQUENTIAL"&&<Typography variant="body2" color="text.secondary">Одновременно открыта только одна сделка. Для каждой новой сделки доля актива считается от актуального капитала.</Typography>}
       {runId === portfolio.id && portfolioRun && <Stack spacing={1}>
         {running && <LinearProgress variant="determinate" value={portfolioRun.progress}/>}
         <Typography variant="body2">Портфель: {portfolioRun.status} · {portfolioRun.progress}%</Typography>
@@ -139,8 +146,8 @@ export default function PortfoliosPage() {
         <TextField fullWidth select label="Конфигурация" value={item.configuration_id} onChange={event=>setAssets(current=>current.map((value,i)=>i===index?{...value,configuration_id:event.target.value}:value))}>{[...configurationMap.values()].map(config=><MenuItem key={config.id} value={config.id}>{config.name}</MenuItem>)}</TextField>
         <TextField label="Доля, %" type="number" value={item.allocation_percent} onChange={event=>setAssets(current=>current.map((value,i)=>i===index?{...value,allocation_percent:Number(event.target.value)}:value))} slotProps={{htmlInput:{min:0.01,max:100}}} sx={{width:{xs:"100%",md:160},flexShrink:0}}/>
         <Button color="error" disabled={assets.length===1} onClick={()=>setAssets(current=>current.filter((_,i)=>i!==index))}>Убрать</Button></Stack></Paper>)}
-      <Typography color={totalAllocation>100?"error":"text.secondary"}>Распределено: {totalAllocation}% из 100%</Typography><Button variant="outlined" onClick={()=>setAssets(current=>[...current,initialAsset()])}>Добавить актив</Button>
-      <Button variant="contained" disabled={busy||!name.trim()||assets.some(item=>!item.symbol||!item.configuration_id)||totalAllocation>100} onClick={()=>void save()}>Сохранить</Button>
+      <Typography color="text.secondary">Сумма долей: {totalAllocation}%. Значение выше 100% доступно для последовательного прогона; параллельный прогон и live требуют не более 100%.</Typography><Button variant="outlined" onClick={()=>setAssets(current=>[...current,initialAsset()])}>Добавить актив</Button>
+      <Button variant="contained" disabled={busy||!name.trim()||assets.some(item=>!item.symbol||!item.configuration_id)} onClick={()=>void save()}>Сохранить</Button>
     </Stack></DialogContent></Dialog>
   </SectionPage>;
 }
