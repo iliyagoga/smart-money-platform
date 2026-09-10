@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -50,3 +51,31 @@ def test_only_elliott_analysis_routes_remain():
     assert "/elliott/patterns" in routes
     assert "/elliott/history" in routes
     assert not any("smart-money" in path or "scenario-templates" in path for path in routes)
+
+
+def test_historical_paper_replay_is_persisted_outside_live_trade_tables(monkeypatch):
+    async def check():
+        timestamps={"M15":900_000,"H1":3_600_000,"H4":14_400_000}
+        db=SimpleNamespace(execute=AsyncMock())
+        async def fetch(_query,_symbol,timeframe,_limit):
+            step=timestamps[timeframe]
+            return [{"symbol":"BTC-USDT-SWAP","timeframe":timeframe,"timestamp":index*step,
+                     "open":100.0,"high":101.0,"low":99.0,"close":100.0,"volume":1000.0,
+                     "quote_volume":None,"trades_count":None,"is_closed":True} for index in range(4)]
+        db.fetch=AsyncMock(side_effect=fetch)
+        service=ElliottService(SimpleNamespace(db=db))
+        service.trading_config=AsyncMock(return_value={"strategy":"ELLIOTT","elliott":{
+          "entryTimeframe":"M15","structureTimeframe":"H1","macroTimeframe":"H4"}})
+        monkeypatch.setattr("backtest_core.elliott.run_elliott_replay",lambda _candles,_config:{
+          "elliott_patterns":[],"total_trades":1,"net_profit":10,"win_rate":100,
+          "initial_capital":10000,"final_capital":10010,"dataset":{},"trades":[{
+            "pattern_id":"pattern","direction":"LONG","entry_time":900_000,"entry_price":100,
+            "exit_time":1_800_000,"exit_price":102,"pnl":10,"pnl_percent":1,"reason":"FIXED_RR_TARGET",
+            "initial_stop":99,"take_profit_prices":[102]}]})
+        result=await service.rebuild_history_snapshot("BTC-USDT-SWAP")
+        assert result and result["trades"][0]["origin"]=="HISTORICAL_PAPER"
+        queries=[call.args[0] for call in db.execute.await_args_list]
+        assert all("closed_trades" not in query and "orders(" not in query for query in queries)
+        saved=json.loads(db.execute.await_args_list[-1].args[4])
+        assert saved["orders"][0]["status"]=="FILLED" and saved["summary"]["net_pnl"]==10
+    asyncio.run(check())

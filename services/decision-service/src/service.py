@@ -12,6 +12,14 @@ log=logging.getLogger(__name__)
 def decode_json(value):return json.loads(value) if isinstance(value,str) else value
 def config_value(config:dict,camel:str,snake:str,default=None):
     return config.get(camel,config.get(snake,default))
+def simulated_elliott_scenario(request:SimulatedElliottSignalRequest,entry:float,created:int):
+    side=1 if request.direction=="LONG" else -1;risk=entry*request.risk_percent/100
+    return Scenario(id=str(uuid4()),symbol=request.symbol,timeframe="M1",direction=request.direction,
+      setup_type="ELLIOTT_WAVE3",confidence=1,entry_zone_low=entry,entry_zone_high=entry,entry_type="MARKET",
+      stop_loss_price=entry-side*risk,take_profit_prices=[entry+side*risk*request.reward_r],
+      target_allocations=[1.0],target_rrs=[request.reward_r],break_even_rule="OFF",
+      reasons=["Simulated Elliott signal"],objects_used=[{"kind":"ELLIOTT_SIMULATION"}],
+      created_at=created,expires_at=created+300_000)
 class DecisionService:
     def __init__(self,database_url,redis_url,threshold=.6,min_delta=.1,default_capital=10000):
         self.database_url=database_url;self.redis_url=redis_url;self.default_capital=default_capital
@@ -158,3 +166,18 @@ class DecisionService:
                 await self.db.execute("UPDATE trade_signals SET status=$2 WHERE id=$1::uuid",signal.signal_id,"WAITING" if waiting else "REJECTED")
                 await self.stream("trading.command","risk.rejected",{"signal_id":signal.signal_id,"rejection_reason":decision.rejection_reason,"calculated_size":decision.position_size,"min_size":cfg.min_position_size,"timestamp":decision.timestamp})
         return decision
+    async def simulate_elliott(self,request:SimulatedElliottSignalRequest):
+        row=await self.db.fetchrow("SELECT config,mode FROM trading_configs WHERE symbol=$1 AND status='ACTIVE'",request.symbol)
+        if not row or str(decode_json(row["config"]).get("strategy","")).upper()!="ELLIOTT":
+            raise ValueError("Active Elliott configuration not found")
+        entry=await self.db.fetchval("SELECT close::float8 FROM candles WHERE symbol=$1 ORDER BY ts DESC LIMIT 1",request.symbol)
+        if entry is None:raise ValueError("Market price is not available")
+        created=now_ms();scenario=simulated_elliott_scenario(request,float(entry),created)
+        signal=self.resolver.signal(scenario);self.scenarios[scenario.id]=scenario;self.signals[signal.signal_id]=signal
+        await self.db.execute("INSERT INTO scenarios(id,symbol,status,data,created_at) VALUES($1::uuid,$2,'SELECTED',$3::jsonb,to_timestamp($4/1000.0))",scenario.id,scenario.symbol,json.dumps(scenario.model_dump(mode="json")),created)
+        await self.pub("scenario.update","scenario.created",scenario)
+        await self.db.execute("INSERT INTO trade_signals(id,scenario_id,symbol,status,data,created_at) VALUES($1::uuid,$2::uuid,$3,'PENDING',$4::jsonb,to_timestamp($5/1000.0))",signal.signal_id,scenario.id,signal.symbol,json.dumps(signal.model_dump(mode="json")),signal.created_at)
+        ignore_loss_limits=str(row["mode"]).upper() in {"PAPER","DEMO"}
+        decision=await self.assess(signal,ignore_loss_limits=ignore_loss_limits)
+        return {"scenario_id":scenario.id,"signal_id":signal.signal_id,"approved":decision.approved,
+                "risk":decision.model_dump(mode="json")}

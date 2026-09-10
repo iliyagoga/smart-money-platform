@@ -30,6 +30,12 @@ def test_only_admin_changes_risk_config():
     authorize(principal("admin"), "PATCH", "decision", "/risk/config")
 
 
+def test_only_admin_can_emulate_elliott_signal():
+    with pytest.raises(HTTPException):
+        authorize(principal("trader"), "POST", "decision", "/signals/simulate-elliott")
+    authorize(principal("admin"), "POST", "decision", "/signals/simulate-elliott")
+
+
 def test_viewer_can_run_backtest_but_only_admin_manages_assets():
     authorize(principal("viewer"), "POST", "backtest", "/backtests")
     with pytest.raises(HTTPException):

@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio,json,logging
+import asyncio,hashlib,json,logging
 import asyncpg
 from collections import defaultdict
 from .infrastructure import Infrastructure,resilient_loop
@@ -10,6 +10,7 @@ log=logging.getLogger(__name__)
 class ElliottService:
     def __init__(self,infra:Infrastructure):
         self.infra=infra;self.candles=defaultdict(list);self.scenarios={};self.elliott=ElliottLiveEngine();self.task=None
+        self.history_tasks:dict[str,asyncio.Task]={}
     def store_candle(self,candle:Candle):
         bars=self.candles[(candle.symbol,candle.timeframe)]
         bars[:]=[item for item in bars if item.timestamp!=candle.timestamp]
@@ -18,8 +19,12 @@ class ElliottService:
         await self.restore()
         await self.restore_elliott_patterns()
         self.task=asyncio.create_task(resilient_loop(self.subscribe))
+        try:rows=await self.infra.db.fetch("SELECT symbol FROM trading_configs WHERE status='ACTIVE'")
+        except asyncpg.UndefinedTableError:rows=[]
+        for row in rows:self.schedule_history_snapshot(row["symbol"])
     async def stop(self):
         if self.task:self.task.cancel()
+        for task in self.history_tasks.values():task.cancel()
     async def restore(self):
         rows=await self.infra.db.fetch("""
           SELECT symbol,timeframe,(extract(epoch FROM ts)*1000)::bigint AS timestamp,
@@ -41,16 +46,19 @@ class ElliottService:
                 self.elliott.emitted.add(pattern_id)
                 self.elliott.live_signal_ids.add(pattern_id)
     async def subscribe(self):
-        pubsub=self.infra.redis.pubsub();await pubsub.subscribe("candle.update")
+        pubsub=self.infra.redis.pubsub();await pubsub.subscribe("candle.update","trading.config")
         try:
             async for message in pubsub.listen():
                 if message["type"]!="message":continue
                 try:
                     envelope=json.loads(message["data"]);payload=envelope.get("payload",envelope)
-                    if payload.get("is_closed",True):
+                    if message["channel"]=="trading.config":
+                        symbol=str(payload.get("symbol","")).strip().upper()
+                        if symbol and envelope.get("event_type")=="trading.config.saved":self.schedule_history_snapshot(symbol)
+                    elif payload.get("is_closed",True):
                         await self.process(Candle.model_validate(payload),envelope.get("correlation_id"))
                 except Exception:
-                    log.exception("Failed to process candle event")
+                    log.exception("Failed to process Elliott event")
         finally:await pubsub.aclose()
     async def rebuild(self,symbol:str,timeframes:list[Timeframe],limit:int=500):
         symbol=symbol.strip().upper();keys=[(symbol,timeframe) for timeframe in timeframes]
@@ -65,7 +73,97 @@ class ElliottService:
         """,symbol,[str(item) for item in timeframes],limit)
         before=len(self.scenarios)
         for row in rows:await self.process(Candle.model_validate(dict(row)),"history-rebuild")
+        await self.rebuild_history_snapshot(symbol)
         return {"symbol":symbol,"candles":len(rows),"scenarios_created":len(self.scenarios)-before}
+
+    def schedule_history_snapshot(self,symbol:str):
+        symbol=symbol.strip().upper()
+        previous=self.history_tasks.get(symbol)
+        if previous and not previous.done():previous.cancel()
+        task=asyncio.create_task(self.rebuild_history_snapshot(symbol))
+        self.history_tasks[symbol]=task
+        task.add_done_callback(lambda completed:self.history_tasks.pop(symbol,None)
+                               if self.history_tasks.get(symbol) is completed else None)
+
+    async def history_snapshot(self,symbol:str):
+        symbol=symbol.strip().upper()
+        row=await self.infra.db.fetchrow(
+            "SELECT status,data,error,(extract(epoch FROM updated_at)*1000)::bigint updated_at FROM elliott_history_snapshots WHERE symbol=$1",
+            symbol,
+        )
+        if not row:return {"symbol":symbol,"status":"NOT_BUILT","patterns":[],"entries":[],"orders":[],"trades":[]}
+        data=json.loads(row["data"]) if isinstance(row["data"],str) else dict(row["data"])
+        return {"symbol":symbol,"status":row["status"],"error":row["error"],"updated_at":row["updated_at"],
+                "patterns":[],"entries":[],"orders":[],"trades":[],**data}
+
+    async def rebuild_history_snapshot(self,symbol:str):
+        """Build an isolated paper replay. It never writes to orders, positions or closed_trades."""
+        from backtest_core.elliott import run_elliott_replay
+        from backtest_core.models import BacktestConfig
+
+        symbol=symbol.strip().upper();raw=await self.trading_config(symbol)
+        if not raw:return None
+        normalized=normalize_config(raw);config=BacktestConfig.model_validate(normalized)
+        config_hash=hashlib.sha256(json.dumps(normalized,sort_keys=True,separators=(",",":"),default=str).encode()).hexdigest()
+        await self.infra.db.execute("""INSERT INTO elliott_history_snapshots(symbol,status,config_hash,data,error)
+          VALUES($1,'BUILDING',$2,'{}'::jsonb,NULL) ON CONFLICT(symbol) DO UPDATE SET
+          status='BUILDING',config_hash=excluded.config_hash,error=NULL,updated_at=now()""",symbol,config_hash)
+        try:
+            duration={"M1":1,"M5":5,"M15":15,"M30":30,"H1":60,"H4":240,"D1":1440}
+            ec=config.elliott;required=list(dict.fromkeys((ec.entry_timeframe,ec.structure_timeframe,ec.macro_timeframe)))
+            macro_minutes=duration[ec.macro_timeframe]
+            candles_by_tf={}
+            for timeframe in required:
+                limit=min(200_000,max(500,(500*macro_minutes+duration[timeframe]-1)//duration[timeframe]))
+                rows=await self.infra.db.fetch("""SELECT symbol,timeframe,
+                  (extract(epoch FROM ts)*1000)::bigint AS timestamp,open::float8,high::float8,
+                  low::float8,close::float8,volume::float8,quote_volume::float8,trades_count,is_closed
+                  FROM (SELECT * FROM candles WHERE symbol=$1 AND timeframe=$2 AND is_closed
+                        ORDER BY ts DESC LIMIT $3) history ORDER BY ts""",symbol,timeframe,limit)
+                candles_by_tf[timeframe]=[dict(row) for row in rows]
+            missing=[timeframe for timeframe,items in candles_by_tf.items() if not items]
+            if missing:
+                data={"patterns":[],"entries":[],"orders":[],"trades":[],"summary":{},
+                      "message":f"Waiting for candles: {', '.join(missing)}"}
+                await self._save_history_snapshot(symbol,"WAITING_FOR_DATA",config_hash,data)
+                return data
+            result=await asyncio.to_thread(run_elliott_replay,candles_by_tf,config)
+            patterns=result.get("elliott_patterns",[])
+            trades=[{**trade,"id":f"history-{symbol}-{trade.get('pattern_id')}-{trade.get('entry_time')}",
+                     "symbol":symbol,"origin":"HISTORICAL_PAPER"} for trade in result.get("trades",[])]
+            entry_type=("LIMIT" if str(ec.entry_model) in {"CHOCH_RETRACE","WAVE1_BREAK_RETRACE","DISPLACEMENT_RETRACE"}
+                        else "STOP" if str(ec.entry_model) in {"WAVE1_BREAK_STOP","P2_LIQUIDITY_SWEEP","VOLUME_EXPANSION"}
+                        else "MARKET")
+            entries=[{"id":trade["id"],"direction":trade["direction"],"setup_type":"ELLIOTT_WAVE3",
+                      "status":"FILLED","entry_type":entry_type,"entry_zone_low":trade["entry_price"],
+                      "entry_zone_high":trade["entry_price"],"created_at":trade["entry_time"],
+                      "expires_at":trade["entry_time"]+duration[ec.entry_timeframe]*60_000,
+                      "entry_model":str(ec.entry_model),"origin":"HISTORICAL",
+                      "stop_loss_price":trade.get("initial_stop"),
+                      "take_profit_prices":trade.get("take_profit_prices",[]),"trade_id":trade["id"]}
+                     for trade in trades]
+            orders=[{"id":entry["id"],"symbol":symbol,"side":"BUY" if entry["direction"]=="LONG" else "SELL",
+                     "type":entry["entry_type"],"status":"FILLED","price":entry["entry_zone_low"],
+                     "quantity":trade.get("quantity",0),"stop_loss_price":entry.get("stop_loss_price"),
+                     "take_profit_prices":entry.get("take_profit_prices",[]),"filled_at":entry["created_at"],
+                     "origin":"HISTORICAL_PAPER","trade_id":entry["trade_id"]}
+                    for entry,trade in zip(entries,trades)]
+            data={"patterns":patterns,"entries":entries,"orders":orders,"trades":trades,
+                  "summary":{"total_trades":result.get("total_trades",0),"net_pnl":result.get("net_profit",0),
+                             "win_rate":result.get("win_rate",0),"initial_capital":result.get("initial_capital",0),
+                             "final_capital":result.get("final_capital",0)},
+                  "dataset":result.get("dataset",{})}
+            await self._save_history_snapshot(symbol,"COMPLETED",config_hash,data)
+            return data
+        except asyncio.CancelledError:raise
+        except Exception as exc:
+            log.exception("Could not build historical paper replay for %s",symbol)
+            await self.infra.db.execute("UPDATE elliott_history_snapshots SET status='FAILED',error=$2,updated_at=now() WHERE symbol=$1",symbol,str(exc)[:2000])
+            return None
+
+    async def _save_history_snapshot(self,symbol,status,config_hash,data):
+        await self.infra.db.execute("""UPDATE elliott_history_snapshots SET status=$2,config_hash=$3,
+          data=$4::jsonb,error=NULL,updated_at=now() WHERE symbol=$1""",symbol,status,config_hash,json.dumps(data,separators=(",",":"),default=str))
     async def trading_config(self,symbol:str):
         try:
             row=await self.infra.db.fetchrow(

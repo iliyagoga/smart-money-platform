@@ -86,6 +86,7 @@ def authorize(principal: Principal, method: str, service: str, path: str) -> Non
     normalized = "/" + path.strip("/")
     admin_only = (
         normalized.startswith("/internal")
+        or service == "decision" and normalized == "/signals/simulate-elliott" and method == "POST"
         or service == "decision" and normalized.startswith("/risk/config") and method != "GET"
         or service == "backtest" and normalized.startswith(("/assets","/datasets")) and method != "GET"
         or service == "exchange" and normalized.startswith("/exchange/account")

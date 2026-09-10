@@ -20,8 +20,13 @@ type TradingConfigsResponse = { configs: TradingConfig[] };
 type ElliottPatternsResponse = { symbol: string; patterns: LiveElliottPattern[]; total: number };
 type LiveEntriesResponse = { symbol: string; entries: LiveEntryScenario[]; total: number };
 type ElliottHistoryResponse = {
-  symbol: string; patterns: LiveElliottPattern[]; entries: LiveEntryScenario[];
-  patterns_total: number; entries_total: number;
+  symbol: string; status: "NOT_BUILT" | "BUILDING" | "WAITING_FOR_DATA" | "COMPLETED" | "FAILED";
+  error?: string; message?: string; updated_at?: number;
+  patterns: LiveElliottPattern[]; entries: LiveEntryScenario[]; trades: HistoricalPaperTrade[];
+};
+type HistoricalPaperTrade = {
+  id: string; direction: "LONG" | "SHORT"; entry_time: number; entry_price: number;
+  exit_time: number; exit_price: number; pnl: number; pnl_percent: number; reason: string;
 };
 export default function MarketPage() {
   const assets = useTradingAssets(); const [symbol, setSymbol] = useState("");
@@ -37,46 +42,16 @@ export default function MarketPage() {
   const availableTimeframes = allTimeframes;
   const selectedConfig = activeConfigs.find((config) => config.symbol === viewed);
   const macroTimeframe = tradingMacroTimeframe(selectedConfig?.config);
-  const strategyTimeframes = tradingElliottTimeframes(selectedConfig?.config);
-  const candleLimit = timeframeWindowLimit(selectedTf, macroTimeframe);
+  const candleLimit = Math.min(10_000,timeframeWindowLimit(selectedTf, macroTimeframe));
   const elliottPatterns = useApiResource<ElliottPatternsResponse>(`/api/v1/elliott/elliott/patterns?symbol=${encodeURIComponent(viewed)}`);
   const liveEntries = useApiResource<LiveEntriesResponse>(`/api/v1/elliott/elliott/entries?symbol=${encodeURIComponent(viewed)}`);
-  const historicalEntryCandles = useOkxCandles(viewed,strategyTimeframes.entry,
-    timeframeWindowLimit(strategyTimeframes.entry,strategyTimeframes.macro));
-  const historicalStructureCandles = useOkxCandles(viewed,strategyTimeframes.structure,
-    timeframeWindowLimit(strategyTimeframes.structure,strategyTimeframes.macro));
-  const historicalMacroCandles = useOkxCandles(viewed,strategyTimeframes.macro,500);
-  const selectedUsesStrategyData = [strategyTimeframes.entry,strategyTimeframes.structure,strategyTimeframes.macro].includes(selectedTf);
-  const standaloneCandles = useOkxCandles(selectedUsesStrategyData ? "" : viewed,selectedTf,candleLimit);
-  const candles = selectedTf === strategyTimeframes.entry ? historicalEntryCandles
-    : selectedTf === strategyTimeframes.structure ? historicalStructureCandles
-    : selectedTf === strategyTimeframes.macro ? historicalMacroCandles : standaloneCandles;
-  const [historicalElliott,setHistoricalElliott] = useState<ElliottHistoryResponse | null>(null);
+  const historicalElliott = useApiResource<ElliottHistoryResponse>(`/api/v1/elliott/elliott/history?symbol=${encodeURIComponent(viewed)}`);
+  const candles = useOkxCandles(viewed,selectedTf,candleLimit);
+  const displayedPatterns = historicalElliott.data?.status === "COMPLETED"
+    ? historicalElliott.data.patterns : (elliottPatterns.data?.patterns ?? []);
   const displayedEntries = useMemo(() => [...new Map([
-    ...(historicalElliott?.entries ?? []),...(liveEntries.data?.entries ?? []),
-  ].map((item) => [item.id,item])).values()], [historicalElliott?.entries,liveEntries.data?.entries]);
-  const analysisKey = [viewed,configFingerprint(selectedConfig?.config),
-    candleFingerprint(historicalEntryCandles.data.candles),candleFingerprint(historicalStructureCandles.data.candles),
-    candleFingerprint(historicalMacroCandles.data.candles)].join("|");
-  useEffect(() => {
-    if (!viewed || historicalEntryCandles.loading || historicalStructureCandles.loading || historicalMacroCandles.loading) return;
-    const byTimeframe = {
-      [strategyTimeframes.entry]: historicalEntryCandles.data.candles,
-      [strategyTimeframes.structure]: historicalStructureCandles.data.candles,
-      [strategyTimeframes.macro]: historicalMacroCandles.data.candles,
-    };
-    if (Object.values(byTimeframe).some((items) => !items.length)) return;
-    const cached=historicalAnalysisCache.get(analysisKey);
-    if (cached) { setHistoricalElliott(cached); return; }
-    let cancelled=false;
-    void api<ElliottHistoryResponse>("/api/v1/elliott/elliott/history",{ method:"POST",
-      body:JSON.stringify({ symbol:viewed,candles_by_timeframe:byTimeframe }) })
-      .then((result) => { historicalAnalysisCache.set(analysisKey,result); if (!cancelled) setHistoricalElliott(result); })
-      .catch(() => { if (!cancelled) setHistoricalElliott(null); });
-    return () => { cancelled=true; };
-  },[viewed,analysisKey,strategyTimeframes.entry,strategyTimeframes.structure,strategyTimeframes.macro,
-    historicalEntryCandles.loading,historicalStructureCandles.loading,historicalMacroCandles.loading,
-    historicalEntryCandles.data.candles,historicalStructureCandles.data.candles,historicalMacroCandles.data.candles]);
+    ...(historicalElliott.data?.entries ?? []),...(liveEntries.data?.entries ?? []),
+  ].map((item) => [item.id,item])).values()], [historicalElliott.data?.entries,liveEntries.data?.entries]);
   const reloadCandles = candles.reload;
   useEffect(() => {
     if (!symbol && assets.assets.length) setSymbol(assets.assets[0]);
@@ -84,7 +59,8 @@ export default function MarketPage() {
   }, [assets.assets, activeAssets, symbol, viewSymbol]);
   const reloadPatterns = elliottPatterns.reload;
   const reloadScenarios = liveEntries.reload;
-  useEffect(() => { const socket = new EventSocket(["candle.*","scenario.*"]); const unsubscribe = socket.subscribe((event) => { if (event.payload?.symbol === viewed) { if (!event.payload.timeframe || event.payload.timeframe === selectedTf) reloadCandles(); reloadPatterns(); reloadScenarios(); } }); void socket.connect(); const timer = window.setInterval(() => { reloadCandles(); reloadPatterns(); reloadScenarios(); }, 15_000); return () => { unsubscribe(); socket.close(); window.clearInterval(timer); }; }, [viewed, selectedTf, reloadCandles, reloadPatterns, reloadScenarios]);
+  const reloadHistory = historicalElliott.reload;
+  useEffect(() => { const socket = new EventSocket(["candle.*","scenario.*"]); const unsubscribe = socket.subscribe((event) => { if (event.payload?.symbol === viewed) { if (!event.payload.timeframe || event.payload.timeframe === selectedTf) reloadCandles(); reloadPatterns(); reloadScenarios(); } }); void socket.connect(); const timer = window.setInterval(() => { reloadCandles(); reloadPatterns(); reloadScenarios(); reloadHistory(); }, 15_000); return () => { unsubscribe(); socket.close(); window.clearInterval(timer); }; }, [viewed, selectedTf, reloadCandles, reloadPatterns, reloadScenarios, reloadHistory]);
   const save = async () => { setSaving(true); setMessage(""); try { if (!selected) throw new Error("Введите актив"); const elliottTimeframes = [settings.elliott.entryTimeframe, settings.elliott.structureTimeframe, settings.elliott.macroTimeframe]; const dataset = await api<{ timeframes: Array<{ timeframe: string; candles: number }> }>(`/api/v1/backtest/datasets/${encodeURIComponent(selected)}`).catch(() => ({ timeframes: [] })); const missing = elliottTimeframes.filter((timeframe) => !dataset.timeframes.some((item) => item.timeframe === timeframe && item.candles > 0)); if (missing.length) { await api("/api/v1/exchange/exchange/history", { method: "POST", body: JSON.stringify({ symbol: selected, timeframes: missing, from_timestamp: Date.now() - 180 * 86400000, to_timestamp: Date.now(), incremental: false, backfill: false }) }); setMessage(`Для ${selected} запрошены свечи: ${missing.join(", ")}. Конфигурация сохраняется.`); } await api(`/api/v1/backtest/assets`, { method: "POST", body: JSON.stringify({ symbol: selected, category: "crypto" }) }).catch((error: unknown) => { if (!(error instanceof Error) || !error.message.startsWith("409")) throw error; }); await api("/api/v1/exchange/exchange/reload-symbols", { method: "POST" }); await api("/api/v1/execution/trading-configs", { method: "POST", body: JSON.stringify({ symbol: selected, mode: tradingMode, config: settings }) }); setViewSymbol(selected); assets.reload(); tradingConfigs.reload(); setMessage(`Конфигурация ${selected} сохранена в режиме ${tradingMode}.`); } catch (reason) { setMessage(reason instanceof Error ? reason.message : String(reason)); } finally { setSaving(false); } };
   const editActiveConfig = () => {
     if (!selectedConfig?.config) return;
@@ -120,7 +96,11 @@ export default function MarketPage() {
       <AccordionDetails><Stack spacing={2}><Stack direction={{ xs:"column",md:"row" }} spacing={1.5}><TextField fullWidth label="Актив" placeholder="BTC-USDT-SWAP" value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())} /><TextField fullWidth select label="Режим торговли" value={tradingMode} onChange={(e) => setTradingMode(e.target.value as TradingMode)}><MenuItem value="PAPER">Paper — локальная имитация</MenuItem><MenuItem value="DEMO">OKX Demo</MenuItem><MenuItem value="PRODUCTION">OKX Production</MenuItem></TextField></Stack><Alert severity={tradingMode === "PRODUCTION" ? "warning" : "info"}>{tradingMode === "PAPER" ? "Ордера исполняются локально и не отправляются на OKX." : tradingMode === "DEMO" ? "Ордера отправляются в демонстрационный контур OKX." : "Реальные ордера. Gateway должен быть подключён к production OKX и явно разрешён для торговли."}</Alert><BacktestSettingsForm isRunning={saving} onChange={setSettings} onRun={() => void save()} progress={0} settings={settings} submitLabel={activeConfigs.some((item) => item.symbol === selected) ? "Сохранить изменения" : "Зарегистрировать актив"} /><Button variant="outlined" onClick={() => void pasteConfig()} disabled={saving}>Вставить скопированную конфигурацию</Button></Stack></AccordionDetails>
     </Accordion>
     {message && <Alert severity={message.includes("сохранена") || message.includes("загружена") || message.includes("вставлена") || message.includes("удалён") ? "success" : "error"}>{message}</Alert>}
-    <Paper variant="outlined" sx={{ p: { xs: 2, md: 3 }, width: "100%" }}><Stack spacing={1.5}><Typography variant="h6">Состояние актива</Typography><Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}><TextField fullWidth select label="Актив для просмотра" value={viewed} onChange={(e) => { setHistoricalElliott(null); setViewSymbol(e.target.value); }}>{activeAssets.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}</TextField><TextField fullWidth select label="Просматриваемый таймфрейм" value={selectedTf} onChange={(e) => setSelectedTf(e.target.value)} disabled={!availableTimeframes.length}>{availableTimeframes.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}</TextField><Button color="error" variant="contained" disabled={!viewed || saving} onClick={() => void removeLiveAsset()} sx={{ minWidth: 190, alignSelf: "center", borderRadius: 1, px: 2.5, py: .5, boxShadow: "none", textTransform: "none", fontWeight: 700, "&:hover": { boxShadow: "0 4px 12px rgba(211,47,47,.2)" } }}>Удалить актив</Button></Stack>{viewed ? <TradingViewChart key={`${viewed}:${selectedTf}`} candles={candles.data?.candles ?? []} elliottPatterns={historicalElliott?.patterns ?? elliottPatterns.data?.patterns ?? []} entryScenarios={displayedEntries} /> : <Typography color="text.secondary">Нет активных активов для просмотра.</Typography>}</Stack></Paper>
+    <Paper variant="outlined" sx={{ p: { xs: 2, md: 3 }, width: "100%" }}><Stack spacing={1.5}><Typography variant="h6">Состояние актива</Typography><Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}><TextField fullWidth select label="Актив для просмотра" value={viewed} onChange={(e) => setViewSymbol(e.target.value)}>{activeAssets.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}</TextField><TextField fullWidth select label="Просматриваемый таймфрейм" value={selectedTf} onChange={(e) => setSelectedTf(e.target.value)} disabled={!availableTimeframes.length}>{availableTimeframes.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}</TextField><Button color="error" variant="contained" disabled={!viewed || saving} onClick={() => void removeLiveAsset()} sx={{ minWidth: 190, alignSelf: "center", borderRadius: 1, px: 2.5, py: .5, boxShadow: "none", textTransform: "none", fontWeight: 700, "&:hover": { boxShadow: "0 4px 12px rgba(211,47,47,.2)" } }}>Удалить актив</Button></Stack>
+      {historicalElliott.data?.status === "BUILDING" && <Alert severity="info">Исторические paper-сделки рассчитываются на сервере…</Alert>}
+      {historicalElliott.data?.status === "WAITING_FOR_DATA" && <Alert severity="warning">Исторический расчёт ждёт загрузки свечей.</Alert>}
+      {historicalElliott.data?.status === "FAILED" && <Alert severity="error">Не удалось рассчитать историю: {historicalElliott.data.error}</Alert>}
+      {viewed ? <TradingViewChart key={`${viewed}:${selectedTf}`} candles={candles.data?.candles ?? []} elliottPatterns={displayedPatterns} entryScenarios={displayedEntries} historicalTrades={historicalElliott.data?.trades ?? []} /> : <Typography color="text.secondary">Нет активных активов для просмотра.</Typography>}</Stack></Paper>
     {selectedConfig && <Paper variant="outlined" sx={{ p:{ xs:2,md:3 } }}><Stack spacing={2}><Stack direction="row" sx={{ alignItems:"center",justifyContent:"space-between" }}><Stack direction="row" spacing={1} sx={{ alignItems:"center" }}><Typography variant="h6">Конфигурация {selectedConfig.symbol}</Typography><Chip label={selectedConfig.mode} color={selectedConfig.mode === "PRODUCTION" ? "error" : selectedConfig.mode === "DEMO" ? "warning" : "default"} /></Stack><Button variant="contained" onClick={editActiveConfig}>Редактировать</Button></Stack><ConfigSummary value={selectedConfig.config} /></Stack></Paper>}
   </Stack></SectionPage>;
 }
@@ -166,22 +146,6 @@ function tradingMacroTimeframe(value?: BacktestSettings | string): string {
   } catch { return "H4"; }
 }
 
-function tradingElliottTimeframes(value?: BacktestSettings | string) {
-  const fallback={ entry:"M15",structure:"H1",macro:"H4" };
-  if (!value) return fallback;
-  try {
-    const config=typeof value === "string" ? JSON.parse(value) as Record<string,unknown> : value;
-    const elliott=(config as { elliott?:Record<string,unknown> }).elliott;
-    const pick=(camel:string,snake:string,defaultValue:string) => {
-      const item=elliott?.[camel] ?? elliott?.[snake];
-      return typeof item === "string" && item in timeframeMinutes ? item : defaultValue;
-    };
-    return { entry:pick("entryTimeframe","entry_timeframe",fallback.entry),
-      structure:pick("structureTimeframe","structure_timeframe",fallback.structure),
-      macro:pick("macroTimeframe","macro_timeframe",fallback.macro) };
-  } catch { return fallback; }
-}
-
 function timeframeWindowLimit(selected: string, macro: string): number {
   const selectedMinutes = timeframeMinutes[selected] ?? 15;
   const macroMinutes = timeframeMinutes[macro] ?? 240;
@@ -189,7 +153,6 @@ function timeframeWindowLimit(selected: string, macro: string): number {
 }
 
 const candleCache = new Map<string, Candle[]>();
-const historicalAnalysisCache = new Map<string,ElliottHistoryResponse>();
 const browserCacheTimers = new Map<string,number>();
 
 function openCandleCache():Promise<IDBDatabase> {
@@ -232,10 +195,6 @@ function candleFingerprint(candles:Candle[]) {
   return `${candles.length}:${first?.timestamp ?? 0}:${last?.timestamp ?? 0}:${last?.open ?? 0}:${last?.high ?? 0}:${last?.low ?? 0}:${last?.close ?? 0}`;
 }
 
-function configFingerprint(config?:BacktestSettings|string) {
-  return typeof config === "string" ? config : JSON.stringify(config ?? {});
-}
-
 function mergeCandles(current: Candle[], incoming: Candle[]): Candle[] {
   return [...new Map([...current, ...incoming].map((item) => [item.timestamp, item])).values()]
     .sort((left, right) => left.timestamp - right.timestamp);
@@ -247,25 +206,31 @@ function useOkxCandles(symbol: string, timeframe: string, limit: number) {
   const [reloadKey, setReloadKey] = useState(0);
   const [loading,setLoading] = useState(false);
   const cacheRef = useRef(candleCache);
+  const fingerprintRef = useRef(`${key}:${candleFingerprint(data.candles)}`);
   const reload = useCallback(() => setReloadKey((current) => current + 1), []);
 
   useEffect(() => {
     let cancelled = false;
-    if (!symbol) { setData({ symbol, timeframe, candles: [] }); return () => { cancelled = true; }; }
+    const commit=(next:Candle[]) => {
+      const fingerprint=`${key}:${candleFingerprint(next)}`;
+      if (fingerprint === fingerprintRef.current) return;
+      fingerprintRef.current=fingerprint;setData({ symbol,timeframe,candles:next });
+    };
+    if (!symbol) { commit([]); return () => { cancelled = true; }; }
     const load = async () => {
       setLoading(true);
       try {
       let collected = cacheRef.current.get(key) ?? await readBrowserCandles(key);
       if (collected.length) {
         cacheRef.current.set(key,collected);
-        if (!cancelled) setData({ symbol,timeframe,candles:collected.slice(-limit) });
+        if (!cancelled) commit(collected.slice(-limit));
       }
       const first = await api<CandlesResponse>(
         `/api/v1/exchange/exchange/market-candles?symbol=${encodeURIComponent(symbol)}`
         + `&timeframe=${timeframe}&limit=${Math.min(300,limit)}`,
       );
       collected = mergeCandles(collected,first.candles);
-      if (!cancelled) setData({ symbol, timeframe, candles: collected.slice(-limit) });
+      if (!cancelled && !cacheRef.current.get(key)?.length) commit(collected.slice(-limit));
       let cursor = collected[0]?.timestamp;
       while (!cancelled && collected.length < limit && first.candles.length) {
         const remaining = Math.min(300,limit-collected.length);
@@ -280,16 +245,15 @@ function useOkxCandles(symbol: string, timeframe: string, limit: number) {
         if (collected.length === previousSize || nextCursor === cursor) break;
         cursor = nextCursor;
         cacheRef.current.set(key,collected);
-        if (!cancelled) setData({ symbol, timeframe, candles: collected.slice(-limit) });
         if (page.candles.length < remaining) break;
       }
       const result = collected.slice(-limit);
       cacheRef.current.set(key,result);
       scheduleBrowserCandleWrite(key,result);
-      if (!cancelled) setData({ symbol, timeframe, candles: result });
+      if (!cancelled) commit(result);
       } finally { if (!cancelled) setLoading(false); }
     };
-    void load().catch(() => { if (!cancelled) setData({ symbol, timeframe, candles: cacheRef.current.get(key) ?? [] }); });
+    void load().catch(() => { if (!cancelled) commit(cacheRef.current.get(key) ?? []); });
     return () => { cancelled = true; };
   }, [key, limit, reloadKey, symbol, timeframe]);
 

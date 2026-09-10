@@ -44,6 +44,14 @@ class RiskConfigPatch(BaseModel):
     daily_stop_hours:int|None=Field(default=None,ge=1,le=168)
 
 class RiskCalculateRequest(BaseModel):signal_id:str;capital:float|None=Field(default=None,gt=0)
+class SimulatedElliottSignalRequest(BaseModel):
+    symbol:str;direction:str="LONG";risk_percent:float=Field(default=1,gt=0,le=10);reward_r:float=Field(default=2,gt=0,le=20)
+    @model_validator(mode="after")
+    def valid(self):
+        self.symbol=self.symbol.strip().upper();self.direction=self.direction.upper()
+        if not self.symbol:raise ValueError("symbol must not be empty")
+        if self.direction not in {"LONG","SHORT"}:raise ValueError("direction must be LONG or SHORT")
+        return self
 class RiskDecision(BaseModel):
     signal_id:str;approved:bool;position_size:float=0;position_value:float=0;leverage:int=1
     risk_amount:float=0;risk_percent_of_capital:float=0;rejection_reason:str|None=None;timestamp:int=Field(default_factory=now_ms)

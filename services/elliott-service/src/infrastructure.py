@@ -16,6 +16,14 @@ class Infrastructure:
         async with self.db.acquire() as conn:
             await conn.execute("""
               CREATE TABLE IF NOT EXISTS scenarios(id uuid PRIMARY KEY,symbol text NOT NULL,status text NOT NULL,data jsonb NOT NULL,created_at timestamptz NOT NULL);
+              CREATE TABLE IF NOT EXISTS elliott_history_snapshots(
+                symbol text PRIMARY KEY,
+                status text NOT NULL,
+                config_hash text NOT NULL,
+                data jsonb NOT NULL DEFAULT '{}'::jsonb,
+                error text,
+                updated_at timestamptz NOT NULL DEFAULT now()
+              );
             """)
     async def close(self):
         if self.redis:await self.redis.aclose()

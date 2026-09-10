@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI,HTTPException
+from fastapi import FastAPI,Header,HTTPException
 from .models import *
 from .service import DecisionService
 from .settings import settings
@@ -28,3 +28,9 @@ async def risk_calculate(request:RiskCalculateRequest):
     return await service.assess(signal,request.capital)
 @app.post("/internal/scenarios/evaluate")
 async def evaluate(scenario:Scenario):return await service.evaluate(scenario)
+@app.post("/signals/simulate-elliott",status_code=201)
+async def simulate_elliott(request:SimulatedElliottSignalRequest,x_user_roles:str=Header(default="")):
+    if "admin" not in {role.strip() for role in x_user_roles.split(",")}:
+        raise HTTPException(403,"Admin role is required")
+    try:return await service.simulate_elliott(request)
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc

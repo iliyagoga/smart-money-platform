@@ -14,6 +14,7 @@ const navigation = [
   { label: "Портфели", href: "/portfolios" },
   { label: "Бэктест", href: "/backtest" },
   { label: "Replay", href: "/replay" },
+  { label: "Профиль", href: "/profile" },
 ];
 
 interface DashboardHeaderProps { isLive?: boolean; username: string }

@@ -1,6 +1,7 @@
 from src.models import *
 from src.resolver import ConflictResolver
 from src.risk import RiskManager
+from src.service import DecisionService,simulated_elliott_scenario
 
 def scenario(id,direction,confidence):return Scenario(id=id,symbol="BTC-USDT",timeframe="M15",direction=direction,setup_type="TEST",confidence=confidence,entry_zone_low=99,entry_zone_high=101,stop_loss_price=95,take_profit_prices=[110],expires_at=9999999999999)
 def test_conflict_rejects_inconclusive_directions():
@@ -68,7 +69,6 @@ def test_demo_simulation_still_rejects_an_active_trade():
 def test_elliott_confidence_is_preserved_without_model_scoring():
     import asyncio
     from unittest.mock import AsyncMock
-    from src.service import DecisionService
 
     async def check():
         service = DecisionService("unused", "unused")
@@ -81,6 +81,14 @@ def test_elliott_confidence_is_preserved_without_model_scoring():
         await asyncio.gather(*service.pending.values())
         assert await service.evaluate(scenario("other", "LONG", 1)) is None
     asyncio.run(check())
+
+
+def test_simulated_elliott_signal_has_executable_risk_levels():
+    request=SimulatedElliottSignalRequest(symbol=" btc-usdt-swap ",direction="long",risk_percent=1,reward_r=2)
+    item=simulated_elliott_scenario(request,100,1_000)
+    assert item.symbol=="BTC-USDT-SWAP" and item.direction=="LONG" and item.entry_type=="MARKET"
+    assert item.stop_loss_price==99 and item.take_profit_prices==[102]
+    assert item.target_allocations==[1] and item.target_rrs==[2]
 
 
 def test_waiting_signals_retry_sequentially_after_position_closes():

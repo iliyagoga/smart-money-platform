@@ -118,6 +118,7 @@ async def save_trading_config(request: TradingConfigCreate):
     row=await service.db.fetchrow("""INSERT INTO trading_configs(symbol,mode,status,config) VALUES($1,$2,'ACTIVE',$3::jsonb)
       ON CONFLICT(symbol) DO UPDATE SET mode=excluded.mode,status='ACTIVE',config=excluded.config,updated_at=now()
       RETURNING symbol,mode,status,config,created_at,updated_at""",symbol,mode,json.dumps(request.config))
+    await service.publish_channel("trading.config","trading.config.saved",{"symbol":symbol,"mode":mode})
     return dict(row)
 @app.delete("/trading-configs/{symbol}")
 async def delete_trading_config(symbol: str):
@@ -129,6 +130,8 @@ async def delete_trading_config(symbol: str):
         raise HTTPException(409,"Close the active order or position before removing the trading asset")
     removed=await service.db.fetchval("DELETE FROM trading_configs WHERE symbol=$1 RETURNING symbol",symbol)
     if not removed:raise HTTPException(404,"Trading asset not found")
+    await service.db.execute("DELETE FROM elliott_history_snapshots WHERE symbol=$1",symbol)
+    await service.publish_channel("trading.config","trading.config.deleted",{"symbol":symbol})
     return {"success":True,"symbol":removed}
 
 @app.get("/portfolios")

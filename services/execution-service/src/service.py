@@ -48,6 +48,8 @@ class ExecutionService:
         if self.db:await self.db.close()
     async def envelope(self,event_type,payload):return {"message_id":str(uuid4()),"correlation_id":str(uuid4()),"timestamp":int(time()*1000),"source":"execution-service","version":"1.0.0","event_type":event_type,"payload":payload}
     async def publish(self,event_type,payload):await self.redis.publish("position.update",json.dumps(await self.envelope(event_type,payload),separators=(",",":")))
+    async def publish_channel(self,channel,event_type,payload):
+        await self.redis.publish(channel,json.dumps(await self.envelope(event_type,payload),separators=(",",":")))
     async def stream(self,event_type,payload):await self.redis.xadd("execution.command",{"data":json.dumps(await self.envelope(event_type,payload),separators=(",",":"))},maxlen=100000,approximate=True)
     async def consume(self):
         await self.consume_pending()

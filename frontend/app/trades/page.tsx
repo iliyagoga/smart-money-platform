@@ -15,6 +15,7 @@ import type { OrdersResponse, Position, PositionsResponse, TradeAnalysisResponse
 
 export default function TradesPage() {
   const [symbol, setSymbol] = useState("");
+  const [direction, setDirection] = useState<"LONG" | "SHORT">("LONG");
   const symbolQuery = symbol ? `?symbol=${encodeURIComponent(symbol)}&limit=1000` : "?limit=1000";
   const positionsResource = useApiResource<PositionsResponse | Position[]>("/api/v1/execution/positions");
   const assetsResource = useApiResource<TradeAssetsResponse>("/api/v1/execution/trades/assets");
@@ -26,11 +27,13 @@ export default function TradesPage() {
   const [actionError, setActionError] = useState("");
   const [closingPosition, setClosingPosition] = useState<Position>();
   const [isClosing, setIsClosing] = useState(false);
+  const [isSimulating, setIsSimulating] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
   const positions = Array.isArray(positionsResource.data)
     ? positionsResource.data
     : (positionsResource.data?.positions ?? []);
   const canTrade = roles.some((role) => role === "trader" || role === "admin");
+  const isAdmin = roles.includes("admin");
   const symbols = Array.from(new Set([
     ...(assetsResource.data?.assets.map((asset) => asset.symbol) ?? []), ...positions.map((position) => position.symbol),
   ])).sort();
@@ -42,6 +45,19 @@ export default function TradesPage() {
     analysisResource.reload();
     assetsResource.reload();
     ordersResource.reload();
+  };
+  const simulateSignal = async () => {
+    if (!symbol) return;
+    setIsSimulating(true);setActionError("");
+    try {
+      const result = await api<{ approved: boolean; risk?: { rejection_reason?: string | null } }>("/api/v1/decision/signals/simulate-elliott", {
+        method: "POST", body: JSON.stringify({ symbol, direction }),
+      });
+      if (result.approved) setSuccessMessage("Elliott-сигнал принят и отправлен на исполнение");
+      else setActionError(`Сигнал не исполнен: ${result.risk?.rejection_reason ?? "неизвестная причина"}`);
+      reloadTradingData();
+    } catch (reason) { setActionError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setIsSimulating(false); }
   };
   const cancelOrder = async (order: TradingOrder) => {
     setActionError("");
@@ -80,9 +96,16 @@ export default function TradesPage() {
     >
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mb: 1.5, justifyContent: "space-between", alignItems: { sm: "center" } }}>
         <Typography variant="body2" color="text.secondary">Показаны {symbol ? `сделки по ${symbol}` : "сделки по всем активам"}</Typography>
-        <FormControl size="small" sx={{ minWidth: 220 }}><InputLabel id="trade-asset-label">Актив</InputLabel><Select labelId="trade-asset-label" value={symbol} label="Актив" onChange={(event) => setSymbol(event.target.value)}>
-          <MenuItem value="">Все активы</MenuItem>{symbols.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}
-        </Select></FormControl>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+          <FormControl size="small" sx={{ minWidth: 220 }}><InputLabel id="trade-asset-label">Актив</InputLabel><Select labelId="trade-asset-label" value={symbol} label="Актив" onChange={(event) => setSymbol(event.target.value)}>
+            <MenuItem value="">Все активы</MenuItem>{symbols.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}
+          </Select></FormControl>
+          {isAdmin && <><Select size="small" inputProps={{ "aria-label": "Направление сигнала" }} value={direction} onChange={(event) => setDirection(event.target.value as "LONG" | "SHORT")}>
+            <MenuItem value="LONG">LONG</MenuItem><MenuItem value="SHORT">SHORT</MenuItem>
+          </Select><Button variant="contained" disabled={!symbol || isSimulating} onClick={() => void simulateSignal()}>
+            {isSimulating ? "Создаём…" : "Имитировать сигнал"}
+          </Button></>}
+        </Stack>
       </Stack>
       <TradeStatisticsGrid statistics={statisticsResource.data} />
       <OrdersPanel orders={ordersResource.data?.orders ?? []} canCancel={canTrade} onCancel={(order) => void cancelOrder(order)} />

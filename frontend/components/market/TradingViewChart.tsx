@@ -18,16 +18,21 @@ export interface LiveElliottPattern {
 }
 export interface LiveEntryScenario {
   id: string; direction: "LONG" | "SHORT"; setup_type: string; status: string;
-  entry_type?: "LIMIT" | "MARKET"; entry_zone_low: number; entry_zone_high: number;
+  entry_type?: "LIMIT" | "MARKET" | "STOP"; entry_zone_low: number; entry_zone_high: number;
   created_at: number; expires_at: number;
   entry_model?: string;
   origin?: "HISTORICAL" | "LIVE";
 }
+export interface HistoricalPaperTrade {
+  id: string; direction: "LONG" | "SHORT"; entry_time: number; entry_price: number;
+  exit_time: number; exit_price: number; pnl: number; pnl_percent: number; reason: string;
+}
 
 type ChartSeries = ReturnType<ReturnType<typeof createChart>["addSeries"]>;
 
-export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios = [] }: {
+export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios = [], historicalTrades = [] }: {
   candles: Candle[]; elliottPatterns?: LiveElliottPattern[]; entryScenarios?: LiveEntryScenario[];
+  historicalTrades?: HistoricalPaperTrade[];
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const fullscreenRef = useRef<HTMLDivElement>(null);
@@ -35,6 +40,8 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
   const seriesRef = useRef<ReturnType<ReturnType<typeof createChart>["addSeries"]> | null>(null);
   const waveSeriesRef = useRef<ChartSeries[]>([]);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const overlayFingerprintRef = useRef("");
+  const renderedCandlesRef = useRef<Candle[]>([]);
   const pendingFocusRef = useRef<{ from:UTCTimestamp;to:UTCTimestamp } | null>(null);
   const hasDataRef = useRef(false);
   const [selectedEntryId,setSelectedEntryId] = useState("");
@@ -77,9 +84,15 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
   useEffect(() => {
     const series = seriesRef.current; const chart = chartRef.current;
     if (!series || !chart || !chartCandles.length) return;
-    series.setData(chartCandles.map((c) => ({
-      time: Math.floor(c.timestamp / 1000) as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close,
+    const previous=renderedCandlesRef.current;const last=chartCandles.at(-1)!;
+    const latestOnly=previous.length === chartCandles.length && previous.length > 0
+      && previous[0].timestamp === chartCandles[0].timestamp
+      && previous.at(-2)?.timestamp === chartCandles.at(-2)?.timestamp;
+    if (latestOnly) series.update({ time:chartTime(last.timestamp),open:last.open,high:last.high,low:last.low,close:last.close });
+    else series.setData(chartCandles.map((c) => ({
+      time: chartTime(c.timestamp), open: c.open, high: c.high, low: c.low, close: c.close,
     })));
+    renderedCandlesRef.current=chartCandles;
     if (!hasDataRef.current) { chart.timeScale().fitContent(); hasDataRef.current = true; }
     if (pendingFocusRef.current) {
       chart.timeScale().setVisibleRange(pendingFocusRef.current);
@@ -89,13 +102,23 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
   useEffect(() => {
     const chart = chartRef.current; const candleSeries = seriesRef.current;
     if (!chart || !candleSeries || !chartCandles.length) return;
+    const orderedCandles = chartCandles;
+    const visibleFrom=orderedCandles[0].timestamp;const visibleTo=orderedCandles.at(-1)?.timestamp ?? visibleFrom;
+    const visiblePatterns=elliottPatterns.filter((pattern) => pattern.state !== "INVALID" && patternOverlaps(pattern,visibleFrom,visibleTo));
+    const visibleEntries=entryScenarios.filter((scenario) => scenario.setup_type === "ELLIOTT_WAVE3"
+      && scenario.expires_at >= visibleFrom && scenario.created_at <= visibleTo);
+    const visibleTrades=historicalTrades.filter((trade) => trade.exit_time >= visibleFrom && trade.entry_time <= visibleTo);
+    const overlayFingerprint=[visibleFrom,visibleTo,selectedEntryId,
+      ...visiblePatterns.map((item) => `${item.id}:${item.state}:${Object.values(item.points).map((point) => `${point.timestamp}:${point.price}`).join(",")}`),
+      ...visibleEntries.map((item) => `${item.id}:${item.status}:${entryResult(item,orderedCandles)}`),
+      ...visibleTrades.map((item) => `${item.id}:${item.pnl}`)].join("|");
+    if (overlayFingerprintRef.current === overlayFingerprint) return;
+    overlayFingerprintRef.current=overlayFingerprint;
     const staleSeries = waveSeriesRef.current;
     waveSeriesRef.current = [];
     staleSeries.forEach((series) => chart.removeSeries(series));
-    const orderedCandles = chartCandles;
-    const visibleFrom=orderedCandles[0].timestamp;const visibleTo=orderedCandles.at(-1)?.timestamp ?? visibleFrom;
     const markers: SeriesMarker<Time>[] = [];
-    elliottPatterns.filter((pattern) => pattern.state !== "INVALID" && patternOverlaps(pattern,visibleFrom,visibleTo)).forEach((pattern) => {
+    visiblePatterns.forEach((pattern) => {
       const points = ["P0", "P1", "P2", "P3", "P4", "P5", "A", "B", "C"]
         .flatMap((label) => pattern.points[label] ? [{ label, ...pattern.points[label] }] : []);
       if (points.length < 2) return;
@@ -142,29 +165,34 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
         }
       }
     });
-    entryScenarios.filter((scenario) => scenario.setup_type === "ELLIOTT_WAVE3"
-      && scenario.expires_at >= visibleFrom && scenario.created_at <= visibleTo).forEach((scenario) => {
+    visibleEntries.forEach((scenario) => {
       const start = nearestTimestamp(orderedCandles,scenario.created_at);
       const end = nearestTimestamp(orderedCandles,Math.min(scenario.expires_at,orderedCandles.at(-1)?.timestamp ?? scenario.expires_at));
-      if (start === end) return;
       const entry = (scenario.entry_zone_low+scenario.entry_zone_high)/2;
       const result = entryResult(scenario,orderedCandles);
       const color = scenario.origin === "LIVE"
         ? (result === "PASSED" ? "#00e676" : result === "WAITING" ? "#ffca28" : "#90a4ae")
         : (result === "PASSED" ? "#2e7d32" : result === "WAITING" ? "#9e7d24" : "#546e7a");
-      const line = chart.addSeries(LineSeries, { color, lineWidth: scenario.id === selectedEntryId ? 4 : 2,
-        lineStyle: result === "MISSED" ? 3 : 2,
-        priceLineVisible: false, lastValueVisible: false, title: "" });
-      line.setData([{ time: chartTime(start), value: entry }, { time: chartTime(end), value: entry }]);
-      waveSeriesRef.current.push(line);
+      if (start !== end) {
+        const line = chart.addSeries(LineSeries, { color, lineWidth: scenario.id === selectedEntryId ? 4 : 2,
+          lineStyle: result === "MISSED" ? 3 : 2,
+          priceLineVisible: false, lastValueVisible: false, title: "" });
+        line.setData([{ time: chartTime(start), value: entry }, { time: chartTime(end), value: entry }]);
+        waveSeriesRef.current.push(line);
+      }
       markers.push({ time: chartTime(start), position: scenario.direction === "LONG" ? "belowBar" : "aboveBar",
         color, shape: scenario.direction === "LONG" ? "arrowUp" : "arrowDown",
         text: `Вход · ${scenario.origin === "LIVE" ? "LIVE" : "История"} · ${entryResultLabel(result)} · ${scenario.direction}` });
     });
+    visibleTrades.forEach((trade) => {
+      markers.push({ time:chartTime(nearestTimestamp(orderedCandles,trade.exit_time)),
+        position:trade.pnl >= 0 ? "aboveBar" : "belowBar",color:trade.pnl >= 0 ? "#26a69a" : "#ef5350",
+        shape:"square",text:`Выход · ${trade.pnl >= 0 ? "+" : ""}${trade.pnl.toFixed(2)} · ${trade.reason}` });
+    });
     const sortedMarkers = markers.sort((left, right) => Number(left.time) - Number(right.time));
     if (!markersRef.current) markersRef.current = createSeriesMarkers(candleSeries, sortedMarkers);
     else markersRef.current.setMarkers(sortedMarkers);
-  }, [chartCandles, elliottPatterns, entryScenarios, selectedEntryId]);
+  }, [chartCandles, elliottPatterns, entryScenarios, historicalTrades, selectedEntryId]);
   const validPatterns = elliottPatterns.filter((pattern) => pattern.state !== "INVALID").length;
   const entries = entryScenarios.filter((scenario) => scenario.setup_type === "ELLIOTT_WAVE3")
     .sort((left,right) => right.created_at-left.created_at);
@@ -220,6 +248,16 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
           <Typography variant="caption" color="text.secondary">Сигнал: {formatDubaiTimestamp(scenario.created_at)} · до {formatDubaiTimestamp(scenario.expires_at)}</Typography>
         </Stack>;
       })}</Stack> : <Typography variant="body2" color="text.secondary">Потенциальных входов пока нет.</Typography>}
+    </Paper>}
+    {!isFullscreen && historicalTrades.length > 0 && <Paper variant="outlined" sx={{ mt:1,p:1.5,bgcolor:"rgba(255,255,255,.02)" }}>
+      <Typography variant="subtitle2" sx={{ mb:1 }}>Исторические paper-сделки · не входят в общий PnL</Typography>
+      <Stack spacing={.5}>{[...historicalTrades].sort((left,right) => right.entry_time-left.entry_time).slice(0,20).map((trade) =>
+        <Stack key={trade.id} direction={{ xs:"column",sm:"row" }} sx={{ gap:1,py:.6,borderBottom:1,borderColor:"divider" }}>
+          <Typography variant="body2" color={trade.direction === "LONG" ? "success.light" : "error.light"} sx={{ minWidth:55,fontWeight:700 }}>{trade.direction}</Typography>
+          <Typography variant="caption" sx={{ minWidth:170 }}>{formatDubaiTimestamp(trade.entry_time)} → {formatDubaiTimestamp(trade.exit_time)}</Typography>
+          <Typography variant="caption" sx={{ minWidth:180 }}>Вход {trade.entry_price.toLocaleString("ru-RU")} · выход {trade.exit_price.toLocaleString("ru-RU")}</Typography>
+          <Typography variant="body2" color={trade.pnl >= 0 ? "success.main" : "error.main"} sx={{ fontWeight:700 }}>{trade.pnl >= 0 ? "+" : ""}{trade.pnl.toFixed(2)} ({trade.pnl_percent.toFixed(2)}%)</Typography>
+        </Stack>)}</Stack>
     </Paper>}
   </Paper>;
 }

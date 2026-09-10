@@ -21,7 +21,7 @@ test("user can sign in, switch theme and open every section", async ({ page }) =
   await signIn(page);
   await expect(page.getByRole("heading", { name: new RegExp(`Добрый день, ${username}`) })).toBeVisible();
 
-  for (const route of ["market", "configurations", "trades", "backtest"]) {
+  for (const route of ["market", "configurations", "trades", "backtest", "profile"]) {
     await page.goto(`/${route}`);
     await expect(page).toHaveURL(new RegExp(`/${route}$`));
   }
