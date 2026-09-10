@@ -64,6 +64,41 @@ def test_exchange_rejection_reason_is_preserved_on_order():
         service.publish.assert_awaited_once()
     asyncio.run(check())
 
+def test_order_save_publishes_status_update_for_live_ui():
+    async def check():
+        service=ExecutionService("postgresql://unused","redis://unused")
+        service.db=AsyncMock();service.publish=AsyncMock()
+        order=Order(symbol="BTC-USDT",side="BUY",type="MARKET",price=100,quantity=1,status="SUBMITTING")
+        await service.save_order(order)
+        service.publish.assert_awaited_once_with("order.updated",{
+          "order_id":order.id,"signal_id":None,"symbol":"BTC-USDT","status":"SUBMITTING","rejection_reason":None,
+        })
+    asyncio.run(check())
+
+def test_closed_trade_updates_edited_current_capital_when_reinvesting():
+    async def check():
+        service=ExecutionService("postgresql://unused","redis://unused")
+        service.db=AsyncMock();service.publish_channel=AsyncMock()
+        service.db.fetchrow.return_value={"config":{
+          "initialCapital":10_000,"currentCapital":100,"elliott":{"reinvestProfits":True},
+        }}
+        await service.update_current_capital("BTC-USDT",25.5)
+        saved=service.db.execute.await_args.args[2]
+        assert '"currentCapital": 125.5' in saved
+        service.publish_channel.assert_awaited_once()
+    asyncio.run(check())
+
+def test_closed_trade_keeps_manually_set_capital_when_reinvestment_is_disabled():
+    async def check():
+        service=ExecutionService("postgresql://unused","redis://unused")
+        service.db=AsyncMock();service.publish_channel=AsyncMock()
+        service.db.fetchrow.return_value={"config":{
+          "initialCapital":10_000,"currentCapital":100,"elliott":{"reinvestProfits":False},
+        }}
+        await service.update_current_capital("BTC-USDT",25.5)
+        service.db.execute.assert_not_awaited();service.publish_channel.assert_not_awaited()
+    asyncio.run(check())
+
 def test_submitting_order_also_reserves_the_trading_slot():
     service=ExecutionService("postgresql://unused","redis://unused")
     first=Order(symbol="BTC-USDT",side="BUY",type="MARKET",price=100,quantity=1,status="SUBMITTING")

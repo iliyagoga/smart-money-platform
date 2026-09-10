@@ -33,6 +33,9 @@ export default function MarketPage() {
   const [viewSymbol, setViewSymbol] = useState("");
   const [tradingMode, setTradingMode] = useState<TradingMode>("PAPER");
   const [settings, setSettings] = useState<BacktestSettings>(() => ({ ...defaultBacktestSettings, elliott: { ...defaultBacktestSettings.elliott } }));
+  const [editingSymbol,setEditingSymbol]=useState("");
+  const [editingInitialCapital,setEditingInitialCapital]=useState<number>();
+  const [settingsExpanded,setSettingsExpanded]=useState(false);
   const [saving, setSaving] = useState(false); const [message, setMessage] = useState(""); const [selectedTf, setSelectedTf] = useState("M15");
   const tradingConfigs = useApiResource<TradingConfigsResponse>("/api/v1/execution/trading-configs");
   const activeConfigs = useMemo(() => (tradingConfigs.data?.configs ?? []).filter((config) => config.status === "ACTIVE"), [tradingConfigs.data]);
@@ -41,6 +44,7 @@ export default function MarketPage() {
   const viewed = viewSymbol || activeAssets[0] || "";
   const availableTimeframes = allTimeframes;
   const selectedConfig = activeConfigs.find((config) => config.symbol === viewed);
+  const isEditing=editingSymbol===selected;
   const macroTimeframe = tradingMacroTimeframe(selectedConfig?.config);
   const candleLimit = Math.min(10_000,timeframeWindowLimit(selectedTf, macroTimeframe));
   const elliottPatterns = useApiResource<ElliottPatternsResponse>(`/api/v1/elliott/elliott/patterns?symbol=${encodeURIComponent(viewed)}`);
@@ -61,16 +65,47 @@ export default function MarketPage() {
   const reloadPatterns = elliottPatterns.reload;
   const reloadScenarios = liveEntries.reload;
   const reloadHistory = historicalElliott.reload;
-  useEffect(() => { const socket = new EventSocket(["candle.*","scenario.*"]); const unsubscribe = socket.subscribe((event) => { if (event.payload?.symbol === viewed) { if (!event.payload.timeframe || event.payload.timeframe === selectedTf) reloadCandles(); reloadPatterns(); reloadScenarios(); } }); void socket.connect(); const timer = window.setInterval(() => { reloadCandles(); reloadPatterns(); reloadScenarios(); reloadHistory(); }, 15_000); return () => { unsubscribe(); socket.close(); window.clearInterval(timer); }; }, [viewed, selectedTf, reloadCandles, reloadPatterns, reloadScenarios, reloadHistory]);
-  const save = async () => { setSaving(true); setMessage(""); try { if (!selected) throw new Error("Введите актив"); if (tradingMode !== "PAPER") { const availability=await api<{available:boolean;reason?:string}>(`/api/v1/exchange/exchange/instruments/${encodeURIComponent(selected)}/availability?mode=${tradingMode}`); if (!availability.available) throw new Error(availability.reason ?? `${selected} недоступен в режиме ${tradingMode}`); } const elliottTimeframes = [settings.elliott.entryTimeframe, settings.elliott.structureTimeframe, settings.elliott.macroTimeframe]; const dataset = await api<{ timeframes: Array<{ timeframe: string; candles: number }> }>(`/api/v1/backtest/datasets/${encodeURIComponent(selected)}`).catch(() => ({ timeframes: [] })); const missing = elliottTimeframes.filter((timeframe) => !dataset.timeframes.some((item) => item.timeframe === timeframe && item.candles > 0)); if (missing.length) { await api("/api/v1/exchange/exchange/history", { method: "POST", body: JSON.stringify({ symbol: selected, timeframes: missing, from_timestamp: Date.now() - 180 * 86400000, to_timestamp: Date.now(), incremental: false, backfill: false }) }); setMessage(`Для ${selected} запрошены свечи: ${missing.join(", ")}. Конфигурация сохраняется.`); } await api(`/api/v1/backtest/assets`, { method: "POST", body: JSON.stringify({ symbol: selected, category: "crypto" }) }).catch((error: unknown) => { if (!(error instanceof Error) || !error.message.startsWith("409")) throw error; }); await api("/api/v1/exchange/exchange/reload-symbols", { method: "POST" }); await api("/api/v1/execution/trading-configs", { method: "POST", body: JSON.stringify({ symbol: selected, mode: tradingMode, config: settings }) }); setViewSymbol(selected); assets.reload(); tradingConfigs.reload(); setMessage(`Конфигурация ${selected} сохранена в режиме ${tradingMode}.`); } catch (reason) { setMessage(reason instanceof Error ? reason.message : String(reason)); } finally { setSaving(false); } };
+  const reloadTradingConfigs=tradingConfigs.reload;
+  useEffect(() => { const socket = new EventSocket(["candle.*","scenario.*","trading.config.*"]); const unsubscribe = socket.subscribe((event) => { if (event.event_type.startsWith("trading.config.")) reloadTradingConfigs(); if (event.payload?.symbol === viewed) { if (!event.payload.timeframe || event.payload.timeframe === selectedTf) reloadCandles(); reloadPatterns(); reloadScenarios(); } }); void socket.connect(); const timer = window.setInterval(() => { reloadCandles(); reloadPatterns(); reloadScenarios(); reloadHistory(); }, 15_000); return () => { unsubscribe(); socket.close(); window.clearInterval(timer); }; }, [viewed, selectedTf, reloadCandles, reloadPatterns, reloadScenarios, reloadHistory, reloadTradingConfigs]);
+  const save = async () => {
+    setSaving(true);setMessage("");
+    try {
+      if (!selected) throw new Error("Введите актив");
+      if (tradingMode !== "PAPER") {
+        const availability=await api<{available:boolean;reason?:string}>(`/api/v1/exchange/exchange/instruments/${encodeURIComponent(selected)}/availability?mode=${tradingMode}`);
+        if (!availability.available) throw new Error(availability.reason ?? `${selected} недоступен в режиме ${tradingMode}`);
+      }
+      const configToSave:BacktestSettings={...settings,
+        initialCapital:isEditing ? editingInitialCapital ?? settings.initialCapital : settings.initialCapital,
+        currentCapital:settings.initialCapital,
+      };
+      const elliottTimeframes = [settings.elliott.entryTimeframe, settings.elliott.structureTimeframe, settings.elliott.macroTimeframe];
+      const dataset = await api<{ timeframes: Array<{ timeframe: string; candles: number }> }>(`/api/v1/backtest/datasets/${encodeURIComponent(selected)}`).catch(() => ({ timeframes: [] }));
+      const missing = elliottTimeframes.filter((timeframe) => !dataset.timeframes.some((item) => item.timeframe === timeframe && item.candles > 0));
+      if (missing.length) {
+        await api("/api/v1/exchange/exchange/history", { method: "POST", body: JSON.stringify({ symbol: selected, timeframes: missing, from_timestamp: Date.now() - 180 * 86400000, to_timestamp: Date.now(), incremental: false, backfill: false }) });
+        setMessage(`Для ${selected} запрошены свечи: ${missing.join(", ")}. Конфигурация сохраняется.`);
+      }
+      await api(`/api/v1/backtest/assets`, { method: "POST", body: JSON.stringify({ symbol: selected, category: "crypto" }) }).catch((error: unknown) => { if (!(error instanceof Error) || !error.message.startsWith("409")) throw error; });
+      await api("/api/v1/exchange/exchange/reload-symbols", { method: "POST" });
+      await api("/api/v1/execution/trading-configs", { method: "POST", body: JSON.stringify({ symbol: selected, mode: tradingMode, config: configToSave }) });
+      setViewSymbol(selected);setEditingSymbol(selected);setEditingInitialCapital(configToSave.initialCapital);
+      assets.reload();tradingConfigs.reload();setMessage(`Конфигурация ${selected} сохранена в режиме ${tradingMode}.`);
+    } catch (reason) { setMessage(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setSaving(false); }
+  };
   const editActiveConfig = () => {
     if (!selectedConfig?.config) return;
     const raw=typeof selectedConfig.config === "string" ? JSON.parse(selectedConfig.config) as Record<string,unknown> : selectedConfig.config;
     const normalized=snakeToCamel(raw) as Partial<BacktestSettings>;
-    setSettings((current) => ({ ...current,...normalized,strategy:"ELLIOTT",
+    const originalInitial=normalized.initialCapital;
+    const currentCapital=normalized.currentCapital ?? originalInitial;
+    setSettings((current) => ({ ...current,...normalized,initialCapital:currentCapital ?? current.initialCapital,strategy:"ELLIOTT",
       elliott:{ ...current.elliott,...(normalized.elliott as Partial<BacktestSettings["elliott"]> ?? {}) } }));
-    setSymbol(selectedConfig.symbol);setTradingMode(selectedConfig.mode);setMessage(`Конфигурация ${selectedConfig.symbol} загружена в форму.`);
-    window.scrollTo({ top:0,behavior:"smooth" });
+    setSymbol(selectedConfig.symbol);setTradingMode(selectedConfig.mode);setEditingSymbol(selectedConfig.symbol);
+    setEditingInitialCapital(originalInitial ?? currentCapital);setMessage(`Конфигурация ${selectedConfig.symbol} загружена в форму.`);
+    setSettingsExpanded(true);
+    window.requestAnimationFrame(() => document.getElementById("asset-settings")?.scrollIntoView({ behavior:"smooth",block:"start" }));
   };
   const removeLiveAsset = async () => {
     if (!viewed || !window.confirm(`Удалить ${viewed} из live trading?`)) return;
@@ -92,16 +127,27 @@ export default function MarketPage() {
     } catch (reason) { setMessage(reason instanceof Error ? reason.message : String(reason)); }
   };
   return <SectionPage title="Рынок" description="Регистрация Elliott-активов и отдельный просмотр их состояния."><Stack spacing={2}>
-    <Accordion defaultExpanded disableGutters sx={{ width: "100%", border: 1, borderColor: "divider", "&:before": { display: "none" } }}>
-      <AccordionSummary expandIcon={<Typography component="span" sx={{ fontSize: 22 }}>⌄</Typography>}><Typography variant="h6">Регистрация торгового актива</Typography></AccordionSummary>
-      <AccordionDetails><Stack spacing={2}><Stack direction={{ xs:"column",md:"row" }} spacing={1.5}><TextField fullWidth label="Актив" placeholder="BTC-USDT-SWAP" value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())} /><TextField fullWidth select label="Режим торговли" value={tradingMode} onChange={(e) => setTradingMode(e.target.value as TradingMode)}><MenuItem value="PAPER">Paper — локальная имитация</MenuItem><MenuItem value="DEMO">OKX Demo</MenuItem><MenuItem value="PRODUCTION">OKX Production</MenuItem></TextField></Stack><Alert severity={tradingMode === "PRODUCTION" ? "warning" : "info"}>{tradingMode === "PAPER" ? "Ордера исполняются локально и не отправляются на OKX." : tradingMode === "DEMO" ? "Ордера отправляются в демонстрационный контур OKX." : "Реальные ордера. Gateway должен быть подключён к production OKX и явно разрешён для торговли."}</Alert><BacktestSettingsForm isRunning={saving} onChange={setSettings} onRun={() => void save()} progress={0} settings={settings} submitLabel={activeConfigs.some((item) => item.symbol === selected) ? "Сохранить изменения" : "Зарегистрировать актив"} /><Button variant="outlined" onClick={() => void pasteConfig()} disabled={saving}>Вставить скопированную конфигурацию</Button></Stack></AccordionDetails>
-    </Accordion>
-    {message && <Alert severity={message.includes("сохранена") || message.includes("загружена") || message.includes("вставлена") || message.includes("удалён") ? "success" : "error"}>{message}</Alert>}
     <Paper variant="outlined" sx={{ p: { xs: 2, md: 3 }, width: "100%" }}><Stack spacing={1.5}><Typography variant="h6">Состояние актива</Typography><Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}><TextField fullWidth select label="Актив для просмотра" value={viewed} onChange={(e) => setViewSymbol(e.target.value)}>{activeAssets.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}</TextField><TextField fullWidth select label="Просматриваемый таймфрейм" value={selectedTf} onChange={(e) => setSelectedTf(e.target.value)} disabled={!availableTimeframes.length}>{availableTimeframes.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}</TextField><Button color="error" variant="contained" disabled={!viewed || saving} onClick={() => void removeLiveAsset()} sx={{ minWidth: 190, alignSelf: "center", borderRadius: 1, px: 2.5, py: .5, boxShadow: "none", textTransform: "none", fontWeight: 700, "&:hover": { boxShadow: "0 4px 12px rgba(211,47,47,.2)" } }}>Удалить актив</Button></Stack>
       {currentHistory?.status === "BUILDING" && <Alert severity="info">Исторические paper-сделки рассчитываются на сервере…</Alert>}
       {currentHistory?.status === "WAITING_FOR_DATA" && <Alert severity="warning">Исторический расчёт ждёт загрузки свечей.</Alert>}
       {currentHistory?.status === "FAILED" && <Alert severity="error">Не удалось рассчитать историю: {currentHistory.error}</Alert>}
       {viewed ? <TradingViewChart key={`${viewed}:${selectedTf}`} candles={candles.data?.candles ?? []} isLoading={candles.loading} elliottPatterns={displayedPatterns} entryScenarios={displayedEntries} historicalTrades={currentHistory?.trades ?? []} /> : <Typography color="text.secondary">Нет активных активов для просмотра.</Typography>}</Stack></Paper>
+    <Accordion id="asset-settings" expanded={settingsExpanded} onChange={(_,expanded) => setSettingsExpanded(expanded)}
+      disableGutters sx={{ width: "100%", border: 1, borderColor: "divider", scrollMarginTop: 90, "&:before": { display: "none" } }}>
+      <AccordionSummary expandIcon={<Typography component="span" sx={{ fontSize: 22 }}>⌄</Typography>}><Typography variant="h6">Настройка торгового актива</Typography></AccordionSummary>
+      <AccordionDetails><Stack spacing={2}>
+        <Stack direction={{ xs:"column",md:"row" }} spacing={1.5}>
+          <TextField fullWidth label="Актив" placeholder="BTC-USDT-SWAP" value={symbol} onChange={(e) => { const next=e.target.value.toUpperCase();setSymbol(next);if (next!==editingSymbol) { setEditingSymbol("");setEditingInitialCapital(undefined); } }} />
+          <TextField fullWidth select label="Режим торговли" value={tradingMode} onChange={(e) => setTradingMode(e.target.value as TradingMode)}><MenuItem value="PAPER">Paper — локальная имитация</MenuItem><MenuItem value="DEMO">OKX Demo</MenuItem><MenuItem value="PRODUCTION">OKX Production</MenuItem></TextField>
+        </Stack>
+        <Alert severity={tradingMode === "PRODUCTION" ? "warning" : "info"}>{tradingMode === "PAPER" ? "Ордера исполняются локально и не отправляются на OKX." : tradingMode === "DEMO" ? "Ордера отправляются в демонстрационный контур OKX." : "Реальные ордера. Gateway должен быть подключён к production OKX и явно разрешён для торговли."}</Alert>
+        <BacktestSettingsForm isRunning={saving} onChange={setSettings} onRun={() => void save()} progress={0}
+          settings={settings} capitalLabel={isEditing ? "Текущий капитал" : "Начальный капитал"}
+          submitLabel={isEditing ? "Сохранить изменения" : "Зарегистрировать актив"} />
+        <Button variant="outlined" onClick={() => void pasteConfig()} disabled={saving}>Вставить скопированную конфигурацию</Button>
+      </Stack></AccordionDetails>
+    </Accordion>
+    {message && <Alert severity={message.includes("сохранена") || message.includes("загружена") || message.includes("вставлена") || message.includes("удалён") ? "success" : "error"}>{message}</Alert>}
     {selectedConfig && <Paper variant="outlined" sx={{ p:{ xs:2,md:3 } }}><Stack spacing={2}><Stack direction="row" sx={{ alignItems:"center",justifyContent:"space-between" }}><Stack direction="row" spacing={1} sx={{ alignItems:"center" }}><Typography variant="h6">Конфигурация {selectedConfig.symbol}</Typography><Chip label={selectedConfig.mode} color={selectedConfig.mode === "PRODUCTION" ? "error" : selectedConfig.mode === "DEMO" ? "warning" : "default"} /></Stack><Button variant="contained" onClick={editActiveConfig}>Редактировать</Button></Stack><ConfigSummary value={selectedConfig.config} /></Stack></Paper>}
   </Stack></SectionPage>;
 }
@@ -127,6 +173,7 @@ function ConfigSummary({ value }:{ value?:BacktestSettings|string }) {
     ["Таймфреймы",`${elliott?.macroTimeframe ?? "—"} / ${elliott?.structureTimeframe ?? "—"} / ${elliott?.entryTimeframe ?? "—"}`],
     ["Модель входа",elliott?.entryModel ?? "—"],
     ["Риск",`${normalized.riskPerTradePercent ?? 0}%`],
+    ["Текущий капитал",normalized.currentCapital ?? normalized.initialCapital ?? "—"],
     ["Маржа",elliott?.useMargin ? `×${normalized.leverage ?? 1}` : "Без маржи"],
     ["Тейки",`${elliott?.takeProfitCount ?? 1} · TP1 ${elliott?.takeProfitRr ?? "—"}R`],
   ];

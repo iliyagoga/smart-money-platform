@@ -111,6 +111,31 @@ def test_demo_simulation_stops_before_creating_signal_when_instrument_is_unavail
     asyncio.run(check())
 
 
+def test_live_sizing_uses_edited_current_asset_capital_instead_of_portfolio_equity():
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    async def check():
+        service=DecisionService("unused","unused")
+        service.config=AsyncMock(return_value=RiskConfig())
+        service.redis=AsyncMock();service.redis.get.return_value="0";service.redis.scard.return_value=0
+        service.db=AsyncMock()
+        service.db.fetch.return_value=[]
+        service.db.fetchrow.return_value={"config":{
+          "initialCapital":10_000,"currentCapital":100,"riskPerTradePercent":0,"leverage":3,
+          "elliott":{"useMargin":True,"reinvestProfits":True},
+        },"lot_size":.01,"minimum_order_size":.01}
+        service.db.fetchval.return_value=0;service.stream=AsyncMock()
+        signal=ConflictResolver().signal(scenario("capital","LONG",1)).model_copy(update={
+          "entry_price":100,"stop_loss_price":99,
+        })
+        decision=await service.assess(signal,ignore_loss_limits=True)
+        assert decision.approved and decision.position_size==3
+        assert decision.position_value==300
+        assert all(call.args[0]!="portfolio:equity" for call in service.redis.get.await_args_list)
+    asyncio.run(check())
+
+
 def test_waiting_signals_retry_sequentially_after_position_closes():
     import asyncio
     from unittest.mock import AsyncMock

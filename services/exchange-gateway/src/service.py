@@ -327,11 +327,6 @@ class ExchangeGateway:
     async def exchange_orders(self,limit=100):
         rows=await self.db.fetch("SELECT local_order_id,cl_ord_id,exchange_order_id,symbol,status,payload,created_at,updated_at FROM exchange_orders ORDER BY created_at DESC LIMIT $1",limit)
         return [{**dict(row),"local_order_id":str(row["local_order_id"]),"created_at":row["created_at"].isoformat(),"updated_at":row["updated_at"].isoformat()} for row in rows]
-    async def trading_logs(self,limit=100):
-        rows=await self.db.fetch("""SELECT id,local_order_id,symbol,execution_mode,event_type,status,details,created_at
-          FROM live_trading_logs ORDER BY created_at DESC LIMIT $1""",limit)
-        return [{**dict(row),"local_order_id":str(row["local_order_id"]) if row["local_order_id"] else None,
-          "created_at":row["created_at"].isoformat()} for row in rows]
     async def instruments(self):
         rows=await self.db.fetch("""SELECT symbol,tick_size,lot_size,minimum_order_size,contract_value,
           maker_fee_rate,taker_fee_rate,funding_rate,next_funding_time,validation_status,updated_at

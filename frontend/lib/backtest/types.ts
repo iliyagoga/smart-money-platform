@@ -30,6 +30,7 @@ export interface ElliottSettings {
 
 export interface BacktestSettings {
   initialCapital: number;
+  currentCapital?: number;
   strategy: StrategyType;
   feePercent: number;
   makerFeePercent?: number;

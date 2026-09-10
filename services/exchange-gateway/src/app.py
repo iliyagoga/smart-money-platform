@@ -70,9 +70,6 @@ async def balance():
 @app.get("/exchange/orders")
 async def exchange_orders(limit:int=Query(default=100,ge=1,le=1000)):
     return {"orders":await service.exchange_orders(limit)}
-@app.get("/exchange/trading-logs")
-async def trading_logs(limit:int=Query(default=100,ge=1,le=1000)):
-    return {"logs":await service.trading_logs(limit)}
 @app.post("/exchange/orders/{order_id}/cancel")
 async def cancel_exchange_order(order_id:str):
     try:return await service.cancel_order(order_id)

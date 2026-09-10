@@ -1,7 +1,7 @@
 "use client";
 
 import { Button, Dialog, DialogActions, DialogContent, DialogTitle, FormControl, Grid, InputLabel, MenuItem, Select, Snackbar, Stack, Typography } from "@mui/material";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "../../components/auth/AuthProvider";
 import { PositionsPanel } from "../../components/dashboard/PositionsPanel";
 import { SectionPage } from "../../components/layout/SectionPage";
@@ -9,9 +9,9 @@ import { TradeHistory } from "../../components/trades/TradeHistory";
 import { TradeStatisticsGrid } from "../../components/trades/TradeStatisticsGrid";
 import { TradeAnalyzer } from "../../components/trades/TradeAnalyzer";
 import { OrdersPanel } from "../../components/trades/OrdersPanel";
-import { LiveTradingLogs } from "../../components/trades/LiveTradingLogs";
 import { useApiResource } from "../../hooks/useApiResource";
 import { api } from "../../lib/api";
+import { EventSocket } from "../../lib/socket";
 import type { OrdersResponse, Position, PositionsResponse, TradeAnalysisResponse, TradeAssetsResponse, TradeStatistics, TradesResponse, TradingOrder } from "../../lib/types";
 
 export default function TradesPage() {
@@ -38,6 +38,14 @@ export default function TradesPage() {
   const symbols = Array.from(new Set([
     ...(assetsResource.data?.assets.map((asset) => asset.symbol) ?? []), ...positions.map((position) => position.symbol),
   ])).sort();
+  const reloadOrders=ordersResource.reload;
+  useEffect(() => {
+    const socket=new EventSocket(["order.*"]);
+    const unsubscribe=socket.subscribe(() => reloadOrders());
+    void socket.connect();
+    const timer=window.setInterval(reloadOrders,5_000);
+    return () => { unsubscribe();socket.close();window.clearInterval(timer); };
+  },[reloadOrders]);
 
   const reloadTradingData = () => {
     positionsResource.reload();
@@ -117,7 +125,6 @@ export default function TradesPage() {
       </Grid>
       <TradeHistory trades={historyResource.data?.trades ?? []} />
       <TradeAnalyzer analysis={analysisResource.data} />
-      {isAdmin && <LiveTradingLogs />}
       <Dialog open={Boolean(closingPosition)} onClose={() => !isClosing && setClosingPosition(undefined)} maxWidth="sm">
         <DialogTitle>Закрыть позицию?</DialogTitle>
         <DialogContent>

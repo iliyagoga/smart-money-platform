@@ -121,7 +121,22 @@ class ExecutionService:
         else:
             order.status="SUBMITTING";await self.save_order(order);await self.stream("order.request",order.model_dump(mode="json"))
         return order
-    async def save_order(self,o):await self.db.execute("INSERT INTO orders(id,signal_id,symbol,status,data,created_at) VALUES($1::uuid,$2::uuid,$3,$4,$5::jsonb,to_timestamp($6/1000.0)) ON CONFLICT(id) DO UPDATE SET status=excluded.status,data=excluded.data,updated_at=now()",o.id,o.signal_id,o.symbol,o.status,json.dumps(o.model_dump(mode="json")),o.created_at)
+    async def save_order(self,o):
+        await self.db.execute("INSERT INTO orders(id,signal_id,symbol,status,data,created_at) VALUES($1::uuid,$2::uuid,$3,$4,$5::jsonb,to_timestamp($6/1000.0)) ON CONFLICT(id) DO UPDATE SET status=excluded.status,data=excluded.data,updated_at=now()",o.id,o.signal_id,o.symbol,o.status,json.dumps(o.model_dump(mode="json")),o.created_at)
+        await self.publish("order.updated",{"order_id":o.id,"signal_id":o.signal_id,"symbol":o.symbol,
+          "status":o.status,"rejection_reason":o.rejection_reason})
+    async def update_current_capital(self,symbol,pnl):
+        row=await self.db.fetchrow("SELECT config FROM trading_configs WHERE symbol=$1 AND status='ACTIVE'",symbol)
+        if not row:return
+        config=decode_json(row["config"]);elliott=config.get("elliott",{})
+        reinvest=bool(elliott.get("reinvestProfits",elliott.get("reinvest_profits",True)))
+        if not reinvest:return
+        initial=float(config.get("initialCapital",config.get("initial_capital",0)))
+        current=float(config.get("currentCapital",config.get("current_capital",initial)))
+        config["currentCapital"]=max(0,current+float(pnl));config.pop("current_capital",None)
+        await self.db.execute("UPDATE trading_configs SET config=$2::jsonb,updated_at=now() WHERE symbol=$1",symbol,json.dumps(config))
+        await self.publish_channel("trading.config","trading.config.capital_updated",{
+          "symbol":symbol,"current_capital":config["currentCapital"],"realized_pnl":float(pnl)})
     async def fill(self,o:Order,price:float,exchange_order_id:str|None=None,executed_at:int|None=None):
         if o.status=="FILLED":return
         if o.type=="MARKET" and o.stop_loss_price is not None and o.target_rrs:
@@ -218,7 +233,8 @@ class ExecutionService:
             duration=max(0,(p.closed_at-p.opened_at)//1000);risk_per_unit=abs(p.entry_price-p.initial_stop_loss_price) if p.initial_stop_loss_price is not None else 0;initial_risk=risk_per_unit*p.initial_quantity
             margin=p.entry_price*p.initial_quantity/(p.leverage if p.leverage>1 else 1)
             payload={"position_id":p.id,"signal_id":p.signal_id,"scenario_id":p.scenario_id,"strategy":p.strategy,"setup_type":p.setup_type,"symbol":p.symbol,"direction":p.direction,"entry_price":p.entry_price,"initial_stop_loss_price":p.initial_stop_loss_price,"exit_price":exit_price,"quantity":p.initial_quantity,"pnl":p.realized_pnl,"pnl_percent":p.realized_pnl/max(margin,1e-12)*100,"fees":p.fees,"funding":p.funding,"r_multiple":p.realized_pnl/initial_risk if initial_risk>0 else None,"reason":reason,"duration_seconds":duration,"max_unrealized_pnl":p.max_unrealized_pnl,"max_unrealized_loss":p.max_unrealized_loss,"closed_at":p.closed_at}
-            await self.db.execute("INSERT INTO closed_trades(id,position_id,symbol,pnl,data,closed_at) VALUES($1::uuid,$2::uuid,$3,$4,$5::jsonb,to_timestamp($6/1000.0)) ON CONFLICT(id) DO NOTHING",str(uuid4()),p.id,p.symbol,p.realized_pnl,json.dumps(payload),p.closed_at);await self.publish("position.closed",payload)
+            await self.db.execute("INSERT INTO closed_trades(id,position_id,symbol,pnl,data,closed_at) VALUES($1::uuid,$2::uuid,$3,$4,$5::jsonb,to_timestamp($6/1000.0)) ON CONFLICT(id) DO NOTHING",str(uuid4()),p.id,p.symbol,p.realized_pnl,json.dumps(payload),p.closed_at)
+            await self.update_current_capital(p.symbol,p.realized_pnl);await self.publish("position.closed",payload)
         return qty,p.quantity,pnl
     async def on_exchange_order(self,payload):
         order=self.orders.get(payload.get("order_id"))

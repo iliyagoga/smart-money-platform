@@ -36,12 +36,6 @@ def test_only_admin_can_emulate_elliott_signal():
     authorize(principal("admin"), "POST", "decision", "/signals/simulate-elliott")
 
 
-def test_only_admin_can_read_live_trading_logs():
-    with pytest.raises(HTTPException):
-        authorize(principal("trader"), "GET", "exchange", "/exchange/trading-logs")
-    authorize(principal("admin"), "GET", "exchange", "/exchange/trading-logs")
-
-
 def test_viewer_can_run_backtest_but_only_admin_manages_assets():
     authorize(principal("viewer"), "POST", "backtest", "/backtests")
     with pytest.raises(HTTPException):

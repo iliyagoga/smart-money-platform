@@ -1,8 +1,9 @@
 "use client";
 
-import { Box, Button, Chip, Paper, Stack, Typography } from "@mui/material";
+import { Box, Button, Chip, Paper, Stack, TablePagination, Typography } from "@mui/material";
 import { CandlestickSeries, ColorType, LineSeries, createChart, createSeriesMarkers, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { usePagination } from "../../hooks/usePagination";
 import type { Candle } from "../../lib/types";
 
 export interface LiveElliottPoint { timestamp: number; confirmed_at: number; price: number; kind: "HIGH" | "LOW" }
@@ -208,6 +209,7 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
   const validPatterns = elliottPatterns.filter((pattern) => pattern.state !== "INVALID").length;
   const entries = entryScenarios.filter((scenario) => scenario.setup_type === "ELLIOTT_WAVE3")
     .sort((left,right) => right.created_at-left.created_at);
+  const entryPagination=usePagination(entries,10);
   return <Paper ref={fullscreenRef} variant="outlined" sx={{ p: 1, overflow: "hidden", position: "relative",
     "&:fullscreen": { bgcolor: "#101722", width: "100vw", height: "100vh", display: "flex", flexDirection: "column", p: 1 } }}>
     <Stack direction="row" sx={{ px: 1, pb: 1, gap: 1, justifyContent: "space-between", alignItems: "center" }}>
@@ -228,7 +230,7 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
     </Box>
     {!isFullscreen && <Paper variant="outlined" sx={{ mt: 1, p: 1.5, bgcolor: "rgba(255,255,255,.02)" }}>
       <Typography variant="subtitle2" sx={{ mb: 1 }}>Потенциальные точки входа выбранного актива</Typography>
-      {entries.length ? <Stack spacing={.75}>{entries.slice(0,20).map((scenario) => {
+      {entries.length ? <><Stack spacing={.75}>{entryPagination.visible.map((scenario) => {
         const result = entryResult(scenario,candles); const entry = (scenario.entry_zone_low+scenario.entry_zone_high)/2;
         const focus = () => {
           setSelectedEntryId(scenario.id);
@@ -259,7 +261,8 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
           <Typography variant="caption" color="text.secondary" sx={{ minWidth: 145 }}>{scenario.entry_model ?? scenario.entry_type ?? "—"}</Typography>
           <Typography variant="caption" color="text.secondary">Сигнал: {formatDubaiTimestamp(scenario.created_at)} · до {formatDubaiTimestamp(scenario.expires_at)}</Typography>
         </Stack>;
-      })}</Stack> : <Typography variant="body2" color="text.secondary">Потенциальных входов пока нет.</Typography>}
+      })}</Stack><TablePagination component="div" {...entryPagination.paginationProps} /></>
+        : <Typography variant="body2" color="text.secondary">Потенциальных входов пока нет.</Typography>}
     </Paper>}
     {!isFullscreen && historicalTrades.length > 0 && <Paper variant="outlined" sx={{ mt:1,p:1.5,bgcolor:"rgba(255,255,255,.02)" }}>
       <Typography variant="subtitle2" sx={{ mb:1 }}>Исторические paper-сделки · не входят в общий PnL</Typography>

@@ -10,12 +10,14 @@ interface BacktestSettingsFormProps {
   progress: number;
   settings: BacktestSettings;
   submitLabel?: string;
+  capitalLabel?: string;
 }
 
 const quarterSteps = (minimum: number, maximum: number) =>
   Array.from({ length: Math.round((maximum - minimum) / 0.25) + 1 }, (_, index) => minimum + index * 0.25);
 
-export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, settings, submitLabel = "Запустить бэктест" }: BacktestSettingsFormProps) {
+export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, settings,
+  submitLabel = "Запустить бэктест", capitalLabel = "Начальный капитал" }: BacktestSettingsFormProps) {
   const updateNumber = (key: keyof BacktestSettings, value: string) => onChange({ ...settings, [key]: Number(value) });
   const isValid = settings.initialCapital > 0 && settings.riskPerTradePercent >= 0
     && settings.elliott.takeProfitRr >= settings.elliott.minimumRr
@@ -187,7 +189,7 @@ export function BacktestSettingsForm({ isRunning, onChange, onRun, progress, set
       <Paper variant="outlined" sx={{ p: 2 }}>
         <Stack spacing={1.5}>
           <Typography variant="subtitle2">Капитал, риск и маржа</Typography>
-          <TextField fullWidth label="Начальный капитал" value={settings.initialCapital} type="number"
+          <TextField fullWidth label={capitalLabel} value={settings.initialCapital} type="number"
             onChange={(event) => updateNumber("initialCapital", event.target.value)} />
           <TextField fullWidth select label="Режим позиции" value={settings.elliott.useMargin ? "MARGIN" : "CASH"}
             onChange={(event) => onChange({ ...settings, elliott: {

@@ -128,7 +128,7 @@ class DecisionService:
             decision=await self.assess(signal)
             if decision.approved or decision.rejection_reason=="Another trade is still active":break
     async def assess(self,signal:TradeSignal,capital:float|None=None,ignore_loss_limits:bool=False):
-        cfg=await self.config();capital=capital or float(await self.redis.get("portfolio:equity") or self.default_capital)
+        cfg=await self.config()
         daily=float(await self.redis.get("portfolio:daily_pnl") or 0);positions=int(await self.redis.scard("positions:open"))
         recent=await self.db.fetch("SELECT pnl::float8,extract(epoch from closed_at)*1000 AS closed_at_ms FROM closed_trades ORDER BY closed_at DESC LIMIT 100")
         strategy_row=await self.db.fetchrow("""SELECT tc.config,ta.lot_size,ta.minimum_order_size
@@ -140,8 +140,9 @@ class DecisionService:
         allocation=config_value(strategy,"portfolioAllocationPercent","portfolio_allocation_percent",100)
         use_margin=bool(config_value(elliott,"useMargin","use_margin",False))
         leverage=int(config_value(strategy,"leverage","leverage",1))
-        reinvest=bool(config_value(elliott,"reinvestProfits","reinvest_profits",True))
-        configured_initial=float(config_value(strategy,"initialCapital","initial_capital",capital))
+        configured_initial=float(config_value(strategy,"initialCapital","initial_capital",self.default_capital))
+        configured_current=float(config_value(strategy,"currentCapital","current_capital",configured_initial))
+        capital=float(capital) if capital is not None else configured_current
         consecutive_losses=0;last_loss_at=None
         for row in recent:
             if row["pnl"]>=0:break
@@ -156,7 +157,7 @@ class DecisionService:
               lot_size=float(strategy_row["lot_size"]) if strategy_row and strategy_row["lot_size"] else None,
               minimum_order_size=(float(strategy_row["minimum_order_size"])
                                   if strategy_row and strategy_row["minimum_order_size"] else None),
-              capital_ceiling=None if reinvest else configured_initial)
+              capital_ceiling=None)
             await self.db.execute("INSERT INTO risk_decisions(signal_id,approved,data) VALUES($1::uuid,$2,$3::jsonb)",signal.signal_id,decision.approved,json.dumps(decision.model_dump(mode="json")))
             if decision.approved:
                 self.reserved_signal_id=signal.signal_id;self.waiting.discard(signal.signal_id)

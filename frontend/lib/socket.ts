@@ -10,7 +10,9 @@ export const allSubscriptionEvents = [
   "trade.executed",
   "orderbook.updated",
   "scenario.*",
+  "order.*",
   "position.*",
+  "trading.config.*",
 ];
 
 export class EventSocket {
