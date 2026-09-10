@@ -67,6 +67,7 @@ export interface TradingOrder extends OrderDraft {
   created_at: number;
   filled_at?: number;
   filled_price?: number;
+  rejection_reason?: string;
 }
 
 export interface OrdersResponse { orders: TradingOrder[]; total: number }

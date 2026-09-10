@@ -2,7 +2,7 @@ from __future__ import annotations
 import asyncio,json,logging
 from time import time
 from uuid import uuid4
-import asyncpg
+import asyncpg,httpx
 from redis.asyncio import Redis
 from .models import *
 from .resolver import ConflictResolver
@@ -21,13 +21,16 @@ def simulated_elliott_scenario(request:SimulatedElliottSignalRequest,entry:float
       reasons=["Simulated Elliott signal"],objects_used=[{"kind":"ELLIOTT_SIMULATION"}],
       created_at=created,expires_at=created+300_000)
 class DecisionService:
-    def __init__(self,database_url,redis_url,threshold=.6,min_delta=.1,default_capital=10000):
+    def __init__(self,database_url,redis_url,threshold=.6,min_delta=.1,default_capital=10000,
+                 exchange_service_url="http://exchange-gateway:8070"):
         self.database_url=database_url;self.redis_url=redis_url;self.default_capital=default_capital
+        self.exchange_service_url=exchange_service_url.rstrip("/");self.http=None
         self.db=None;self.redis=None;self.resolver=ConflictResolver(threshold,min_delta);self.risk=RiskManager()
         self.scenarios:dict[str,Scenario]={};self.signals:dict[str,TradeSignal]={};self.tasks=[];self.pending:dict[str,asyncio.Task]={}
         self.waiting:set[str]=set();self.reserved_signal_id:str|None=None;self.risk_lock=asyncio.Lock()
     async def start(self):
         self.db=await asyncpg.create_pool(self.database_url,min_size=1,max_size=5);self.redis=Redis.from_url(self.redis_url,decode_responses=True);await self.redis.ping()
+        self.http=httpx.AsyncClient(timeout=10)
         await self.db.execute("""
           CREATE TABLE IF NOT EXISTS trade_signals(id uuid PRIMARY KEY,scenario_id uuid NOT NULL,symbol text NOT NULL,status text NOT NULL,data jsonb NOT NULL,created_at timestamptz NOT NULL);
           CREATE TABLE IF NOT EXISTS risk_decisions(id bigserial PRIMARY KEY,signal_id uuid NOT NULL,approved boolean NOT NULL,data jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now());
@@ -52,6 +55,7 @@ class DecisionService:
         for task in self.tasks:task.cancel()
         for task in self.pending.values():task.cancel()
         if self.redis:await self.redis.aclose()
+        if self.http:await self.http.aclose()
         if self.db:await self.db.close()
     async def envelope(self,event_type,payload):
         return {"message_id":str(uuid4()),"correlation_id":str(uuid4()),"timestamp":int(time()*1000),"source":"decision-service","version":"1.0.0","event_type":event_type,"payload":payload.model_dump(mode="json") if isinstance(payload,BaseModel) else payload}
@@ -170,6 +174,18 @@ class DecisionService:
         row=await self.db.fetchrow("SELECT config,mode FROM trading_configs WHERE symbol=$1 AND status='ACTIVE'",request.symbol)
         if not row or str(decode_json(row["config"]).get("strategy","")).upper()!="ELLIOTT":
             raise ValueError("Active Elliott configuration not found")
+        mode=str(row["mode"]).upper()
+        if mode in {"DEMO","PRODUCTION"}:
+            try:
+                response=await self.http.get(
+                    f"{self.exchange_service_url}/exchange/instruments/{request.symbol}/availability",
+                    params={"mode":mode},
+                )
+                response.raise_for_status();availability=response.json()
+            except (httpx.HTTPError,ValueError) as exc:
+                raise ValueError(f"Unable to validate {request.symbol} in {mode}: {exc}") from exc
+            if not availability.get("available"):
+                raise ValueError(availability.get("reason") or f"{request.symbol} is unavailable in {mode}")
         entry=await self.db.fetchval("SELECT close::float8 FROM candles WHERE symbol=$1 ORDER BY ts DESC LIMIT 1",request.symbol)
         if entry is None:raise ValueError("Market price is not available")
         created=now_ms();scenario=simulated_elliott_scenario(request,float(entry),created)
@@ -177,7 +193,7 @@ class DecisionService:
         await self.db.execute("INSERT INTO scenarios(id,symbol,status,data,created_at) VALUES($1::uuid,$2,'SELECTED',$3::jsonb,to_timestamp($4/1000.0))",scenario.id,scenario.symbol,json.dumps(scenario.model_dump(mode="json")),created)
         await self.pub("scenario.update","scenario.created",scenario)
         await self.db.execute("INSERT INTO trade_signals(id,scenario_id,symbol,status,data,created_at) VALUES($1::uuid,$2::uuid,$3,'PENDING',$4::jsonb,to_timestamp($5/1000.0))",signal.signal_id,scenario.id,signal.symbol,json.dumps(signal.model_dump(mode="json")),signal.created_at)
-        ignore_loss_limits=str(row["mode"]).upper() in {"PAPER","DEMO"}
+        ignore_loss_limits=mode in {"PAPER","DEMO"}
         decision=await self.assess(signal,ignore_loss_limits=ignore_loss_limits)
         return {"scenario_id":scenario.id,"signal_id":signal.signal_id,"approved":decision.approved,
                 "risk":decision.model_dump(mode="json")}

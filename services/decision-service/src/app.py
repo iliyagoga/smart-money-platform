@@ -4,7 +4,8 @@ from .models import *
 from .service import DecisionService
 from .settings import settings
 
-service=DecisionService(settings.database_url,settings.redis_url,settings.confidence_threshold,settings.conflict_min_delta,settings.default_capital)
+service=DecisionService(settings.database_url,settings.redis_url,settings.confidence_threshold,
+  settings.conflict_min_delta,settings.default_capital,settings.exchange_service_url)
 @asynccontextmanager
 async def lifespan(app):
     await service.start();yield;await service.stop()

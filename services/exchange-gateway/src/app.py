@@ -28,6 +28,9 @@ async def health():return {"status":"UP","market_data_enabled":settings.market_d
 async def reload_symbols():return {"symbols":await service.refresh_symbols()}
 @app.get("/exchange/instruments")
 async def instruments():return {"instruments":await service.instruments()}
+@app.get("/exchange/instruments/{symbol}/availability")
+async def instrument_availability(symbol:str,mode:str="DEMO"):
+    return await service.instrument_availability(symbol.strip().upper(),mode)
 @app.post("/exchange/sync")
 async def sync(req:SyncRequest):
     req.symbol=req.symbol.upper();req.timeframe=req.timeframe.upper()
@@ -67,6 +70,9 @@ async def balance():
 @app.get("/exchange/orders")
 async def exchange_orders(limit:int=Query(default=100,ge=1,le=1000)):
     return {"orders":await service.exchange_orders(limit)}
+@app.get("/exchange/trading-logs")
+async def trading_logs(limit:int=Query(default=100,ge=1,le=1000)):
+    return {"logs":await service.trading_logs(limit)}
 @app.post("/exchange/orders/{order_id}/cancel")
 async def cancel_exchange_order(order_id:str):
     try:return await service.cancel_order(order_id)

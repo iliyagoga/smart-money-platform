@@ -35,8 +35,12 @@ class ExecutionService:
             updated_at timestamptz NOT NULL DEFAULT now(),UNIQUE(owner_id,name));
         """)
         await self.db.execute("UPDATE trading_configs SET mode='PAPER' WHERE mode IN ('SIMULATION','paper')")
-        for row in await self.db.fetch("SELECT data FROM orders WHERE status IN ('PENDING','OPEN','SUBMITTING','PARTIALLY_FILLED','CANCEL_REQUESTED')"):
-            o=Order.model_validate(decode_json(row["data"]));self.orders[o.id]=o
+        for row in await self.db.fetch("""SELECT o.data,eo.payload->>'error' AS rejection_reason
+          FROM orders o LEFT JOIN exchange_orders eo ON eo.local_order_id=o.id
+          ORDER BY o.created_at DESC LIMIT 1000"""):
+            o=Order.model_validate(decode_json(row["data"]))
+            if o.status=="REJECTED" and not o.rejection_reason:o.rejection_reason=row["rejection_reason"]
+            self.orders[o.id]=o
         for row in await self.db.fetch("SELECT data FROM positions WHERE status!='CLOSED'"):
             p=Position.model_validate(decode_json(row["data"]));self.positions[p.id]=p;await self.redis.sadd("positions:open",p.id)
         try:await self.redis.xgroup_create("trading.command",self.group,id="0",mkstream=True)
@@ -225,9 +229,12 @@ class ExecutionService:
             if price<=0:raise ValueError("Filled order has no execution price")
             await self.fill(order,price,order.exchange_order_id)
         elif status in {"OPEN","PARTIALLY_FILLED","CANCELLED","REJECTED"}:
-            order.status=status;await self.save_order(order)
+            order.status=status
+            if status=="REJECTED":order.rejection_reason=payload.get("reason") or "Exchange rejected the order"
+            await self.save_order(order)
             if status in {"CANCELLED","REJECTED"}:
-                await self.publish(f"order.{status.lower()}",{"order_id":order.id,"signal_id":order.signal_id,"symbol":order.symbol})
+                await self.publish(f"order.{status.lower()}",{"order_id":order.id,"signal_id":order.signal_id,
+                  "symbol":order.symbol,"reason":order.rejection_reason})
     async def request_cancel(self,order:Order):
         if order.status=="FILLED":raise ValueError("Filled order cannot be cancelled")
         if order.execution_mode=="PAPER" or order.exchange_order_id is None:

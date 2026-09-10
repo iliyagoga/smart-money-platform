@@ -9,6 +9,7 @@ import { TradeHistory } from "../../components/trades/TradeHistory";
 import { TradeStatisticsGrid } from "../../components/trades/TradeStatisticsGrid";
 import { TradeAnalyzer } from "../../components/trades/TradeAnalyzer";
 import { OrdersPanel } from "../../components/trades/OrdersPanel";
+import { LiveTradingLogs } from "../../components/trades/LiveTradingLogs";
 import { useApiResource } from "../../hooks/useApiResource";
 import { api } from "../../lib/api";
 import type { OrdersResponse, Position, PositionsResponse, TradeAnalysisResponse, TradeAssetsResponse, TradeStatistics, TradesResponse, TradingOrder } from "../../lib/types";
@@ -116,6 +117,7 @@ export default function TradesPage() {
       </Grid>
       <TradeHistory trades={historyResource.data?.trades ?? []} />
       <TradeAnalyzer analysis={analysisResource.data} />
+      {isAdmin && <LiveTradingLogs />}
       <Dialog open={Boolean(closingPosition)} onClose={() => !isClosing && setClosingPosition(undefined)} maxWidth="sm">
         <DialogTitle>Закрыть позицию?</DialogTitle>
         <DialogContent>

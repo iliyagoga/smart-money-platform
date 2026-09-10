@@ -30,6 +30,7 @@ class OrderCreate(BaseModel):
         return self
 class Order(OrderCreate):
     id:str=Field(default_factory=lambda:str(uuid4()));status:str="PENDING";exchange_order_id:str|None=None
+    rejection_reason:str|None=None
     created_at:int=Field(default_factory=now_ms);filled_at:int|None=None;filled_price:float|None=None
 class Position(BaseModel):
     id:str=Field(default_factory=lambda:str(uuid4()));signal_id:str|None=None;scenario_id:str|None=None;order_id:str

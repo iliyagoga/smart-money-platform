@@ -54,6 +54,16 @@ def test_second_order_is_rejected_while_first_is_active():
     with pytest.raises(ValueError,match="Another trade is still active"):
         asyncio.run(service.create_order(second))
 
+def test_exchange_rejection_reason_is_preserved_on_order():
+    async def check():
+        service=ExecutionService("postgresql://unused","redis://unused")
+        order=Order(symbol="BTC-USDT",side="BUY",type="MARKET",price=100,quantity=1,status="SUBMITTING")
+        service.orders[order.id]=order;service.save_order=AsyncMock();service.publish=AsyncMock()
+        await service.on_exchange_order({"order_id":order.id,"status":"REJECTED","reason":"OKX sCode 51001"})
+        assert order.status=="REJECTED" and order.rejection_reason=="OKX sCode 51001"
+        service.publish.assert_awaited_once()
+    asyncio.run(check())
+
 def test_submitting_order_also_reserves_the_trading_slot():
     service=ExecutionService("postgresql://unused","redis://unused")
     first=Order(symbol="BTC-USDT",side="BUY",type="MARKET",price=100,quantity=1,status="SUBMITTING")

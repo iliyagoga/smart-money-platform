@@ -91,6 +91,26 @@ def test_simulated_elliott_signal_has_executable_risk_levels():
     assert item.target_allocations==[1] and item.target_rrs==[2]
 
 
+def test_demo_simulation_stops_before_creating_signal_when_instrument_is_unavailable():
+    import asyncio
+    import httpx
+    import pytest
+    from unittest.mock import AsyncMock
+
+    async def check():
+        service=DecisionService("unused","unused")
+        service.db=AsyncMock()
+        service.db.fetchrow.return_value={"config":{"strategy":"ELLIOTT"},"mode":"DEMO"}
+        service.http=AsyncMock()
+        service.http.get.return_value=httpx.Response(200,json={
+          "available":False,"reason":"MORPHO-USDT-SWAP is unavailable in OKX Demo",
+        },request=httpx.Request("GET","http://exchange/availability"))
+        with pytest.raises(ValueError,match="unavailable in OKX Demo"):
+            await service.simulate_elliott(SimulatedElliottSignalRequest(symbol="MORPHO-USDT-SWAP"))
+        service.db.fetchval.assert_not_awaited()
+    asyncio.run(check())
+
+
 def test_waiting_signals_retry_sequentially_after_position_closes():
     import asyncio
     from unittest.mock import AsyncMock
