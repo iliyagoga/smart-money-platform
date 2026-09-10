@@ -47,11 +47,12 @@ export default function MarketPage() {
   const liveEntries = useApiResource<LiveEntriesResponse>(`/api/v1/elliott/elliott/entries?symbol=${encodeURIComponent(viewed)}`);
   const historicalElliott = useApiResource<ElliottHistoryResponse>(`/api/v1/elliott/elliott/history?symbol=${encodeURIComponent(viewed)}`);
   const candles = useOkxCandles(viewed,selectedTf,candleLimit);
-  const displayedPatterns = historicalElliott.data?.status === "COMPLETED"
-    ? historicalElliott.data.patterns : (elliottPatterns.data?.patterns ?? []);
+  const currentHistory = historicalElliott.data?.symbol === viewed ? historicalElliott.data : undefined;
+  const displayedPatterns = currentHistory?.status === "COMPLETED"
+    ? currentHistory.patterns : (elliottPatterns.data?.symbol === viewed ? elliottPatterns.data.patterns : []);
   const displayedEntries = useMemo(() => [...new Map([
-    ...(historicalElliott.data?.entries ?? []),...(liveEntries.data?.entries ?? []),
-  ].map((item) => [item.id,item])).values()], [historicalElliott.data?.entries,liveEntries.data?.entries]);
+    ...(currentHistory?.entries ?? []),...(liveEntries.data?.symbol === viewed ? liveEntries.data.entries : []),
+  ].map((item) => [item.id,item])).values()], [currentHistory?.entries,liveEntries.data,viewed]);
   const reloadCandles = candles.reload;
   useEffect(() => {
     if (!symbol && assets.assets.length) setSymbol(assets.assets[0]);
@@ -97,10 +98,10 @@ export default function MarketPage() {
     </Accordion>
     {message && <Alert severity={message.includes("сохранена") || message.includes("загружена") || message.includes("вставлена") || message.includes("удалён") ? "success" : "error"}>{message}</Alert>}
     <Paper variant="outlined" sx={{ p: { xs: 2, md: 3 }, width: "100%" }}><Stack spacing={1.5}><Typography variant="h6">Состояние актива</Typography><Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}><TextField fullWidth select label="Актив для просмотра" value={viewed} onChange={(e) => setViewSymbol(e.target.value)}>{activeAssets.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}</TextField><TextField fullWidth select label="Просматриваемый таймфрейм" value={selectedTf} onChange={(e) => setSelectedTf(e.target.value)} disabled={!availableTimeframes.length}>{availableTimeframes.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}</TextField><Button color="error" variant="contained" disabled={!viewed || saving} onClick={() => void removeLiveAsset()} sx={{ minWidth: 190, alignSelf: "center", borderRadius: 1, px: 2.5, py: .5, boxShadow: "none", textTransform: "none", fontWeight: 700, "&:hover": { boxShadow: "0 4px 12px rgba(211,47,47,.2)" } }}>Удалить актив</Button></Stack>
-      {historicalElliott.data?.status === "BUILDING" && <Alert severity="info">Исторические paper-сделки рассчитываются на сервере…</Alert>}
-      {historicalElliott.data?.status === "WAITING_FOR_DATA" && <Alert severity="warning">Исторический расчёт ждёт загрузки свечей.</Alert>}
-      {historicalElliott.data?.status === "FAILED" && <Alert severity="error">Не удалось рассчитать историю: {historicalElliott.data.error}</Alert>}
-      {viewed ? <TradingViewChart key={`${viewed}:${selectedTf}`} candles={candles.data?.candles ?? []} elliottPatterns={displayedPatterns} entryScenarios={displayedEntries} historicalTrades={historicalElliott.data?.trades ?? []} /> : <Typography color="text.secondary">Нет активных активов для просмотра.</Typography>}</Stack></Paper>
+      {currentHistory?.status === "BUILDING" && <Alert severity="info">Исторические paper-сделки рассчитываются на сервере…</Alert>}
+      {currentHistory?.status === "WAITING_FOR_DATA" && <Alert severity="warning">Исторический расчёт ждёт загрузки свечей.</Alert>}
+      {currentHistory?.status === "FAILED" && <Alert severity="error">Не удалось рассчитать историю: {currentHistory.error}</Alert>}
+      {viewed ? <TradingViewChart key={`${viewed}:${selectedTf}`} candles={candles.data?.candles ?? []} isLoading={candles.loading} elliottPatterns={displayedPatterns} entryScenarios={displayedEntries} historicalTrades={currentHistory?.trades ?? []} /> : <Typography color="text.secondary">Нет активных активов для просмотра.</Typography>}</Stack></Paper>
     {selectedConfig && <Paper variant="outlined" sx={{ p:{ xs:2,md:3 } }}><Stack spacing={2}><Stack direction="row" sx={{ alignItems:"center",justifyContent:"space-between" }}><Stack direction="row" spacing={1} sx={{ alignItems:"center" }}><Typography variant="h6">Конфигурация {selectedConfig.symbol}</Typography><Chip label={selectedConfig.mode} color={selectedConfig.mode === "PRODUCTION" ? "error" : selectedConfig.mode === "DEMO" ? "warning" : "default"} /></Stack><Button variant="contained" onClick={editActiveConfig}>Редактировать</Button></Stack><ConfigSummary value={selectedConfig.config} /></Stack></Paper>}
   </Stack></SectionPage>;
 }
@@ -257,5 +258,7 @@ function useOkxCandles(symbol: string, timeframe: string, limit: number) {
     return () => { cancelled = true; };
   }, [key, limit, reloadKey, symbol, timeframe]);
 
-  return { data, reload, loading };
+  const currentData = data.symbol === symbol && data.timeframe === timeframe
+    ? data : { symbol, timeframe, candles: cacheRef.current.get(key) ?? [] };
+  return { data: currentData, reload, loading: loading || data.symbol !== symbol || data.timeframe !== timeframe };
 }

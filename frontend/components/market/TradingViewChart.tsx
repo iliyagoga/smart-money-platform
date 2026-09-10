@@ -30,9 +30,9 @@ export interface HistoricalPaperTrade {
 
 type ChartSeries = ReturnType<ReturnType<typeof createChart>["addSeries"]>;
 
-export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios = [], historicalTrades = [] }: {
+export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios = [], historicalTrades = [], isLoading = false }: {
   candles: Candle[]; elliottPatterns?: LiveElliottPattern[]; entryScenarios?: LiveEntryScenario[];
-  historicalTrades?: HistoricalPaperTrade[];
+  historicalTrades?: HistoricalPaperTrade[]; isLoading?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const fullscreenRef = useRef<HTMLDivElement>(null);
@@ -43,7 +43,7 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
   const overlayFingerprintRef = useRef("");
   const renderedCandlesRef = useRef<Candle[]>([]);
   const pendingFocusRef = useRef<{ from:UTCTimestamp;to:UTCTimestamp } | null>(null);
-  const hasDataRef = useRef(false);
+  const hasInitialFitRef = useRef(false);
   const [selectedEntryId,setSelectedEntryId] = useState("");
   const [isFullscreen,setIsFullscreen] = useState(false);
   const [windowCenter,setWindowCenter] = useState<number | null>(null);
@@ -53,7 +53,7 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
     const chart = createChart(container, { width: container.clientWidth, height: container.clientHeight || 560,
       layout: { background: { type: ColorType.Solid, color: "#101722" }, textColor: "#b2b9c6", attributionLogo: true },
       grid: { vertLines: { color: "#1e2938" }, horzLines: { color: "#1e2938" } },
-      rightPriceScale: { borderColor: "#334155" }, timeScale: {
+      rightPriceScale: { borderColor: "#334155", autoScale: true, scaleMargins: { top: .12, bottom: .12 } }, timeScale: {
         borderColor: "#334155", timeVisible: true,
         tickMarkFormatter: (time: number) => formatDubaiTime(time),
       },
@@ -93,7 +93,6 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
       time: chartTime(c.timestamp), open: c.open, high: c.high, low: c.low, close: c.close,
     })));
     renderedCandlesRef.current=chartCandles;
-    if (!hasDataRef.current) { chart.timeScale().fitContent(); hasDataRef.current = true; }
     if (pendingFocusRef.current) {
       chart.timeScale().setVisibleRange(pendingFocusRef.current);
       pendingFocusRef.current=null;
@@ -140,7 +139,7 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
           color, shape: "circle" as const,
           text: `${point.label}${waveLegend(point.label) ? ` · ${waveLegend(point.label)}` : ""} · ${pattern.structure_timeframe}` }] as const;
       })).values()].sort((left, right) => Number(left.time) - Number(right.time));
-      createSeriesMarkers(wave, waveMarkers);
+      createSeriesMarkers(wave, waveMarkers, { autoScale: false });
       const levels = pattern.strategy_levels;
       if (levels) {
         const structureFrom = containingCandleTimestamp(orderedCandles, levels.structure_from);
@@ -190,9 +189,22 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
         shape:"square",text:`Выход · ${trade.pnl >= 0 ? "+" : ""}${trade.pnl.toFixed(2)} · ${trade.reason}` });
     });
     const sortedMarkers = markers.sort((left, right) => Number(left.time) - Number(right.time));
-    if (!markersRef.current) markersRef.current = createSeriesMarkers(candleSeries, sortedMarkers);
+    if (!markersRef.current) markersRef.current = createSeriesMarkers(candleSeries, sortedMarkers, { autoScale: false });
     else markersRef.current.setMarkers(sortedMarkers);
   }, [chartCandles, elliottPatterns, entryScenarios, historicalTrades, selectedEntryId]);
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !chartCandles.length || isLoading || hasInitialFitRef.current) return;
+    hasInitialFitRef.current = true;
+    // Data and overlays are installed by the effects above. Waiting for the next
+    // frame makes the first autoscale deterministic even when candles came from
+    // IndexedDB first and were then extended with paginated history.
+    const frame = window.requestAnimationFrame(() => {
+      chart.priceScale("right").applyOptions({ autoScale: true });
+      chart.timeScale().fitContent();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [chartCandles, elliottPatterns, entryScenarios, historicalTrades, isLoading]);
   const validPatterns = elliottPatterns.filter((pattern) => pattern.state !== "INVALID").length;
   const entries = entryScenarios.filter((scenario) => scenario.setup_type === "ELLIOTT_WAVE3")
     .sort((left,right) => right.created_at-left.created_at);
@@ -286,7 +298,8 @@ function addLevel(chart: ReturnType<typeof createChart>, collection: ChartSeries
     priceLineVisible: false, lastValueVisible: false, title: "" });
   const startTime = chartTime(from); const endTime = chartTime(to);
   series.setData([{ time: startTime, value }, { time: endTime, value }]);
-  createSeriesMarkers(series, [{ time: endTime, position: "aboveBar", color, shape: "circle", text: label }]);
+  createSeriesMarkers(series, [{ time: endTime, position: "aboveBar", color, shape: "circle", text: label }],
+    { autoScale: false });
   collection.push(series);
 }
 

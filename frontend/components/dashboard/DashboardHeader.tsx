@@ -14,12 +14,13 @@ const navigation = [
   { label: "Портфели", href: "/portfolios" },
   { label: "Бэктест", href: "/backtest" },
   { label: "Replay", href: "/replay" },
+  { label: "Пользователи", href: "/admin/users", adminOnly: true },
   { label: "Профиль", href: "/profile" },
 ];
 
-interface DashboardHeaderProps { isLive?: boolean; username: string }
+interface DashboardHeaderProps { isLive?: boolean; roles?: string[]; username: string }
 
-export function DashboardHeader({ isLive, username }: DashboardHeaderProps) {
+export function DashboardHeader({ isLive, roles = [], username }: DashboardHeaderProps) {
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -56,7 +57,7 @@ export function DashboardHeader({ isLive, username }: DashboardHeaderProps) {
           <Typography sx={{ display: { xs: "none", sm: "block" }, fontWeight: 700 }}>Elliott Wave</Typography>
         </Stack>
         <Stack component="nav" direction="row" spacing={0.5} sx={{ display: { xs: "none", xl: "flex" } }}>
-          {navigation.map((item) => (
+          {navigation.filter((item) => !item.adminOnly || roles.includes("admin")).map((item) => (
             <Button component={Link} href={item.href} aria-current={pathname === item.href ? "page" : undefined} key={item.label} color={pathname === item.href ? "primary" : "secondary"} size="small">
               {item.label}
             </Button>
@@ -81,7 +82,7 @@ export function DashboardHeader({ isLive, username }: DashboardHeaderProps) {
         <Stack component="nav" spacing={1} sx={{ width: { xs: "min(88vw, 340px)", sm: 340 }, p: { xs: 2.5, sm: 3 } }}>
           <Typography variant="h6" sx={{ mb: 1 }}>Навигация</Typography>
           <Divider />
-          {navigation.map((item) => (
+          {navigation.filter((item) => !item.adminOnly || roles.includes("admin")).map((item) => (
             <Button
               component={Link}
               href={item.href}

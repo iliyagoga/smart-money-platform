@@ -16,7 +16,7 @@ interface SectionPageProps {
 }
 
 export function SectionPage({ children, description, error = "", isLoading = false, onReload, title }: SectionPageProps) {
-  const { username } = useAuth();
+  const { roles, username } = useAuth();
   return (
     <AuthenticatedPage>
       <Container component="main" maxWidth={false} sx={{
@@ -26,7 +26,7 @@ export function SectionPage({ children, description, error = "", isLoading = fal
         pb: { xs: 4, md: 7.5 },
         px: { xs: 1.5, sm: 2.5, md: 3, lg: 4 },
       }}>
-        <DashboardHeader username={username} />
+        <DashboardHeader roles={roles} username={username} />
         <Stack direction={{ xs: "column", sm: "row" }} sx={{ py: { xs: 2.5, md: 3.5 }, justifyContent: "space-between", gap: 2 }}>
           <Box sx={{ minWidth: 0 }}>
             <Typography className="eyebrow" color="primary.main">ELLIOTT WAVE</Typography>

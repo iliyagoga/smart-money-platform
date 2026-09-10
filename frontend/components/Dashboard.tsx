@@ -20,7 +20,7 @@ export default function Dashboard() {
   const [isLive, setIsLive] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [loadError, setLoadError] = useState("");
-  const { username } = useAuth();
+  const { roles, username } = useAuth();
   const healthy = services.length > 0 && services.every((service) => service.status === "UP");
 
   const loadDashboard = useCallback(async () => {
@@ -58,7 +58,7 @@ export default function Dashboard() {
 
   return (
     <Container component="main" maxWidth={false} sx={{ maxWidth: 1920, width: "100%", mx: "auto", pb: { xs: 4, md: 7.5 }, px: { xs: 1.5, sm: 2.5, md: 3, lg: 4 } }}>
-      <DashboardHeader isLive={isLive} username={username} />
+      <DashboardHeader isLive={isLive} roles={roles} username={username} />
       <Stack id="overview" direction={{ xs: "column", md: "row" }} spacing={2.5} sx={{ py: { xs: 3, md: 4.5 }, justifyContent: "space-between" }}>
         <Box>
           <Typography className="eyebrow">COMMAND CENTER · {new Date().toLocaleDateString("ru-RU")}</Typography>

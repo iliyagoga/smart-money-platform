@@ -292,6 +292,10 @@ services:
       KEYCLOAK_ISSUER: http://localhost:8080/realms/smart-money
       KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/smart-money/protocol/openid-connect/certs
       KEYCLOAK_CLIENT_ID: smart-money-api
+      KEYCLOAK_ADMIN_URL: http://keycloak:8080
+      KEYCLOAK_REALM: smart-money
+      KEYCLOAK_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-CHANGE_ME}
       DATA_SERVICE_URL: http://data-service:8000
       ELLIOTT_SERVICE_URL: http://elliott-service:8010
       DECISION_SERVICE_URL: http://decision-service:8020
