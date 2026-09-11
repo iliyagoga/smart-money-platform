@@ -27,7 +27,8 @@ class DecisionService:
         self.exchange_service_url=exchange_service_url.rstrip("/");self.http=None
         self.db=None;self.redis=None;self.resolver=ConflictResolver(threshold,min_delta);self.risk=RiskManager()
         self.scenarios:dict[str,Scenario]={};self.signals:dict[str,TradeSignal]={};self.tasks=[];self.pending:dict[str,asyncio.Task]={}
-        self.waiting:set[str]=set();self.reserved_signal_id:str|None=None;self.risk_lock=asyncio.Lock()
+        self.waiting:set[str]=set();self.reserved_signal_id:str|None=None
+        self.risk_lock=asyncio.Lock();self.resolve_lock=asyncio.Lock()
     async def start(self):
         self.db=await asyncpg.create_pool(self.database_url,min_size=1,max_size=5);self.redis=Redis.from_url(self.redis_url,decode_responses=True);await self.redis.ping()
         self.http=httpx.AsyncClient(timeout=10)
@@ -42,14 +43,14 @@ class DecisionService:
                 s=Scenario.model_validate(row["data"])
                 if s.expires_at>now_ms():self.scenarios[s.id]=s
                 else:await self.db.execute("UPDATE scenarios SET status='EXPIRED' WHERE id=$1::uuid",s.id)
-            except Exception:pass
+            except Exception:log.exception("Could not restore Elliott scenario")
         rows=await self.db.fetch("SELECT data FROM trade_signals WHERE status='WAITING'")
         for row in rows:
             try:
                 signal=TradeSignal.model_validate(decode_json(row["data"]))
                 if signal.expires_at is None or signal.expires_at>now_ms():
                     self.signals[signal.signal_id]=signal;self.waiting.add(signal.signal_id)
-            except Exception:pass
+            except Exception:log.exception("Could not restore waiting trade signal")
         self.tasks=[asyncio.create_task(self.listen())]
     async def stop(self):
         for task in self.tasks:task.cancel()
@@ -89,6 +90,8 @@ class DecisionService:
     async def resolve_after_delay(self,symbol):
         await asyncio.sleep(.15);await self.resolve(symbol)
     async def resolve(self,symbol):
+        async with self.resolve_lock:return await self._resolve(symbol)
+    async def _resolve(self,symbol):
         timestamp=now_ms()
         expired=[item for item in self.scenarios.values() if item.symbol==symbol and item.status=="ACTIVE" and item.expires_at<=timestamp]
         for item in expired:
@@ -102,6 +105,10 @@ class DecisionService:
             await self.db.execute("INSERT INTO decision_log(scenario_id,decision,reason) VALUES($1::uuid,'REJECTED',$2)",item.id,reason)
             await self.pub("scenario.update","scenario.rejected",{"scenario_id":item.id,"reason":reason,"rejected_at":int(time()*1000)})
         if not selected:return None
+        existing=await self.db.fetchrow("SELECT data FROM trade_signals WHERE scenario_id=$1::uuid ORDER BY created_at LIMIT 1",selected.id)
+        if existing:
+            signal=TradeSignal.model_validate(decode_json(existing["data"]));self.signals[signal.signal_id]=signal
+            return signal
         selected.status="SELECTED";await self.db.execute("UPDATE scenarios SET status='SELECTED',data=$2::jsonb WHERE id=$1::uuid",selected.id,json.dumps(selected.model_dump(mode="json")))
         signal=self.resolver.signal(selected);self.signals[signal.signal_id]=signal
         await self.db.execute("INSERT INTO decision_log(scenario_id,decision) VALUES($1::uuid,'SELECTED')",selected.id)

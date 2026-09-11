@@ -1,0 +1,45 @@
+services:
+  keycloak:
+    environment:
+      KC_HOSTNAME: https://${KEYCLOAK_HOST:?Set KEYCLOAK_HOST}
+      PUBLIC_FRONTEND_URL: https://${FRONTEND_HOST:?Set FRONTEND_HOST}
+
+  api-gateway:
+    environment:
+      ENVIRONMENT: production
+      KEYCLOAK_ISSUER: https://${KEYCLOAK_HOST:?Set KEYCLOAK_HOST}/realms/smart-money
+      CORS_ORIGINS: https://${FRONTEND_HOST:?Set FRONTEND_HOST}
+      ALLOWED_HOSTS: ${API_HOST:?Set API_HOST}
+
+  frontend:
+    build:
+      args:
+        NEXT_PUBLIC_API_URL: https://${API_HOST:?Set API_HOST}
+        NEXT_PUBLIC_KEYCLOAK_URL: https://${KEYCLOAK_HOST:?Set KEYCLOAK_HOST}
+
+  caddy:
+    image: caddy:2.10.2-alpine
+    container_name: smart-money-caddy
+    restart: unless-stopped
+    environment:
+      FRONTEND_HOST: ${FRONTEND_HOST:?Set FRONTEND_HOST}
+      API_HOST: ${API_HOST:?Set API_HOST}
+      KEYCLOAK_HOST: ${KEYCLOAK_HOST:?Set KEYCLOAK_HOST}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infrastructure/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      frontend:
+        condition: service_started
+      api-gateway:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -1,7 +1,7 @@
 services:
 
   postgres:
-    image: timescale/timescaledb:latest-pg17
+    image: timescale/timescaledb:2.30.0-pg17
     container_name: smart-money-postgres
     restart: unless-stopped
     mem_limit: ${POSTGRES_MEMORY_LIMIT:-3g}
@@ -32,9 +32,6 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
 
-    ports:
-      - "5432:5432"
-
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
@@ -49,32 +46,49 @@ services:
       retries: 10
 
   redis:
-    image: redis:8-alpine
+    image: redis:8.8-alpine3.23
     container_name: smart-money-redis
     restart: unless-stopped
 
-    ports:
-      - "6379:6379"
+    command: ["redis-server","--appendonly","yes","--requirepass","${REDIS_PASSWORD:?Set REDIS_PASSWORD}"]
 
     volumes:
       - redis_data:/data
 
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$${REDIS_PASSWORD}\" redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
+
   keycloak:
-    image: quay.io/keycloak/keycloak:26.3
+    image: quay.io/keycloak/keycloak:26.7.3
     container_name: smart-money-keycloak
     restart: unless-stopped
-    command: start-dev --import-realm
+    command: start --import-realm
     environment:
-      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
-      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-CHANGE_ME}
-      KC_HOSTNAME: http://localhost:8080
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:?Set KEYCLOAK_ADMIN}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Set KEYCLOAK_ADMIN_PASSWORD}
+      KC_HOSTNAME: ${PUBLIC_KEYCLOAK_URL:?Set PUBLIC_KEYCLOAK_URL}
       KC_HTTP_ENABLED: "true"
       KC_HEALTH_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      KC_DB_USERNAME: ${POSTGRES_USER}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      PUBLIC_FRONTEND_URL: ${PUBLIC_FRONTEND_URL:?Set PUBLIC_FRONTEND_URL}
     ports:
-      - "8080:8080"
+      - "${DEPLOYMENT_BIND_ADDRESS:-127.0.0.1}:8080:8080"
     volumes:
       - keycloak_data:/opt/keycloak/data
       - ./infrastructure/keycloak/realm-smart-money.json:/opt/keycloak/data/import/realm-smart-money.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   data-service:
     build:
@@ -92,16 +106,13 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
 
-      REDIS_URL: ${REDIS_URL}
-
-    ports:
-      - "8000:8000"
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379
 
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
 
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8000/actuator/health/readiness | grep -q '\"status\":\"UP\"'"]
@@ -117,14 +128,12 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      REDIS_URL: ${REDIS_URL}
-    ports:
-      - "8010:8010"
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       data-service:
         condition: service_healthy
     healthcheck:
@@ -141,18 +150,16 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      REDIS_URL: ${REDIS_URL}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379
       EXCHANGE_SERVICE_URL: http://exchange-gateway:8070
       CONFIDENCE_THRESHOLD: ${CONFIDENCE_THRESHOLD:-0.60}
       CONFLICT_MIN_DELTA: ${CONFLICT_MIN_DELTA:-0.10}
       DEFAULT_CAPITAL: ${DEFAULT_CAPITAL:-10000}
-    ports:
-      - "8020:8020"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       elliott-service:
         condition: service_healthy
     healthcheck:
@@ -169,17 +176,16 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      REDIS_URL: ${REDIS_URL}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379
+      EXCHANGE_SERVICE_URL: http://exchange-gateway:8070
       EXECUTION_MODE: ${EXECUTION_MODE:-paper}
       STREAM_GROUP: execution-service
       CONSUMER_NAME: execution-1
-    ports:
-      - "8030:8030"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       decision-service:
         condition: service_healthy
     healthcheck:
@@ -196,16 +202,14 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      REDIS_URL: ${REDIS_URL}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379
       INITIAL_CAPITAL: ${INITIAL_CAPITAL:-10000}
       BASE_CURRENCY: ${BASE_CURRENCY:-USDT}
-    ports:
-      - "8040:8040"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       execution-service:
         condition: service_healthy
     healthcheck:
@@ -225,8 +229,6 @@ services:
       DATA_SERVICE_URL: http://data-service:8000
       MAX_CANDLES: ${BACKTEST_MAX_CANDLES:-2000000}
       JOB_CONCURRENCY: ${BACKTEST_JOB_CONCURRENCY:-2}
-    ports:
-      - "8085:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -264,10 +266,8 @@ services:
       DATA_SERVICE_URL: http://data-service:8000
       ELLIOTT_SERVICE_URL: http://elliott-service:8010
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      REDIS_URL: ${REDIS_URL}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379
       HISTORY_CONCURRENCY: ${HISTORY_CONCURRENCY:-2}
-    ports:
-      - "8070:8070"
     depends_on:
       data-service:
         condition: service_healthy
@@ -276,7 +276,7 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8070/health')\""]
       interval: 10s
@@ -290,13 +290,14 @@ services:
     container_name: smart-money-api-gateway
     restart: unless-stopped
     environment:
-      KEYCLOAK_ISSUER: http://localhost:8080/realms/smart-money
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      KEYCLOAK_ISSUER: ${PUBLIC_KEYCLOAK_URL:?Set PUBLIC_KEYCLOAK_URL}/realms/smart-money
       KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/smart-money/protocol/openid-connect/certs
       KEYCLOAK_CLIENT_ID: smart-money-api
       KEYCLOAK_ADMIN_URL: http://keycloak:8080
       KEYCLOAK_REALM: smart-money
-      KEYCLOAK_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
-      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-CHANGE_ME}
+      KEYCLOAK_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:?Set KEYCLOAK_ADMIN}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Set KEYCLOAK_ADMIN_PASSWORD}
       DATA_SERVICE_URL: http://data-service:8000
       ELLIOTT_SERVICE_URL: http://elliott-service:8010
       DECISION_SERVICE_URL: http://decision-service:8020
@@ -304,14 +305,18 @@ services:
       ANALYTICS_SERVICE_URL: http://analytics-service:8040
       BACKTEST_SERVICE_URL: http://backtest-service:8080
       EXCHANGE_SERVICE_URL: http://exchange-gateway:8070
-      REDIS_URL: ${REDIS_URL}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      CORS_ORIGINS: ${PUBLIC_FRONTEND_URL:?Set PUBLIC_FRONTEND_URL}
+      ALLOWED_HOSTS: ${PUBLIC_API_HOSTS:-localhost,127.0.0.1}
+      EXPOSE_DOCS: ${EXPOSE_API_DOCS:-false}
     ports:
-      - "8050:8050"
+      - "${DEPLOYMENT_BIND_ADDRESS:-127.0.0.1}:8050:8050"
     depends_on:
       keycloak:
         condition: service_started
       redis:
-        condition: service_started
+        condition: service_healthy
       data-service:
         condition: service_healthy
       elliott-service:
@@ -337,8 +342,8 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8050}
-        NEXT_PUBLIC_KEYCLOAK_URL: ${NEXT_PUBLIC_KEYCLOAK_URL:-http://localhost:8080}
+        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:?Set PUBLIC_API_URL}
+        NEXT_PUBLIC_KEYCLOAK_URL: ${PUBLIC_KEYCLOAK_URL:?Set PUBLIC_KEYCLOAK_URL}
         NEXT_PUBLIC_KEYCLOAK_CLIENT_ID: ${NEXT_PUBLIC_KEYCLOAK_CLIENT_ID:-smart-money-api}
     container_name: smart-money-frontend
     restart: unless-stopped
@@ -346,7 +351,7 @@ services:
       HOSTNAME: 0.0.0.0
       PORT: 3000
     ports:
-      - "3000:3000"
+      - "${DEPLOYMENT_BIND_ADDRESS:-127.0.0.1}:3000:3000"
     depends_on:
       api-gateway:
         condition: service_healthy

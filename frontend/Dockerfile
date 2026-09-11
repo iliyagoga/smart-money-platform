@@ -1,7 +1,7 @@
-FROM node:22-alpine AS build
+FROM node:22.22-alpine3.23 AS build
 WORKDIR /app
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 COPY . .
 ARG NEXT_PUBLIC_API_URL=http://localhost:8050
 ARG NEXT_PUBLIC_KEYCLOAK_URL=http://localhost:8080
@@ -10,7 +10,7 @@ ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
     NEXT_PUBLIC_KEYCLOAK_URL=$NEXT_PUBLIC_KEYCLOAK_URL \
     NEXT_PUBLIC_KEYCLOAK_CLIENT_ID=$NEXT_PUBLIC_KEYCLOAK_CLIENT_ID
 RUN npm run build
-FROM node:22-alpine
+FROM node:22.22-alpine3.23
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app/.next/standalone ./

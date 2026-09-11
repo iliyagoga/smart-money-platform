@@ -137,6 +137,24 @@ def test_sequential_portfolio_uses_latest_capital_and_skips_overlaps():
                for left, right in zip(result['trades'], result['trades'][1:]))
 
 
+def test_sequential_portfolio_does_not_reinvest_gains_when_disabled():
+    data=request().model_dump();data['capital_mode']='SEQUENTIAL'
+    data['assets']=data['assets'][:1];data['assets'][0]['allocation_percent']=50
+    data['assets'][0]['request']['config']['elliott']['reinvest_profits']=False
+    runs=[{'id':'aaa','result':{
+      'initial_capital':500,'final_capital':650,'equity':[],
+      'trades':[
+        {'id':1,'entry_time':1000,'exit_time':1500,'entry_price':100,'exit_price':110,
+         'quantity':5,'pnl':50,'direction':'LONG'},
+        {'id':2,'entry_time':2000,'exit_time':2500,'entry_price':100,'exit_price':120,
+         'quantity':5,'pnl':100,'direction':'LONG'},
+      ],'strategy_config':{},'benchmark_return_percent':0,
+    }}]
+    result=aggregate_portfolio(data,runs)
+    assert [trade['allocated_capital'] for trade in result['trades']]==[500,500]
+    assert result['final_capital']==1150
+
+
 @pytest.mark.skipif(not os.environ.get('DATABASE_URL'), reason='Requires PostgreSQL')
 def test_portfolio_lifecycle_and_history_isolation():
     async def check():

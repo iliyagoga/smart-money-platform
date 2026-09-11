@@ -4,6 +4,7 @@ from src.models import *
 from src.service import ExecutionService
 import asyncio
 import pytest
+from pydantic import ValidationError
 from unittest.mock import AsyncMock
 
 def position(**changes):
@@ -88,15 +89,16 @@ def test_closed_trade_updates_edited_current_capital_when_reinvesting():
         service.publish_channel.assert_awaited_once()
     asyncio.run(check())
 
-def test_closed_trade_keeps_manually_set_capital_when_reinvestment_is_disabled():
+def test_closed_trade_updates_capital_even_when_profit_reinvestment_is_disabled():
     async def check():
         service=ExecutionService("postgresql://unused","redis://unused")
         service.db=AsyncMock();service.publish_channel=AsyncMock()
         service.db.fetchrow.return_value={"config":{
           "initialCapital":10_000,"currentCapital":100,"elliott":{"reinvestProfits":False},
         }}
-        await service.update_current_capital("BTC-USDT",25.5)
-        service.db.execute.assert_not_awaited();service.publish_channel.assert_not_awaited()
+        await service.update_current_capital("BTC-USDT",-25.5)
+        assert '"currentCapital": 74.5' in service.db.execute.await_args.args[2]
+        service.publish_channel.assert_awaited_once()
     asyncio.run(check())
 
 def test_submitting_order_also_reserves_the_trading_slot():
@@ -153,3 +155,42 @@ def test_partial_take_uses_the_same_entry_and_exit_fees_as_backtest():
         assert p.fees==pytest.approx(.21)
         assert pnl==pytest.approx(49.79)
     asyncio.run(check())
+
+def test_exchange_partial_fills_use_cumulative_quantity_and_incremental_price():
+    async def check():
+        service=ExecutionService("postgresql://unused","redis://unused")
+        order=Order(symbol="BTC-USDT",side="BUY",type="MARKET",price=100,quantity=10,status="SUBMITTING")
+        service.orders[order.id]=order;service.fill=AsyncMock()
+        await service.on_exchange_order({"order_id":order.id,"status":"PARTIALLY_FILLED",
+          "filled_price":100,"filled_quantity":4})
+        order.filled_quantity=4;order.filled_price=100
+        await service.on_exchange_order({"order_id":order.id,"status":"FILLED",
+          "filled_price":103,"filled_quantity":10})
+        assert service.fill.await_args_list[0].args[1]==100
+        assert service.fill.await_args_list[1].args[1]==pytest.approx(105)
+        assert service.fill.await_args_list[1].kwargs=={"cumulative_quantity":10,"final":True}
+    asyncio.run(check())
+
+def test_live_candles_only_mark_positions_and_do_not_close_them_locally():
+    async def check():
+        service=ExecutionService("postgresql://unused","redis://unused")
+        p=position(execution_mode="DEMO",opened_at=1)
+        service.positions[p.id]=p;service.save_position=AsyncMock();service.publish=AsyncMock();service.close=AsyncMock()
+        await service.on_candle(candle(94,111,105).model_copy(update={"timestamp":2}))
+        service.close.assert_not_awaited();assert p.current_price==105
+        service.save_position.assert_awaited_once()
+    asyncio.run(check())
+
+def test_live_config_rejects_features_not_protected_by_exchange_orders():
+    config={"elliott":{"takeProfitCount":2,"breakEvenAtOneR":False}}
+    with pytest.raises(ValueError,match="exactly one"):
+        ExecutionService.validate_live_config(config,"DEMO")
+    with pytest.raises(ValueError,match="break-even"):
+        ExecutionService.validate_live_config({"elliott":{"takeProfitCount":1,"breakEvenAtOneR":True}},"PRODUCTION")
+    with pytest.raises(ValueError,match="LIMIT"):
+        ExecutionService.validate_live_config({"elliott":{"takeProfitCount":1,"entryModel":"CHOCH_MARKET"}},"DEMO")
+    ExecutionService.validate_live_config(config,"PAPER")
+
+def test_manual_close_payload_cannot_spoof_exit_price_or_reason():
+    with pytest.raises(ValidationError):CloseRequest(price=1)
+    with pytest.raises(ValidationError):CloseRequest(reason="FIXED_RR_TARGET")

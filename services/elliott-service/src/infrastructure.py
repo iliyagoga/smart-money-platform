@@ -24,6 +24,12 @@ class Infrastructure:
                 error text,
                 updated_at timestamptz NOT NULL DEFAULT now()
               );
+              CREATE TABLE IF NOT EXISTS elliott_scenario_outbox(
+                scenario_id uuid PRIMARY KEY REFERENCES scenarios(id) ON DELETE CASCADE,
+                correlation_id text,
+                published_at timestamptz,
+                created_at timestamptz NOT NULL DEFAULT now()
+              );
             """)
     async def close(self):
         if self.redis:await self.redis.aclose()

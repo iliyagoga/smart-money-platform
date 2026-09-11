@@ -1,6 +1,8 @@
 from src.okx import auth_headers,book,candle,trade,ws_login
 import pytest
+from pydantic import ValidationError
 from src.service import ExchangeGateway,incremental_start,instrument_spec,okx_ack,okx_error_details,price_to_tick
+from src.settings import Settings
 def test_signature_matches_known_hmac():
     h=auth_headers("k","s","p","GET","/api/v5/account/balance",stamp="2020-01-01T00:00:00.000Z");assert h["OK-ACCESS-SIGN"]=="3+YzNZYq3N3si/o/YkbHvC4RpV8WeOY5ZpO7abfFcYA=";assert h["x-simulated-trading"]=="1"
 def test_private_websocket_login_signature():
@@ -53,3 +55,38 @@ def test_live_trading_events_are_persisted_but_paper_events_are_not():
         await service.record_trading_log({**live,"execution_mode":"PAPER"},"ORDER_RECEIVED","RECEIVED")
         assert service.db.execute.await_count==1
     asyncio.run(check())
+
+def test_live_account_requires_net_mode_trade_only_key_and_ip_binding():
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    async def check():
+        service=ExchangeGateway(SimpleNamespace(history_concurrency=1,okx_demo=False))
+        service.private=AsyncMock(return_value=[{"posMode":"net_mode","perm":"read_only,trade","ip":"203.0.113.10"}])
+        assert (await service.require_safe_account_config())["posMode"]=="net_mode"
+        for config,message in [
+          ({"posMode":"long_short_mode","perm":"trade","ip":"203.0.113.10"},"net position"),
+          ({"posMode":"net_mode","perm":"read_only","ip":"203.0.113.10"},"trade permission"),
+          ({"posMode":"net_mode","perm":"trade,withdraw","ip":"203.0.113.10"},"withdraw"),
+          ({"posMode":"net_mode","perm":"trade","ip":""},"server IP"),
+        ]:
+            service.private.return_value=[config]
+            with pytest.raises(ValueError,match=message):await service.require_safe_account_config()
+    asyncio.run(check())
+
+@pytest.mark.parametrize("changes",[
+    {"okx_rest_url":"http://www.okx.com"},
+    {"okx_private_ws_url":"ws://wspap.okx.com/ws/v5/private"},
+    {"okx_api_key":"key"},
+    {"trading_enabled":True},
+    {"margin_mode":"invalid"},
+    {"history_concurrency":0},
+])
+def test_insecure_exchange_settings_fail_closed(changes):
+    with pytest.raises(ValidationError):Settings(_env_file=None,**changes)
+
+def test_trading_accepts_complete_credentials_over_encrypted_transports():
+    configured=Settings(_env_file=None,trading_enabled=True,okx_api_key="key",
+                        okx_secret_key="secret",okx_passphrase="passphrase")
+    assert configured.trading_enabled

@@ -4,6 +4,7 @@ import asyncpg,httpx,websockets
 from decimal import Decimal,ROUND_HALF_UP
 from urllib.parse import urlencode
 from redis.asyncio import Redis
+from redis.exceptions import ResponseError
 from .okx import TIMEFRAMES,REVERSE_TIMEFRAMES,auth_headers,book,candle,trade,ws_login
 
 log=logging.getLogger(__name__)
@@ -74,6 +75,8 @@ class ExchangeGateway:
         await self.db.execute("""CREATE TABLE IF NOT EXISTS exchange_orders(
           local_order_id uuid PRIMARY KEY,cl_ord_id text UNIQUE NOT NULL,exchange_order_id text,symbol text NOT NULL,
           status text NOT NULL,payload jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now())""")
+        await self.db.execute("ALTER TABLE exchange_orders ADD COLUMN IF NOT EXISTS exit_algo_cl_ord_id text")
+        await self.db.execute("CREATE UNIQUE INDEX IF NOT EXISTS exchange_orders_exit_algo_idx ON exchange_orders(exit_algo_cl_ord_id) WHERE exit_algo_cl_ord_id IS NOT NULL")
         await self.db.execute("""CREATE TABLE IF NOT EXISTS live_trading_logs(
           id bigserial PRIMARY KEY,local_order_id uuid,symbol text NOT NULL,execution_mode text NOT NULL,
           event_type text NOT NULL,status text NOT NULL,details jsonb NOT NULL DEFAULT '{}',
@@ -122,7 +125,7 @@ class ExchangeGateway:
             except asyncio.CancelledError:raise
             except Exception as exc:
                 self.last_error=f"{name}: {type(exc).__name__}: {exc}"[:500]
-                self.connected[name]=False;await asyncio.sleep(delay+random.random());delay=min(delay*2,60)
+                self.connected[name]=False;await asyncio.sleep(delay+random.random());delay=min(delay*2,60)  # nosec B311
             finally:self.websockets.pop(name,None)
     async def refresh_symbols(self):
         try:rows=await self.db.fetch("SELECT symbol FROM trading_assets WHERE enabled ORDER BY symbol")
@@ -194,7 +197,7 @@ class ExchangeGateway:
                 self.last_error=f"private: {type(exc).__name__}: {exc}"[:500]
             finally:
                 self.private_ready.clear();self.connected["private"]=False;self.websockets.pop("private",None)
-            await asyncio.sleep(delay+random.random());delay=min(delay*2,60)
+            await asyncio.sleep(delay+random.random());delay=min(delay*2,60)  # nosec B311
     async def handle_private(self,msg):
         request_id=msg.get("id")
         if request_id and request_id in self.pending:
@@ -203,16 +206,22 @@ class ExchangeGateway:
         if msg.get("arg",{}).get("channel")!="orders":return
         for item in msg.get("data",[]):
             cl_ord_id=item.get("clOrdId","")
-            if item.get("tag")!="SMPELLIOTT" or not cl_ord_id.startswith("SMP"):continue
-            row=await self.db.fetchrow("""SELECT eo.local_order_id,o.data->>'execution_mode' AS execution_mode
-              FROM exchange_orders eo LEFT JOIN orders o ON o.id=eo.local_order_id WHERE eo.cl_ord_id=$1""",cl_ord_id)
+            algo_cl_ord_id=item.get("algoClOrdId","")
+            if item.get("tag")!="SMPELLIOTT" and not (cl_ord_id.startswith("SMP") or algo_cl_ord_id.startswith("SMA")):continue
+            row=await self.db.fetchrow("""SELECT eo.local_order_id,o.data->>'execution_mode' AS execution_mode,
+                coalesce(ta.contract_value,1)::float8 AS contract_value,
+                eo.exit_algo_cl_ord_id=$2 AS position_exit
+              FROM exchange_orders eo LEFT JOIN orders o ON o.id=eo.local_order_id
+              LEFT JOIN trading_assets ta ON ta.symbol=eo.symbol
+              WHERE eo.cl_ord_id=$1 OR eo.exit_algo_cl_ord_id=$2""",cl_ord_id,algo_cl_ord_id)
             if not row:continue
             state=item.get("state","").upper();mapping={"LIVE":"OPEN","PARTIALLY_FILLED":"PARTIALLY_FILLED","FILLED":"FILLED","CANCELED":"CANCELLED","MMP_CANCELED":"CANCELLED"};status=mapping.get(state,state)
-            await self.db.execute("UPDATE exchange_orders SET exchange_order_id=$2,status=$3,payload=$4::jsonb,updated_at=now() WHERE cl_ord_id=$1",cl_ord_id,item.get("ordId"),status,json.dumps(item))
+            if not row["position_exit"]:
+                await self.db.execute("UPDATE exchange_orders SET exchange_order_id=$2,status=$3,payload=$4::jsonb,updated_at=now() WHERE cl_ord_id=$1",cl_ord_id,item.get("ordId"),status,json.dumps(item))
             await self.record_trading_log({"id":str(row["local_order_id"]),"symbol":item.get("instId","UNKNOWN"),
               "execution_mode":row["execution_mode"] or ("DEMO" if self.s.okx_demo else "PRODUCTION")},
               "ORDER_UPDATE",status,{"exchange_order_id":item.get("ordId"),"exchange":item})
-            await self.redis.xadd("trading.command",{"data":json.dumps({"event_type":"exchange.order_updated","payload":{"order_id":str(row["local_order_id"]),"exchange_order_id":item.get("ordId"),"status":status,"filled_price":float(item.get("avgPx") or item.get("fillPx") or 0),"filled_quantity":float(item.get("accFillSz") or 0),"raw_state":state}})},maxlen=100000,approximate=True)
+            await self.redis.xadd("trading.command",{"data":json.dumps({"event_type":"exchange.order_updated","payload":{"order_id":str(row["local_order_id"]),"exchange_order_id":item.get("ordId"),"status":status,"filled_price":float(item.get("avgPx") or item.get("fillPx") or 0),"filled_quantity":float(item.get("accFillSz") or 0)*float(row["contract_value"]),"raw_state":state,"position_exit":bool(row["position_exit"]),"reason":"EXCHANGE_PROTECTIVE_EXIT" if row["position_exit"] else None}})},maxlen=100000,approximate=True)
     async def ws_request(self,op,args,request_id):
         await asyncio.wait_for(self.private_ready.wait(),timeout=15);ws=self.websockets.get("private")
         if not ws:raise ValueError("OKX private WebSocket is unavailable")
@@ -229,7 +238,8 @@ class ExchangeGateway:
     async def consume_orders(self):
         group="exchange-gateway"
         try:await self.redis.xgroup_create("execution.command",group,id="$",mkstream=True)
-        except Exception:pass
+        except ResponseError as exc:
+            if "BUSYGROUP" not in str(exc):raise
         while True:
             batches=await self.redis.xreadgroup(group,"exchange-1",{"execution.command":">"},count=10,block=2000)
             for _,messages in batches:
@@ -262,6 +272,17 @@ class ExchangeGateway:
         except ValueError as exc:raise ValueError(f"{symbol} is unavailable in {mode}: {exc}") from exc
         if not items:raise ValueError(f"{symbol} is unavailable in {mode}")
         return instrument_spec(items[0])
+    async def require_safe_account_config(self):
+        rows=await self.private("GET","/api/v5/account/config")
+        if not rows:raise ValueError("OKX account configuration is unavailable")
+        config=rows[0];permissions={item.strip() for item in str(config.get("perm","")).split(",")}
+        if "trade" not in permissions:raise ValueError("OKX API key does not have trade permission")
+        if "withdraw" in permissions:raise ValueError("OKX API key must not have withdraw permission")
+        if not self.s.okx_demo and not str(config.get("ip","")).strip():
+            raise ValueError("Production OKX API key must be restricted to server IP addresses")
+        if config.get("posMode")!="net_mode":
+            raise ValueError("OKX account must use net position mode")
+        return config
     async def instrument_availability(self,symbol,requested_mode):
         requested=requested_mode.upper();gateway_mode="DEMO" if self.s.okx_demo else "PRODUCTION"
         if requested=="PAPER":return {"symbol":symbol,"mode":requested,"available":True,"reason":None}
@@ -273,6 +294,7 @@ class ExchangeGateway:
         if not self.s.trading_enabled:
             return {"symbol":symbol,"mode":requested,"available":False,"reason":"OKX trading is disabled"}
         try:
+            await self.require_safe_account_config()
             spec=await self.trading_instrument_spec(symbol)
             return {"symbol":symbol,"mode":requested,"available":True,"reason":None,"instrument":spec}
         except ValueError as exc:
@@ -292,6 +314,7 @@ class ExchangeGateway:
         requested_mode=str(payload.get("execution_mode","")).upper();gateway_mode="DEMO" if self.s.okx_demo else "PRODUCTION"
         if requested_mode not in {"DEMO","PRODUCTION"}:raise ValueError("Only exchange execution modes can reach OKX")
         if requested_mode!=gateway_mode:raise ValueError(f"Asset mode {requested_mode} does not match OKX gateway mode {gateway_mode}")
+        await self.require_safe_account_config()
         await self.instrument_order_spec(payload["symbol"])
         spec=await self.trading_instrument_spec(payload["symbol"]);contract=Decimal(str(spec["contract_value"]));base_qty=Decimal(str(payload["quantity"]))
         contracts=base_qty/contract;lot_contracts=Decimal(str(spec["lot_size"]))/contract
@@ -299,15 +322,19 @@ class ExchangeGateway:
         minimum=Decimal(str(spec["minimum_order_size"]))/contract
         if contracts<minimum:raise ValueError("Order quantity is below OKX minSz")
         leverage=int(payload.get("leverage",1));margin_mode=payload.get("margin_mode") or self.s.margin_mode
-        if leverage>1:await self.private("POST","/api/v5/account/set-leverage",{"instId":payload["symbol"],"lever":str(leverage),"mgnMode":margin_mode})
+        if not payload.get("reduce_only"):
+            await self.private("POST","/api/v5/account/set-leverage",{"instId":payload["symbol"],"lever":str(leverage),"mgnMode":margin_mode})
         local_id=payload["id"];cl_ord_id="SMP"+local_id.replace("-","")[:29]
         args={"instId":payload["symbol"],"tdMode":margin_mode,"side":payload["side"].lower(),"ordType":payload["type"].lower(),"sz":format(contracts,"f"),"clOrdId":cl_ord_id,"tag":"SMPELLIOTT"}
         if payload.get("price") is not None and payload["type"]!="MARKET":args["px"]=price_to_tick(payload["price"],spec["tick_size"])
-        attached={}
+        attached={};exit_algo_cl_ord_id=None
         if payload.get("stop_loss_price") is not None:attached.update({"slTriggerPx":price_to_tick(payload["stop_loss_price"],spec["tick_size"]),"slOrdPx":"-1"})
         if payload.get("take_profit_prices"):attached.update({"tpTriggerPx":price_to_tick(payload["take_profit_prices"][0],spec["tick_size"]),"tpOrdPx":"-1"})
-        if attached:args["attachAlgoOrds"]=[attached]
-        await self.db.execute("INSERT INTO exchange_orders(local_order_id,cl_ord_id,symbol,status,payload) VALUES($1::uuid,$2,$3,'SUBMITTING',$4::jsonb) ON CONFLICT(local_order_id) DO NOTHING",local_id,cl_ord_id,payload["symbol"],json.dumps(args))
+        if attached:
+            exit_algo_cl_ord_id="SMA"+local_id.replace("-","")[:29];attached["attachAlgoClOrdId"]=exit_algo_cl_ord_id
+            args["attachAlgoOrds"]=[attached]
+        if payload.get("reduce_only"):args["reduceOnly"]=True
+        await self.db.execute("INSERT INTO exchange_orders(local_order_id,cl_ord_id,symbol,status,payload,exit_algo_cl_ord_id) VALUES($1::uuid,$2,$3,'SUBMITTING',$4::jsonb,$5) ON CONFLICT(local_order_id) DO NOTHING",local_id,cl_ord_id,payload["symbol"],json.dumps(args),exit_algo_cl_ord_id)
         await self.record_trading_log(payload,"ORDER_SUBMITTING","SUBMITTING",{"request":args})
         ack=okx_ack(await self.private("POST","/api/v5/trade/order",args),"order")
         await self.db.execute("UPDATE exchange_orders SET exchange_order_id=$2,status='ACCEPTED',updated_at=now() WHERE local_order_id=$1::uuid",local_id,ack.get("ordId"))

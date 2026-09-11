@@ -4,16 +4,11 @@
 
 Маршруты имеют вид `/api/v1/{service}/{upstream-path}`, где `service` — `data`, `elliott`, `decision`, `execution` или `analytics`. Например: `GET /api/v1/data/market/candles`.
 
-Keycloak доступен на `http://localhost:8080`, realm — `smart-money`. Для локальной разработки импортируются пользователи `admin`, `trader`, `viewer` с начальным паролем `CHANGE_ME`. Перед любым внешним развёртыванием пользователей и их пароли необходимо заменить; переменные `KEYCLOAK_ADMIN*` относятся только к административной консоли Keycloak.
-
-Получение токена:
-
-```bash
-curl -X POST http://localhost:8080/realms/smart-money/protocol/openid-connect/token \
-  -H 'Content-Type: application/x-www-form-urlencoded' \
-  -d 'client_id=smart-money-api' -d 'grant_type=password' \
-  -d 'username=viewer' -d 'password=CHANGE_ME'
-```
+Keycloak доступен локально на `http://localhost:8080`, realm — `smart-money`.
+Импорт создаёт роли, но не создаёт пользователей с известными паролями. Создайте
+первого пользователя в Keycloak Admin Console, назначьте роль `admin`, а остальных
+пользователей затем можно администрировать через интерфейс платформы. Password grant
+для браузерного клиента отключён; frontend использует Authorization Code + PKCE.
 
 Роли: `viewer` читает данные, `trader` также выполняет торговые операции, `admin` имеет полный доступ, включая `/internal/*` и изменение risk config.
 

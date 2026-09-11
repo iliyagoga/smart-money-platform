@@ -158,7 +158,7 @@ def _aggregate_sequential(request: dict, runs: list[dict]) -> dict:
             candidates.append({
                 'asset_index': asset_index, 'trade_index': trade_index, 'asset': asset,
                 'run': run, 'trade': trade, 'source_capital': sizing_source,
-                'source_equity_base': source_capital,
+                'source_equity_base': source_capital, 'reinvest': reinvest,
             })
             source_capital += float(trade.get('pnl', 0))
         benchmark_weights += float(asset['allocation_percent'])
@@ -180,7 +180,10 @@ def _aggregate_sequential(request: dict, runs: list[dict]) -> dict:
             skipped[asset_index] += 1
             continue
         allocation = float(candidate['asset']['allocation_percent']) / 100
-        desired_capital = max(0.0, capital) * allocation
+        capital_base = max(0.0, capital)
+        if not candidate['reinvest']:
+            capital_base = min(initial, capital_base)
+        desired_capital = capital_base * allocation
         effective_config = {
             **candidate['asset']['request']['config'],
             **candidate['run']['result'].get('strategy_config', {}),

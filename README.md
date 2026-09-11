@@ -13,8 +13,9 @@ docker compose ps
 ```
 
 Frontend: http://localhost:3000. API Gateway: http://localhost:8050.
-Keycloak: http://localhost:8080. Локальные роли: `admin`, `trader`, `viewer`;
-начальный пароль импортируемых пользователей — `CHANGE_ME`.
+Keycloak: http://localhost:8080. Realm содержит роли `admin`, `trader`, `viewer`,
+но намеренно не импортирует пользователей или пароли. Первого пользователя платформы
+создайте через административную консоль Keycloak и назначьте ему роль `admin`.
 
 ## Сервисы
 
@@ -30,6 +31,32 @@ Keycloak: http://localhost:8080. Локальные роли: `admin`, `trader`,
 | backtest-service | Исторический replay Elliott | 8085 |
 
 Инфраструктура: PostgreSQL/TimescaleDB, Redis и Keycloak.
+PostgreSQL, Redis и прикладные микросервисы не публикуют порты на хост: доступ к ним
+идёт только через Docker network. На loopback публикуются frontend, API и Keycloak,
+чтобы перед ними можно было безопасно поставить TLS reverse proxy.
+
+## Публичное развёртывание
+
+Не публикуйте порты `3000`, `8050` и `8080` напрямую в интернет. Заполните случайные
+`POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `KEYCLOAK_ADMIN_PASSWORD`, публичные HTTPS URL
+и hostnames из `.env.example`, затем запустите встроенный TLS ingress:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.production.yml up -d --build
+```
+
+DNS-записи `FRONTEND_HOST`, `API_HOST` и `KEYCLOAK_HOST` должны указывать на сервер;
+production overlay сам формирует из них HTTPS issuer, CORS allowlist и frontend URL,
+а входящие TCP 80/443 — быть открыты для автоматического выпуска сертификатов Caddy.
+API в production overlay откажется запускаться с HTTP issuer,
+не-HTTPS CORS origin, wildcard Host или дефолтным административным паролем.
+Публичный ingress не пропускает Keycloak Admin Console. Для первоначального создания
+пользователя откройте SSH tunnel к `127.0.0.1:8080` на сервере и работайте с консолью
+через этот tunnel; не меняйте bind address на `0.0.0.0`.
+
+Перед включением `OKX_TRADING_ENABLED` создайте отдельный API key без права вывода
+средств, ограничьте его IP-адресом сервера и сначала проверьте DEMO. Любые ключи,
+которые когда-либо попадали в логи, терминал или чат, необходимо отозвать и создать заново.
 
 ## Работа с платформой
 
@@ -69,7 +96,7 @@ npm run test:ui
 из каталога сервиса:
 
 ```bash
-python -m pip install -r requirements.txt
+python -m pip install -r requirements.txt pytest==9.1.1 pytest-asyncio==1.4.0
 python -m pytest -q
 ```
 

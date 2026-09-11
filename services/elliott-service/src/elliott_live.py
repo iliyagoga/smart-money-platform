@@ -276,12 +276,6 @@ class ElliottLiveEngine:
             break_even = "ONE_R" if ec.break_even_at_one_r else (
                 "AFTER_TARGET" if first_take_action == "MOVE_TO_BREAK_EVEN" else "OFF"
             )
-            self.emitted.add(pattern.id)
-            self.live_signal_ids.add(pattern.id)
-            for item in entries:
-                if item["id"] == pattern.id:
-                    item["origin"] = "LIVE"
-                    break
             result.append(Scenario(
                 id=pattern.id, symbol=symbol, timeframe=Timeframe(ec.entry_timeframe),
                 direction=pattern.direction, setup_type="ELLIOTT_WAVE3", confidence=1,

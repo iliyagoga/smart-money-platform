@@ -27,19 +27,23 @@ def test_candle_store_replaces_updates_and_bounds_history():
 
 def test_elliott_signal_persisted_and_published_without_smc_pipeline():
     async def check():
-        infra = SimpleNamespace(db=SimpleNamespace(execute=AsyncMock()), publish=AsyncMock())
-        service = ElliottService(infra)
-        service.trading_config = AsyncMock(return_value={"strategy": "ELLIOTT"})
         signal = Scenario(symbol="BTC-USDT-SWAP", timeframe="M15", direction="LONG",
                           setup_type="ELLIOTT_WAVE3", confidence=1, entry_zone_low=100,
                           entry_zone_high=100, stop_loss_price=99, take_profit_prices=[102],
                           expires_at=100000)
+        db=SimpleNamespace(execute=AsyncMock(),fetch=AsyncMock(return_value=[{
+          "data":signal.model_dump(mode="json"),"correlation_id":None,
+        }]))
+        infra = SimpleNamespace(db=db, publish=AsyncMock())
+        service = ElliottService(infra)
+        service.trading_config = AsyncMock(return_value={"strategy": "ELLIOTT"})
         service.elliott.generate = Mock(return_value=[signal])
         result = await service.process(candle())
         assert result["scenarios_created"] == 1
-        infra.db.execute.assert_awaited_once()
+        assert infra.db.execute.await_count==2
         assert infra.publish.call_args.args[:2] == ("scenario.update", "scenario.created")
         assert service.scenarios[signal.id] == signal
+        assert signal.id in service.elliott.emitted
         service.elliott.generate.reset_mock()
         await service.process(candle(2), "history-rebuild")
         assert service.elliott.generate.call_args.kwargs["allow_live_emit"] is False

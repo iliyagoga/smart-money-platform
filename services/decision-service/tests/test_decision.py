@@ -19,8 +19,8 @@ def test_strategy_risk_and_capital_capacity_match_backtest_sizing():
       allocation_percent=50,use_margin=False,lot_size=.1)
     margin=RiskManager().calculate(signal,10000,RiskConfig(),risk_percent_override=50,
       allocation_percent=25,use_margin=True,leverage_override=2,lot_size=.1)
-    assert cash.approved and cash.position_size==50 and cash.leverage==1
-    assert margin.approved and margin.position_size==50 and margin.leverage==2
+    assert cash.approved and cash.position_size==5 and cash.leverage==1
+    assert margin.approved and margin.position_size==2.5 and margin.leverage==1
 def test_strategy_sizing_respects_lot_and_exchange_minimum():
     signal=ConflictResolver().signal(scenario("a","LONG",1)).model_copy(update={"entry_price":100,"stop_loss_price":99})
     decision=RiskManager().calculate(signal,100,RiskConfig(min_position_size=.0001),
@@ -30,7 +30,7 @@ def test_disabled_reinvestment_caps_sizing_capital_at_initial_balance():
     signal=ConflictResolver().signal(scenario("a","LONG",1)).model_copy(update={"entry_price":100,"stop_loss_price":90})
     decision=RiskManager().calculate(signal,20000,RiskConfig(),risk_percent_override=0,
       allocation_percent=100,use_margin=False,capital_ceiling=10000)
-    assert decision.approved and decision.position_size==100
+    assert decision.approved and decision.position_size==10
 def test_signal_preserves_scenario_entry_type():
     item=scenario("market","LONG",.7).model_copy(update={"entry_type":"MARKET"})
     assert ConflictResolver().signal(item).entry_type=="MARKET"
@@ -130,10 +130,18 @@ def test_live_sizing_uses_edited_current_asset_capital_instead_of_portfolio_equi
           "entry_price":100,"stop_loss_price":99,
         })
         decision=await service.assess(signal,ignore_loss_limits=True)
-        assert decision.approved and decision.position_size==3
-        assert decision.position_value==300
+        assert decision.approved and decision.position_size==1
+        assert decision.position_value==100
         assert all(call.args[0]!="portfolio:equity" for call in service.redis.get.await_args_list)
     asyncio.run(check())
+
+
+def test_asset_overrides_cannot_raise_global_risk_or_leverage_limits():
+    signal=ConflictResolver().signal(scenario("cap","LONG",1)).model_copy(update={"entry_price":100,"stop_loss_price":90})
+    decision=RiskManager().calculate(signal,10_000,RiskConfig(max_risk_per_trade_percent=1,leverage=3),
+      risk_percent_override=9,use_margin=True,leverage_override=20)
+    assert decision.approved and decision.risk_amount==100
+    assert decision.position_size==10 and decision.leverage==3
 
 
 def test_waiting_signals_retry_sequentially_after_position_closes():

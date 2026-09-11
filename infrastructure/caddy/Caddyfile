@@ -1,0 +1,41 @@
+{
+  admin off
+}
+
+(security_headers) {
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options "nosniff"
+    Referrer-Policy "no-referrer"
+    -Server
+  }
+}
+
+{$FRONTEND_HOST} {
+  import security_headers
+  encode zstd gzip
+  reverse_proxy frontend:3000
+}
+
+{$API_HOST} {
+  import security_headers
+  encode zstd gzip
+  @public path /api/* /ws
+  handle @public {
+    request_body {
+      max_size 2MB
+    }
+    reverse_proxy api-gateway:8050
+  }
+  respond 404
+}
+
+{$KEYCLOAK_HOST} {
+  import security_headers
+  encode zstd gzip
+  @oidc path /realms/* /resources/*
+  handle @oidc {
+    reverse_proxy keycloak:8080
+  }
+  respond 404
+}

@@ -67,8 +67,8 @@ export default function AdminUsersPage() {
   };
 
   const createUser=async () => {
-    if (!createDraft.username.trim() || createDraft.password.length < 8 || !createDraft.roles.length) {
-      setError("Укажите логин, пароль не короче 8 символов и хотя бы одну роль.");return;
+    if (!createDraft.username.trim() || createDraft.password.length < 12 || !createDraft.roles.length) {
+      setError("Укажите логин, пароль не короче 12 символов и хотя бы одну роль.");return;
     }
     setSavingId("create");setError("");setMessage("");
     try {
@@ -132,7 +132,7 @@ export default function AdminUsersPage() {
           <TextField fullWidth label="Имя" value={createDraft.first_name} onChange={(event) => setCreateDraft((current) => ({...current,first_name:event.target.value}))} />
           <TextField fullWidth label="Фамилия" value={createDraft.last_name} onChange={(event) => setCreateDraft((current) => ({...current,last_name:event.target.value}))} />
         </Stack>
-        <TextField required label="Пароль" type="password" helperText="Минимум 8 символов" value={createDraft.password} onChange={(event) => setCreateDraft((current) => ({...current,password:event.target.value}))} />
+        <TextField required label="Пароль" type="password" helperText="Минимум 12 символов" value={createDraft.password} onChange={(event) => setCreateDraft((current) => ({...current,password:event.target.value}))} />
         <FormControl><InputLabel id="new-user-roles">Роли</InputLabel><Select multiple labelId="new-user-roles" value={createDraft.roles} input={<OutlinedInput label="Роли" />}
           renderValue={(selected) => selected.map((role) => roleLabels[role] ?? role).join(", ")}
           onChange={(event) => setCreateDraft((current) => ({...current,roles:typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value}))}>

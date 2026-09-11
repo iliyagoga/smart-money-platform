@@ -1,10 +1,11 @@
-import asyncio,json
+import asyncio,json,logging
 from datetime import datetime,timezone
 from time import time
 import asyncpg,httpx
 from redis.asyncio import Redis
 from .metrics import equity_curve,drawdown,statistics
 
+log=logging.getLogger(__name__)
 def decode(v):return json.loads(v) if isinstance(v,str) else v
 class AnalyticsService:
     def __init__(self,db_url,redis_url,initial):self.db_url=db_url;self.redis_url=redis_url;self.initial=initial;self.db=None;self.redis=None;self.task=None
@@ -27,7 +28,7 @@ class AnalyticsService:
                         if not all(x in event for x in ("message_id","event_type","source","payload")):continue
                         await self.db.execute("INSERT INTO event_store(message_id,event_ts,event_type,source,correlation_id,payload) VALUES($1::uuid,to_timestamp($2/1000.0),$3,$4,$5::uuid,$6::jsonb) ON CONFLICT DO NOTHING",event["message_id"],event["timestamp"],event["event_type"],event["source"],event.get("correlation_id"),json.dumps(event["payload"]))
                         if event["event_type"] in {"position.opened","position.closed","position.updated"}:await self.sync_portfolio()
-                    except Exception:continue
+                    except Exception:log.exception("Failed to persist analytics event")
             except asyncio.CancelledError:await ps.aclose();raise
             except Exception:await ps.aclose();await asyncio.sleep(2)
     async def trades(self,symbol=None,from_ts=None,to_ts=None):

@@ -478,7 +478,8 @@ class BacktestService:
         return item
 
     async def assets(self, enabled_only: bool = True):
-        query = "SELECT * FROM trading_assets" + (" WHERE enabled" if enabled_only else "") + " ORDER BY symbol"
+        query = ("SELECT * FROM trading_assets WHERE enabled ORDER BY symbol" if enabled_only
+                 else "SELECT * FROM trading_assets ORDER BY symbol")
         async with self.db.acquire() as connection:
             rows = await connection.fetch(query)
         return [{**dict(row), "created_at": row["created_at"].isoformat(), "updated_at": row["updated_at"].isoformat()} for row in rows]

@@ -10,7 +10,7 @@ log=logging.getLogger(__name__)
 class ElliottService:
     def __init__(self,infra:Infrastructure):
         self.infra=infra;self.candles=defaultdict(list);self.scenarios={};self.elliott=ElliottLiveEngine();self.task=None
-        self.history_tasks:dict[str,asyncio.Task]={}
+        self.history_tasks:dict[str,asyncio.Task]={};self.outbox_task=None
     def store_candle(self,candle:Candle):
         bars=self.candles[(candle.symbol,candle.timeframe)]
         bars[:]=[item for item in bars if item.timestamp!=candle.timestamp]
@@ -19,12 +19,32 @@ class ElliottService:
         await self.restore()
         await self.restore_elliott_patterns()
         self.task=asyncio.create_task(resilient_loop(self.subscribe))
+        await self.publish_pending_scenarios()
+        self.outbox_task=asyncio.create_task(resilient_loop(self.outbox_loop))
         try:rows=await self.infra.db.fetch("SELECT symbol FROM trading_configs WHERE status='ACTIVE'")
         except asyncpg.UndefinedTableError:rows=[]
         for row in rows:self.schedule_history_snapshot(row["symbol"])
     async def stop(self):
         if self.task:self.task.cancel()
+        if self.outbox_task:self.outbox_task.cancel()
         for task in self.history_tasks.values():task.cancel()
+
+    async def outbox_loop(self):
+        while True:
+            await self.publish_pending_scenarios()
+            await asyncio.sleep(2)
+
+    async def publish_pending_scenarios(self,scenario_id:str|None=None):
+        rows=await self.infra.db.fetch("""SELECT s.data,o.correlation_id FROM elliott_scenario_outbox o
+          JOIN scenarios s ON s.id=o.scenario_id WHERE o.published_at IS NULL
+          AND ($1::uuid IS NULL OR o.scenario_id=$1::uuid) ORDER BY o.created_at LIMIT 100""",scenario_id)
+        for row in rows:
+            scenario=Scenario.model_validate_json(row["data"] if isinstance(row["data"],str) else json.dumps(row["data"]))
+            await self.infra.publish("scenario.update","scenario.created",scenario,row["correlation_id"])
+            await self.infra.db.execute("UPDATE elliott_scenario_outbox SET published_at=now() WHERE scenario_id=$1::uuid",scenario.id)
+            self.scenarios[scenario.id]=scenario;self.elliott.emitted.add(scenario.id);self.elliott.live_signal_ids.add(scenario.id)
+            for item in self.elliott.latest_entries.get(scenario.symbol,[]):
+                if item["id"]==scenario.id:item["origin"]="LIVE";break
     async def restore(self):
         rows=await self.infra.db.fetch("""
           SELECT symbol,timeframe,(extract(epoch FROM ts)*1000)::bigint AS timestamp,
@@ -203,7 +223,13 @@ class ElliottService:
                 log.exception("Invalid Elliott live config for %s",candle.symbol);generated=[]
         else:generated=[]
         for scenario in generated:
-            self.scenarios[scenario.id]=scenario
-            await self.infra.db.execute("INSERT INTO scenarios(id,symbol,status,data,created_at) VALUES($1::uuid,$2,$3,$4::jsonb,to_timestamp($5/1000.0)) ON CONFLICT(id) DO NOTHING",scenario.id,scenario.symbol,scenario.status,json.dumps(scenario.model_dump(mode="json")),scenario.created_at)
-            await self.infra.publish("scenario.update","scenario.created",scenario,correlation_id)
+            await self.infra.db.execute("""WITH inserted AS (
+              INSERT INTO scenarios(id,symbol,status,data,created_at)
+              VALUES($1::uuid,$2,$3,$4::jsonb,to_timestamp($5/1000.0))
+              ON CONFLICT(id) DO NOTHING RETURNING id)
+              INSERT INTO elliott_scenario_outbox(scenario_id,correlation_id)
+              SELECT id,$6 FROM inserted ON CONFLICT(scenario_id) DO NOTHING""",
+              scenario.id,scenario.symbol,scenario.status,json.dumps(scenario.model_dump(mode="json")),
+              scenario.created_at,correlation_id)
+            await self.publish_pending_scenarios(scenario.id)
         return {"symbol":candle.symbol,"timeframe":candle.timeframe,"scenarios_created":len(generated)}

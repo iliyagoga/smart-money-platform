@@ -1,11 +1,12 @@
 from contextlib import asynccontextmanager
 import json
+from math import isfinite
 import asyncpg
 from fastapi import FastAPI,Header,HTTPException,Query
 from .models import *
 from .service import ExecutionService,decode_json
 from .settings import settings
-from pydantic import BaseModel,Field
+from pydantic import BaseModel,Field,model_validator
 from uuid import UUID,uuid4
 
 def analyze_trades(items: list[dict]):
@@ -36,6 +37,23 @@ class TradingConfigCreate(BaseModel):
     config: dict
     @property
     def normalized_mode(self):return self.mode.strip().upper()
+    @model_validator(mode="after")
+    def validate_live_risk(self):
+        def value(camel,snake,default):return self.config.get(camel,self.config.get(snake,default))
+        try:
+            initial=float(value("initialCapital","initial_capital",0))
+            current=float(value("currentCapital","current_capital",initial))
+            risk=float(value("riskPerTradePercent","risk_per_trade_percent",1))
+            leverage=int(value("leverage","leverage",1))
+            allocation=float(value("portfolioAllocationPercent","portfolio_allocation_percent",100))
+        except (TypeError,ValueError,OverflowError) as exc:
+            raise ValueError("invalid numeric trading configuration") from exc
+        if str(value("strategy","strategy","")).upper()!="ELLIOTT":raise ValueError("only ELLIOTT strategy is supported")
+        if not isfinite(initial) or not isfinite(current) or initial<=0 or current<=0:raise ValueError("initial and current capital must be finite and positive")
+        if not isfinite(risk) or risk<0:raise ValueError("risk per trade must be finite and not negative")
+        if not 1<=leverage<=125:raise ValueError("leverage must be between 1 and 125")
+        if not isfinite(allocation) or not 0<allocation<=100:raise ValueError("portfolio allocation must be finite and between 0 and 100")
+        return self
 
 class StrategyConfigurationWrite(BaseModel):
     name:str=Field(min_length=1,max_length=120)
@@ -66,7 +84,8 @@ def portfolio_record(row):
     value["created_at"]=value["created_at"].isoformat();value["updated_at"]=value["updated_at"].isoformat()
     return value
 
-service=ExecutionService(settings.database_url,settings.redis_url,settings.stream_group,settings.consumer_name,settings.execution_mode)
+service=ExecutionService(settings.database_url,settings.redis_url,settings.stream_group,settings.consumer_name,
+  settings.execution_mode,settings.exchange_service_url)
 @asynccontextmanager
 async def lifespan(app):await service.start();yield;await service.stop()
 app=FastAPI(title="Execution and Position Service",version="1.0.0",lifespan=lifespan)
@@ -115,6 +134,10 @@ async def save_trading_config(request: TradingConfigCreate):
     if not symbol: raise HTTPException(422,"symbol must not be empty")
     mode=request.normalized_mode
     if mode not in {"PAPER","DEMO","PRODUCTION"}:raise HTTPException(422,"mode must be PAPER, DEMO or PRODUCTION")
+    try:
+        service.validate_live_config(request.config,mode)
+        await service.validate_execution_mode(symbol,mode)
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
     row=await service.db.fetchrow("""INSERT INTO trading_configs(symbol,mode,status,config) VALUES($1,$2,'ACTIVE',$3::jsonb)
       ON CONFLICT(symbol) DO UPDATE SET mode=excluded.mode,status='ACTIVE',config=excluded.config,updated_at=now()
       RETURNING symbol,mode,status,config,created_at,updated_at""",symbol,mode,json.dumps(request.config))
@@ -183,6 +206,12 @@ async def portfolio_to_live(portfolio_id:UUID,request:PortfolioLiveRequest,x_use
     assets=decode_json(row["assets"])
     if sum(float(item["allocation_percent"]) for item in assets)>100.000001:
         raise HTTPException(422,"Live portfolio allocation must not exceed 100%")
+    for item in assets:
+        try:
+            TradingConfigCreate(symbol=item["symbol"],mode=mode,config=item["config"])
+            service.validate_live_config(item["config"],mode)
+            await service.validate_execution_mode(item["symbol"],mode)
+        except (ValueError,TypeError) as exc:raise HTTPException(409,str(exc)) from exc
     async with service.db.acquire() as connection:
       async with connection.transaction():
         for item in assets:
@@ -234,7 +263,11 @@ async def position(position_id:str):
 async def close_position(position_id:str,request:CloseRequest):
     item=service.positions.get(position_id)
     if not item or item.status=="CLOSED":raise HTTPException(404,"Open position not found")
-    qty,remaining,pnl=await service.close(item,request.quantity or item.quantity,request.price or item.current_price,request.reason)
+    if item.execution_mode!="PAPER":
+        order=await service.request_position_close(item,request.quantity or item.quantity,request.reason)
+        return {"success":True,"accepted":True,"order_id":order.id,"status":order.status,
+                "closed_quantity":0,"remaining_quantity":item.quantity,"pnl":0}
+    qty,remaining,pnl=await service.close(item,request.quantity or item.quantity,item.current_price,request.reason)
     return {"success":True,"closed_quantity":qty,"remaining_quantity":remaining,"pnl":pnl}
 @app.get("/trades")
 @app.get("/trades/history")

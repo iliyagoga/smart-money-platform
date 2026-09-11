@@ -2,8 +2,16 @@
   "realm": "smart-money",
   "enabled": true,
   "displayName": "Elliott Wave Platform",
+  "sslRequired": "external",
   "registrationAllowed": false,
   "loginWithEmailAllowed": true,
+  "resetPasswordAllowed": true,
+  "bruteForceProtected": true,
+  "failureFactor": 5,
+  "waitIncrementSeconds": 60,
+  "maxFailureWaitSeconds": 900,
+  "maxDeltaTimeSeconds": 43200,
+  "passwordPolicy": "length(12) and digits(1) and lowerCase(1) and upperCase(1) and specialChars(1) and notUsername(undefined)",
   "roles": {
     "realm": [
       {"name": "viewer", "description": "Read-only access"},
@@ -17,31 +25,12 @@
       "name": "Elliott Wave API",
       "enabled": true,
       "publicClient": true,
-      "directAccessGrantsEnabled": true,
+      "directAccessGrantsEnabled": false,
       "standardFlowEnabled": true,
-      "redirectUris": ["http://localhost:3000/*"],
-      "webOrigins": ["http://localhost:3000"],
+      "redirectUris": ["${PUBLIC_FRONTEND_URL}/*"],
+      "webOrigins": ["${PUBLIC_FRONTEND_URL}"],
       "protocol": "openid-connect"
     }
   ],
-  "users": [
-    {
-      "username": "admin", "email": "admin@smart-money.local", "emailVerified": true,
-      "firstName": "Platform", "lastName": "Admin", "enabled": true,
-      "credentials": [{"type": "password", "value": "CHANGE_ME", "temporary": false}],
-      "realmRoles": ["admin"]
-    },
-    {
-      "username": "trader", "email": "trader@smart-money.local", "emailVerified": true,
-      "firstName": "Demo", "lastName": "Trader", "enabled": true,
-      "credentials": [{"type": "password", "value": "CHANGE_ME", "temporary": false}],
-      "realmRoles": ["trader"]
-    },
-    {
-      "username": "viewer", "email": "viewer@smart-money.local", "emailVerified": true,
-      "firstName": "Demo", "lastName": "Viewer", "enabled": true,
-      "credentials": [{"type": "password", "value": "CHANGE_ME", "temporary": false}],
-      "realmRoles": ["viewer"]
-    }
-  ]
+  "users": []
 }

@@ -27,12 +27,17 @@ class RiskManager:
         distance=abs(signal.entry_price-signal.stop_loss_price)
         if distance<=0:return RiskDecision(signal_id=signal.signal_id,approved=False,rejection_reason="Stop loss distance must be positive")
         kelly=max(0,2*signal.confidence-1)*config.kelly_fraction*100
-        risk_percent=(max(0,risk_percent_override) if risk_percent_override is not None
-                      else min(config.max_risk_per_trade_percent,kelly))
+        if risk_percent_override is None:
+            risk_percent=min(config.max_risk_per_trade_percent,kelly)
+        else:
+            # The platform risk config is a hard production safety boundary.
+            # A per-asset value of zero means "no custom limit", not "disable risk control".
+            requested=risk_percent_override if risk_percent_override>0 else config.max_risk_per_trade_percent
+            risk_percent=min(config.max_risk_per_trade_percent,requested)
         capital_multiplier=config.loss_size_multiplier if consecutive_losses and not ignore_loss_limits else 1
         capital_base=min(capital,capital_ceiling) if capital_ceiling is not None else capital
         sizing_capital=capital_base*max(0,min(allocation_percent,100))/100*capital_multiplier
-        leverage=(leverage_override or config.leverage) if use_margin else 1
+        leverage=min(leverage_override or config.leverage,config.leverage) if use_margin else 1
         capacity=sizing_capital*leverage/signal.entry_price
         size=capacity if risk_percent==0 else min(sizing_capital*risk_percent/100/distance,capacity)
         if lot_size:

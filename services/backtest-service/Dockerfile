@@ -1,4 +1,4 @@
-FROM python:3.13-slim
+FROM python:3.13.15-slim
 WORKDIR /app
 COPY services/backtest-service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
