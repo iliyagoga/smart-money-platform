@@ -107,10 +107,11 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
     const visiblePatterns=elliottPatterns.filter((pattern) => pattern.state !== "INVALID" && patternOverlaps(pattern,visibleFrom,visibleTo));
     const visibleEntries=entryScenarios.filter((scenario) => scenario.setup_type === "ELLIOTT_WAVE3"
       && scenario.expires_at >= visibleFrom && scenario.created_at <= visibleTo);
-    const visibleTrades=historicalTrades.filter((trade) => trade.exit_time >= visibleFrom && trade.entry_time <= visibleTo);
+    const visibleTrades=historicalTrades.filter((trade) => trade.exit_time >= visibleFrom && trade.entry_time <= visibleTo
+      && !(trade.reason === "END_OF_DATA" && trade.exit_time < visibleTo));
     const overlayFingerprint=[visibleFrom,visibleTo,selectedEntryId,
       ...visiblePatterns.map((item) => `${item.id}:${item.state}:${Object.values(item.points).map((point) => `${point.timestamp}:${point.price}`).join(",")}`),
-      ...visibleEntries.map((item) => `${item.id}:${item.status}:${entryResult(item,orderedCandles)}`),
+      ...visibleEntries.map((item) => `${item.id}:${item.status}:${item.entry_model ?? item.entry_type ?? ""}:${entryResult(item,orderedCandles)}`),
       ...visibleTrades.map((item) => `${item.id}:${item.pnl}`)].join("|");
     if (overlayFingerprintRef.current === overlayFingerprint) return;
     overlayFingerprintRef.current=overlayFingerprint;
@@ -182,7 +183,7 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
       }
       markers.push({ time: chartTime(start), position: scenario.direction === "LONG" ? "belowBar" : "aboveBar",
         color, shape: scenario.direction === "LONG" ? "arrowUp" : "arrowDown",
-        text: `Вход · ${scenario.origin === "LIVE" ? "LIVE" : "История"} · ${entryResultLabel(result)} · ${scenario.direction}` });
+        text: `Вход · ${scenario.origin === "LIVE" ? "LIVE" : "История"} · ${entryResultLabel(result)} · ${scenario.direction} · Модель: ${scenario.entry_model ?? scenario.entry_type ?? "—"}` });
     });
     visibleTrades.forEach((trade) => {
       markers.push({ time:chartTime(nearestTimestamp(orderedCandles,trade.exit_time)),
