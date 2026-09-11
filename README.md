@@ -4,18 +4,100 @@
 торговыми конфигурациями, портфелями, ордерами и позициями. ML, обучение моделей
 и стандартные SMC-стратегии удалены из рабочего контура.
 
-## Запуск
+## Полный локальный запуск
+
+Требуются Docker Engine с Compose и свободные локальные порты `3000`, `8050` и
+`8080`. Создайте локальный файл окружения:
 
 ```bash
 cp .env.example .env
-docker compose up -d --build --remove-orphans
-docker compose ps
 ```
 
-Frontend: http://localhost:3000. API Gateway: http://localhost:8050.
-Keycloak: http://localhost:8080. Realm содержит роли `admin`, `trader`, `viewer`,
-но намеренно не импортирует пользователей или пароли. Первого пользователя платформы
-создайте через административную консоль Keycloak и назначьте ему роль `admin`.
+Перед запуском обязательно замените значения `CHANGE_ME` для
+`POSTGRES_PASSWORD`, `REDIS_PASSWORD` и `KEYCLOAK_ADMIN_PASSWORD`. Для локальной
+работы оставьте:
+
+```dotenv
+ENVIRONMENT=development
+PUBLIC_FRONTEND_URL=http://localhost:3000
+PUBLIC_API_URL=http://localhost:8050
+PUBLIC_KEYCLOAK_URL=http://localhost:8080
+PUBLIC_API_HOSTS=localhost,127.0.0.1
+DEPLOYMENT_BIND_ADDRESS=127.0.0.1
+```
+
+Проверьте конфигурацию, соберите и запустите весь стек:
+
+```bash
+docker compose config --quiet
+docker compose up -d --build --remove-orphans
+docker compose ps
+curl http://localhost:8050/health
+```
+
+Дождитесь состояния `healthy` у сервисов. После запуска доступны:
+
+- frontend: http://localhost:3000;
+- API Gateway: http://localhost:8050;
+- Keycloak: http://localhost:8080;
+- Keycloak Admin Console: http://localhost:8080/admin/master/console/.
+
+### Первый пользователь и вход
+
+`KEYCLOAK_ADMIN` и `KEYCLOAK_ADMIN_PASSWORD` создают bootstrap-администратора
+realm `master`. Эта учётная запись предназначена только для Keycloak Admin Console
+и **не может использоваться для входа во frontend**, который работает с realm
+`smart-money`. Bootstrap-переменные применяются при первом создании Keycloak;
+последующее редактирование `.env` само по себе пароль существующего администратора
+не меняет.
+
+Чтобы создать первого пользователя платформы:
+
+1. Откройте Keycloak Admin Console и войдите значениями `KEYCLOAK_ADMIN` и
+   `KEYCLOAK_ADMIN_PASSWORD` из `.env`.
+2. В левом верхнем списке realm переключитесь с `master` на `smart-money`.
+3. Откройте **Users**, нажмите **Create new user**, задайте username и включите
+   пользователя.
+4. На вкладке **Credentials** задайте пароль. Отключите **Temporary**, если не
+   хотите обязательную смену пароля при первом входе.
+5. На вкладке **Role mapping** выберите **Assign role**, включите отображение realm
+   roles и назначьте одну или несколько ролей `admin`, `trader`, `viewer`.
+6. Выйдите из старой сессии frontend и войдите созданным пользователем на
+   http://localhost:3000.
+
+Роли платформы:
+
+- `viewer` — просмотр данных;
+- `trader` — управление торговыми конфигурациями, ордерами и позициями;
+- `admin` — управление пользователями, risk-настройками и служебными операциями.
+
+Если изменить пароль bootstrap-администратора через Keycloak, обновите
+`KEYCLOAK_ADMIN_PASSWORD` в `.env` и пересоздайте API Gateway, иначе управление
+пользователями из интерфейса платформы перестанет работать:
+
+```bash
+docker compose up -d --force-recreate api-gateway
+```
+
+Пользовательские конфигурации и портфели привязаны не к username, а к неизменяемому
+Keycloak user ID (`sub`). Не удаляйте пользователя и не пересоздавайте realm, если
+за ним уже закреплены данные: новый пользователь с тем же именем получит другой ID
+и не увидит старые конфигурации. Обычная смена пароля ID не меняет. Команда
+`docker compose down` сохраняет данные, а `docker compose down -v` удаляет volumes
+PostgreSQL, Redis и Keycloak — для рабочего окружения её использовать нельзя.
+
+### Остановка и повторный запуск
+
+```bash
+docker compose stop
+docker compose start
+```
+
+Для обновления после изменения исходного кода:
+
+```bash
+docker compose up -d --build --remove-orphans
+```
 
 ## Сервисы
 
@@ -28,7 +110,7 @@ Keycloak: http://localhost:8080. Realm содержит роли `admin`, `trade
 | analytics-service | Метрики и мониторинг | 8040 |
 | api-gateway | Авторизация и маршрутизация REST/WebSocket | 8050 |
 | exchange-gateway | Рыночные данные и история OKX | 8070 |
-| backtest-service | Исторический replay Elliott | 8085 |
+| backtest-service | Исторический replay Elliott | 8080 |
 
 Инфраструктура: PostgreSQL/TimescaleDB, Redis и Keycloak.
 PostgreSQL, Redis и прикладные микросервисы не публикуют порты на хост: доступ к ним
@@ -58,6 +140,20 @@ API в production overlay откажется запускаться с HTTP issu
 средств, ограничьте его IP-адресом сервера и сначала проверьте DEMO. Любые ключи,
 которые когда-либо попадали в логи, терминал или чат, необходимо отозвать и создать заново.
 
+Для OKX Demo заполните `OKX_API_KEY`, `OKX_SECRET_KEY`, `OKX_PASSPHRASE`, оставьте
+`OKX_DEMO=true` и установите `OKX_TRADING_ENABLED=true`. После изменения `.env`
+пересоздайте exchange gateway:
+
+```bash
+docker compose up -d --force-recreate exchange-gateway
+curl http://localhost:8050/health
+```
+
+В интерфейсе активируйте торговую конфигурацию в режиме `DEMO`. Режим конкретного
+актива (`PAPER`, `DEMO` или `PRODUCTION`) хранится в его торговой конфигурации;
+`OKX_DEMO` определяет, к какому аккаунту подключён exchange gateway. Конфигурация
+`PRODUCTION` не будет принята gateway, запущенным с `OKX_DEMO=true`, и наоборот.
+
 ## Работа с платформой
 
 1. В «Конфигурациях» задайте таймфреймы Macro, Structure и Entry, модель входа
@@ -71,8 +167,9 @@ API в production overlay откажется запускаться с HTTP issu
 5. В «Рынке» просматривайте паттерны и сигналы активных конфигураций;
    в «Сделках» — ордера, позиции и результаты исполнения.
 
-Бэктест не отправляет ордера на биржу. Режим исполнения задаётся через
-`EXECUTION_MODE`; подключение биржевого исполнения — через `OKX_TRADING_ENABLED`.
+Бэктест не отправляет ордера на биржу. `PAPER` исполняется внутри платформы без
+биржевой заявки; `DEMO` и `PRODUCTION` отправляются через OKX только при включённом
+`OKX_TRADING_ENABLED` и совпадающем значении `OKX_DEMO`.
 
 ## Проверки разработки
 

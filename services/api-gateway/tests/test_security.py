@@ -56,6 +56,19 @@ def test_only_admin_can_start_exchange_ingestion_or_reload_symbols():
         authorize(principal("admin"),"POST","exchange",path)
 
 
+@pytest.mark.parametrize(("method","service","path"),[
+    ("POST","data","/market/../internal/ingest/candles"),
+    ("PATCH","decision","/risk/../risk/config"),
+    ("GET","exchange","/exchange/orders/../account/balance"),
+    ("POST","backtest","/backtests/../datasets"),
+])
+def test_dot_segments_cannot_bypass_endpoint_authorization(method,service,path):
+    for role in ("viewer","trader","admin"):
+        with pytest.raises(HTTPException) as error:
+            authorize(principal(role),method,service,path)
+        assert error.value.status_code==404
+
+
 @pytest.mark.parametrize(("service","path"),[
     ("data","/actuator/prometheus"),
     ("data","/swagger-ui/index.html"),

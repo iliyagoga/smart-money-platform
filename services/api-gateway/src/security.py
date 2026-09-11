@@ -136,6 +136,8 @@ EXPOSED_PATH_PREFIXES = {
 
 
 def authorize(principal: Principal, method: str, service: str, path: str) -> None:
+    if any(segment in {".", ".."} for segment in path.split("/")):
+        raise HTTPException(status_code=404, detail="Endpoint is not exposed by the API gateway")
     normalized = "/" + path.strip("/")
     prefixes=EXPOSED_PATH_PREFIXES.get(service,())
     if not any(normalized==prefix or normalized.startswith(prefix+"/") for prefix in prefixes):

@@ -11,7 +11,7 @@ class AnalyticsService:
     def __init__(self,db_url,redis_url,initial):self.db_url=db_url;self.redis_url=redis_url;self.initial=initial;self.db=None;self.redis=None;self.task=None
     async def start(self):
         self.db=await asyncpg.create_pool(self.db_url,min_size=1,max_size=8);self.redis=Redis.from_url(self.redis_url,decode_responses=True);await self.redis.ping()
-        await self.db.execute("""CREATE TABLE IF NOT EXISTS event_store(message_id uuid NOT NULL,event_ts timestamptz NOT NULL,event_type text NOT NULL,source text NOT NULL,correlation_id uuid,payload jsonb NOT NULL,PRIMARY KEY(message_id,event_ts));SELECT create_hypertable('event_store','event_ts',if_not_exists=>TRUE);CREATE INDEX IF NOT EXISTS event_store_lookup ON event_store(event_type,event_ts DESC);""")
+        await self.db.execute("""CREATE TABLE IF NOT EXISTS event_store(message_id uuid NOT NULL,event_ts timestamptz NOT NULL,event_type text NOT NULL,source text NOT NULL,correlation_id text,payload jsonb NOT NULL,PRIMARY KEY(message_id,event_ts));SELECT create_hypertable('event_store','event_ts',if_not_exists=>TRUE);ALTER TABLE event_store ALTER COLUMN correlation_id TYPE text USING correlation_id::text;CREATE INDEX IF NOT EXISTS event_store_lookup ON event_store(event_type,event_ts DESC);""")
         await self.sync_portfolio();self.task=asyncio.create_task(self.listen())
     async def stop(self):
         if self.task:self.task.cancel()
@@ -26,11 +26,13 @@ class AnalyticsService:
                     try:
                         event=json.loads(msg["data"])
                         if not all(x in event for x in ("message_id","event_type","source","payload")):continue
-                        await self.db.execute("INSERT INTO event_store(message_id,event_ts,event_type,source,correlation_id,payload) VALUES($1::uuid,to_timestamp($2/1000.0),$3,$4,$5::uuid,$6::jsonb) ON CONFLICT DO NOTHING",event["message_id"],event["timestamp"],event["event_type"],event["source"],event.get("correlation_id"),json.dumps(event["payload"]))
+                        await self.persist_event(event)
                         if event["event_type"] in {"position.opened","position.closed","position.updated"}:await self.sync_portfolio()
                     except Exception:log.exception("Failed to persist analytics event")
             except asyncio.CancelledError:await ps.aclose();raise
             except Exception:await ps.aclose();await asyncio.sleep(2)
+    async def persist_event(self,event):
+        await self.db.execute("INSERT INTO event_store(message_id,event_ts,event_type,source,correlation_id,payload) VALUES($1::uuid,to_timestamp($2/1000.0),$3,$4,$5,$6::jsonb) ON CONFLICT DO NOTHING",event["message_id"],event["timestamp"],event["event_type"],event["source"],event.get("correlation_id"),json.dumps(event["payload"]))
     async def trades(self,symbol=None,from_ts=None,to_ts=None):
         rows=await self.db.fetch("SELECT data FROM closed_trades WHERE ($1::text IS NULL OR symbol=$1) AND ($2::bigint IS NULL OR closed_at>=to_timestamp($2/1000.0)) AND ($3::bigint IS NULL OR closed_at<=to_timestamp($3/1000.0)) ORDER BY closed_at",symbol.upper() if symbol else None,from_ts,to_ts)
         return [decode(x["data"]) for x in rows]
