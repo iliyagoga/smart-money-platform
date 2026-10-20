@@ -1,4 +1,5 @@
 from src.okx import auth_headers,book,candle,trade,ws_login
+import httpx
 import pytest
 from pydantic import ValidationError
 from decimal import Decimal
@@ -129,6 +130,23 @@ def test_live_account_requires_net_mode_trade_only_key_and_ip_binding():
         ]:
             service.private.return_value=[config]
             with pytest.raises(ValueError,match=message):await service.require_safe_account_config()
+    asyncio.run(check())
+
+def test_availability_reports_okx_http_failure_instead_of_raising_server_error():
+    import asyncio
+    from types import SimpleNamespace
+
+    async def check():
+        service=ExchangeGateway(SimpleNamespace(
+          history_concurrency=1,okx_demo=False,trading_enabled=True,
+          okx_api_key="key",okx_secret_key="secret",okx_passphrase="passphrase",
+          okx_rest_url="https://www.okx.com"))
+        service.client=httpx.AsyncClient(transport=httpx.MockTransport(
+          lambda request:httpx.Response(503,text="upstream unavailable",request=request)))
+        try:result=await service.instrument_availability("AAVE-USDT-SWAP","PRODUCTION")
+        finally:await service.client.aclose()
+        assert result["available"] is False
+        assert result["reason"]=="OKX HTTP 503: upstream unavailable"
     asyncio.run(check())
 
 @pytest.mark.parametrize("changes",[

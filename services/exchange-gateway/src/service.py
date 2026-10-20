@@ -603,8 +603,21 @@ class ExchangeGateway:
     async def private(self,method,path,payload=None):
         if not all((self.s.okx_api_key,self.s.okx_secret_key,self.s.okx_passphrase)):raise ValueError("OKX API credentials are not configured")
         body=json.dumps(payload,separators=(",",":")) if payload else "";headers=auth_headers(self.s.okx_api_key,self.s.okx_secret_key,self.s.okx_passphrase,method,path,body,self.s.okx_demo)
-        r=await self.client.request(method,self.s.okx_rest_url+path,content=body or None,headers=headers);r.raise_for_status();result=r.json()
+        try:
+            r=await self.client.request(method,self.s.okx_rest_url+path,content=body or None,headers=headers)
+            r.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            response=exc.response
+            details=" ".join(response.text.split())[:300] or response.reason_phrase
+            raise ValueError(f"OKX HTTP {response.status_code}: {details}") from exc
+        except httpx.RequestError as exc:
+            raise ValueError(f"OKX request failed: {type(exc).__name__}: {exc}") from exc
+        try:result=r.json()
+        except ValueError as exc:raise ValueError("OKX returned an invalid JSON response") from exc
+        if not isinstance(result,dict):raise ValueError("OKX returned an invalid response")
         if result.get("code")!="0":
             details=okx_error_details(result)
             raise ValueError(f"OKX request rejected: {json.dumps(details,separators=(',',':'))}")
-        return result["data"]
+        data=result.get("data")
+        if not isinstance(data,list):raise ValueError("OKX response does not contain a data array")
+        return data
