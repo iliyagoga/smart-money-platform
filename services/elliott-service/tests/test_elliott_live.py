@@ -2,7 +2,7 @@ import pytest
 
 from backtest_core.elliott import Pattern, Pivot
 from backtest_core.models import BacktestConfig
-from src.elliott_live import _entry_plan, normalize_config
+from src.elliott_live import _entry_plan, _internal_points, normalize_config
 
 
 def test_normalize_config_accepts_ui_camel_case():
@@ -25,6 +25,14 @@ def pattern():
 def candles():
     return [{"timestamp":index*60_000,"open":100,"high":110,"low":98,"close":105,"volume":1000}
             for index in range(4)]
+
+
+def test_internal_points_include_only_confirmed_lower_timeframe_swings():
+    pivots=[Pivot(index,index*30_000,index*30_000+10_000,90+index,"LOW" if index%2==0 else "HIGH",1)
+            for index in range(8)]
+    result=_internal_points(pattern(),pivots,180_000)
+    assert [item["timestamp"] for item in result] == [0,30_000,60_000,90_000,120_000,150_000]
+    assert result[-1]["kind"] == "HIGH"
 
 
 @pytest.mark.parametrize(("entry_model","order_type"),[

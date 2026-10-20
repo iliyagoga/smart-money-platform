@@ -111,6 +111,7 @@ export interface BacktestResult {
   chartCandles: BacktestChartCandle[];
   chartCandlesByTimeframe: Record<string, BacktestChartCandle[]>;
   elliottPatterns: ElliottPattern[];
+  elliottConfig?: { wave2MinRetracement?: number; wave2MaxRetracement?: number; entryModel?: string };
   elliottDiagnostics?: {
     states: Record<string, number>; patterns: number; signals: number; tradedSignals: number; lookaheadSafe: boolean;
     strictChoch?: boolean; positionSizing?: string; riskPerTradePercent?: number; drawdownBasis?: string;
@@ -128,6 +129,7 @@ export interface ElliottPoint { timestamp: number; confirmedAt: number; price: n
 export interface ElliottPattern {
   id: string; direction: TradeDirection; state: string; invalidReason?: string; signalTime?: number;
   points: Record<string, ElliottPoint>; features: Record<string, number | string>;
+  internalPoints?: ElliottPoint[];
   structureTimeframe: string; entryTimeframe: string;
 }
 

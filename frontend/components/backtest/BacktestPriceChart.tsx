@@ -7,16 +7,19 @@ import type { BacktestChartCandle, BacktestTrade, ElliottPattern } from "../../l
 
 const chartTime = (timestamp: number) => Math.floor(timestamp/1000) as UTCTimestamp;
 
-export function BacktestPriceChart({ candles, candlesByTimeframe, elliottPatterns, trades }: {
+export function BacktestPriceChart({ candles, candlesByTimeframe, elliottPatterns, trades, elliottConfig }: {
   candles: BacktestChartCandle[];
   candlesByTimeframe: Record<string, BacktestChartCandle[]>;
   trades: BacktestTrade[];
   elliottPatterns: ElliottPattern[];
+  elliottConfig?: { wave2MinRetracement?: number; wave2MaxRetracement?: number; entryModel?: string };
 }) {
   const available = Object.keys(candlesByTimeframe);
   const [timeframe, setTimeframe] = useState(available[0] ?? "PRIMARY");
   const [showTrades, setShowTrades] = useState(true);
   const [showWaves, setShowWaves] = useState(true);
+  const [showInternalWaves, setShowInternalWaves] = useState(true);
+  const [showRetracement, setShowRetracement] = useState(true);
   const [isRendering, setIsRendering] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const fullscreenRef = useRef<HTMLDivElement>(null);
@@ -60,6 +63,31 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, elliottPattern
       wave.setData(points.map((point) => ({
         time: chartTime(nearestTimestamp(selectedCandles, point.confirmedAt)), value: point.price,
       })));
+      if (showInternalWaves && (pattern.internalPoints?.length ?? 0) > 1) {
+        const internal=activeChart.addSeries(LineSeries,{
+          color:pattern.direction === "LONG" ? "#90caf9" : "#ce93d8",lineWidth:1,lineStyle:2,
+          priceLineVisible:false,lastValueVisible:false,title:`Внутренние · ${pattern.entryTimeframe}`,
+        });
+        const data=[...new Map((pattern.internalPoints ?? []).map((point) => {
+          const time=chartTime(nearestTimestamp(selectedCandles,point.timestamp));
+          return [Number(time),{ time,value:point.price }] as const;
+        })).values()].sort((left,right) => Number(left.time)-Number(right.time));
+        if (data.length > 1) internal.setData(data);
+      }
+      if (showRetracement) {
+        const p0=pattern.points.P0;const p1=pattern.points.P1;const p2=pattern.points.P2;
+        if (p0 && p1 && p2) {
+          const from=nearestTimestamp(selectedCandles,p1.timestamp);
+          const to=nearestTimestamp(selectedCandles,p2.confirmedAt);
+          const min=elliottConfig?.wave2MinRetracement;
+          const max=elliottConfig?.wave2MaxRetracement;
+          if (min != null) addBacktestLevel(activeChart,from,to,p1.price-(p1.price-p0.price)*min,"#7e57c2",`W2 min ${(min*100).toFixed(1)}%`);
+          if (max != null) addBacktestLevel(activeChart,from,to,p1.price-(p1.price-p0.price)*max,"#7e57c2",`W2 max ${(max*100).toFixed(1)}%`);
+          const actual=typeof pattern.features.wave2_retracement === "number" ? pattern.features.wave2_retracement
+            : Math.abs(p2.price-p1.price)/Math.max(Math.abs(p1.price-p0.price),1e-12);
+          addBacktestLevel(activeChart,from,to,p2.price,"#b39ddb",`W2 факт ${(actual*100).toFixed(1)}%`,2);
+        }
+      }
     });
     if (showTrades) trades.forEach((trade) => {
       const targets = trade.takeProfitPrices ?? [];
@@ -104,7 +132,7 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, elliottPattern
     const tradeMarkers = showTrades ? trades.flatMap((trade) => [
       { time: chartTime(trade.entryTime), position: trade.direction === "LONG" ? "belowBar" as const : "aboveBar" as const,
         color: trade.direction === "LONG" ? "#00e676" : "#ff5252", shape: trade.direction === "LONG" ? "arrowUp" as const : "arrowDown" as const,
-        text: `${trade.direction} #${trade.id} · ${trade.signalTimeframe ?? "—"}` },
+        text: `${trade.direction} #${trade.id} · ${elliottConfig?.entryModel ?? trade.signalTimeframe ?? "—"}` },
       { time: chartTime(trade.exitTime), position: "inBar" as const, color: trade.pnl >= 0 ? "#ffd54f" : "#ff9800",
         shape: "circle" as const, text: `Exit ${trade.pnl.toFixed(2)}` },
     ]) : [];
@@ -131,7 +159,7 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, elliottPattern
       observer?.disconnect();
       chart?.remove();
     };
-  }, [elliottPatterns, selectedCandles, showTrades, showWaves, trades]);
+  }, [elliottConfig, elliottPatterns, selectedCandles, showInternalWaves, showRetracement, showTrades, showWaves, trades]);
 
   const toggleFullscreen = async () => {
     if (document.fullscreenElement) await document.exitFullscreen();
@@ -169,6 +197,8 @@ export function BacktestPriceChart({ candles, candlesByTimeframe, elliottPattern
       <Stack direction="row" useFlexGap sx={{ alignItems: "center", flexWrap: "wrap", gap: .5, mt: 1 }}>
         <FormControlLabel control={<Switch size="small" checked={showTrades} onChange={(_,value) => setShowTrades(value)} />} label="Сделки" />
         <FormControlLabel control={<Switch size="small" checked={showWaves} onChange={(_,value) => setShowWaves(value)} />} label="Волны Elliott" />
+        <FormControlLabel control={<Switch size="small" checked={showInternalWaves} onChange={(_,value) => setShowInternalWaves(value)} />} label="Внутренние" />
+        <FormControlLabel control={<Switch size="small" checked={showRetracement} onChange={(_,value) => setShowRetracement(value)} />} label="Retracement W2" />
       </Stack>
     </Paper>
     <Stack direction="row" spacing={.75} sx={{ mb: 1 }}><Chip size="small" color="success" label="Long" />
@@ -196,4 +226,10 @@ function nearestTimestamp(candles: BacktestChartCandle[], timestamp: number) {
     && Math.abs(candles[left - 1].timestamp - timestamp) < Math.abs(candles[left].timestamp - timestamp);
   if (previousIsNearer) return candles[left - 1].timestamp;
   return candles[left].timestamp;
+}
+
+function addBacktestLevel(chart:IChartApi,from:number,to:number,value:number,color:string,label:string,lineWidth:1|2=1) {
+  if (!Number.isFinite(value) || from >= to) return;
+  const series=chart.addSeries(LineSeries,{ color,lineWidth,lineStyle:3,priceLineVisible:false,lastValueVisible:false,title:label });
+  series.setData([{ time:chartTime(from),value },{ time:chartTime(to),value }]);
 }

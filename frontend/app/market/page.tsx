@@ -27,6 +27,7 @@ type ElliottHistoryResponse = {
 type HistoricalPaperTrade = {
   id: string; direction: "LONG" | "SHORT"; entry_time: number; entry_price: number;
   exit_time: number; exit_price: number; pnl: number; pnl_percent: number; reason: string;
+  initial_stop?: number; take_profit_prices?: number[]; signal_timeframe?: string;
 };
 export default function MarketPage() {
   const assets = useTradingAssets(); const [symbol, setSymbol] = useState("");

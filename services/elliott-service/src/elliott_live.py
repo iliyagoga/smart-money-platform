@@ -52,6 +52,18 @@ def _strategy_levels(pattern, config, ec, plan: dict | None = None) -> dict:
     return levels
 
 
+def _internal_points(pattern, entry_pivots: list, available_at: int) -> list[dict]:
+    """Return the lower-timeframe swings that form the visible Elliott structure."""
+    start = pattern.points["P0"].timestamp
+    end = max(pattern.points["P2"].confirmed_at, pattern.signal_time or 0)
+    points = [pivot for pivot in entry_pivots
+              if start <= pivot.timestamp <= end and pivot.confirmed_at <= available_at]
+    return [{
+        "timestamp": point.timestamp, "confirmed_at": point.confirmed_at,
+        "price": point.price, "kind": point.kind,
+    } for point in points[-24:]]
+
+
 def _entry_plan(pattern, config, entry: list[dict], entry_pivots: list, available_at: int) -> dict | None:
     """Build the same executable entry setup that the replay evaluates on its next candle."""
     if not pattern.signal_time or not entry:
@@ -235,9 +247,11 @@ class ElliottLiveEngine:
             {
                 "id": pattern.id, "direction": pattern.direction, "state": pattern.state,
                 "invalid_reason": pattern.invalid_reason, "signal_time": pattern.signal_time,
+                "features": pattern.features,
                 "structure_timeframe": ec.structure_timeframe,
                 "entry_timeframe": ec.entry_timeframe,
                 "strategy_levels": _strategy_levels(pattern, config, ec, plans.get(pattern.id)),
+                "internal_points": _internal_points(pattern, entry_pivots, available_at),
                 "points": {
                     label: {
                         "timestamp": point.timestamp, "confirmed_at": point.confirmed_at,

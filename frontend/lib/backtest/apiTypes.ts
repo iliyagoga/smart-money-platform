@@ -106,6 +106,7 @@ export interface BackendBacktestResult {
   elliott_patterns?: Array<{
     id: string; direction: "LONG" | "SHORT"; state: string; invalid_reason?: string; signal_time?: number;
     points: Record<string, { timestamp: number; confirmed_at: number; price: number; kind: "HIGH" | "LOW" }>;
+    internal_points?: Array<{ timestamp: number; confirmed_at: number; price: number; kind: "HIGH" | "LOW" }>;
     features: Record<string, number | string>; structure_timeframe: string; entry_timeframe: string;
   }>;
   elliott_diagnostics?: {
@@ -122,6 +123,7 @@ export interface BackendBacktestResult {
 }
 
 export function mapBacktestResult(result: BackendBacktestResult): BacktestResult {
+  const elliottConfig=result.request_config?.config.elliott;
   const trades: BacktestTrade[] = result.trades.map((trade) => ({
     id: trade.id,
     symbol: trade.symbol,
@@ -183,10 +185,18 @@ export function mapBacktestResult(result: BackendBacktestResult): BacktestResult
       id: item.id, direction: item.direction, state: item.state, invalidReason: item.invalid_reason,
       signalTime: item.signal_time, features: item.features, structureTimeframe: item.structure_timeframe,
       entryTimeframe: item.entry_timeframe,
+      internalPoints: (item.internal_points ?? []).map((point) => ({
+        timestamp: point.timestamp, confirmedAt: point.confirmed_at, price: point.price, kind: point.kind,
+      })),
       points: Object.fromEntries(Object.entries(item.points).map(([key, point]) => [key, {
         timestamp: point.timestamp, confirmedAt: point.confirmed_at, price: point.price, kind: point.kind,
       }])),
     })),
+    elliottConfig: elliottConfig ? {
+      wave2MinRetracement: numberValue(elliottConfig.wave2_min_retracement),
+      wave2MaxRetracement: numberValue(elliottConfig.wave2_max_retracement),
+      entryModel: typeof elliottConfig.entry_model === "string" ? elliottConfig.entry_model : undefined,
+    } : undefined,
     elliottDiagnostics: result.elliott_diagnostics ? {
       states: result.elliott_diagnostics.states, patterns: result.elliott_diagnostics.patterns,
       signals: result.elliott_diagnostics.signals, tradedSignals: result.elliott_diagnostics.traded_signals,
@@ -205,4 +215,8 @@ export function mapBacktestResult(result: BackendBacktestResult): BacktestResult
       reinvestProfits: result.strategy_config.reinvest_profits,
     } : undefined,
   };
+}
+
+function numberValue(value:unknown):number|undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

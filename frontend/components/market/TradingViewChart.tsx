@@ -1,7 +1,7 @@
 "use client";
 
-import { Box, Button, Chip, Paper, Stack, TablePagination, Typography } from "@mui/material";
-import { CandlestickSeries, ColorType, LineSeries, createChart, createSeriesMarkers, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
+import { Box, Button, Chip, FormControlLabel, Paper, Stack, Switch, TablePagination, Typography } from "@mui/material";
+import { BaselineSeries, CandlestickSeries, ColorType, LineSeries, createChart, createSeriesMarkers, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePagination } from "../../hooks/usePagination";
 import type { Candle } from "../../lib/types";
@@ -10,6 +10,8 @@ export interface LiveElliottPoint { timestamp: number; confirmed_at: number; pri
 export interface LiveElliottPattern {
   id: string; direction: "LONG" | "SHORT"; state: string; invalid_reason?: string; signal_time?: number;
   structure_timeframe: string; entry_timeframe: string; points: Record<string, LiveElliottPoint>;
+  features?: Record<string, number | string>;
+  internal_points?: LiveElliottPoint[];
   strategy_levels?: {
     wave1_break: number; wave2_zone_low: number; wave2_zone_high: number;
     wave2_min_retracement: number; wave2_max_retracement: number;
@@ -24,10 +26,13 @@ export interface LiveEntryScenario {
   created_at: number; expires_at: number;
   entry_model?: string;
   origin?: "HISTORICAL" | "LIVE";
+  stop_loss_price?: number;
+  take_profit_prices?: number[];
 }
 export interface HistoricalPaperTrade {
   id: string; direction: "LONG" | "SHORT"; entry_time: number; entry_price: number;
   exit_time: number; exit_price: number; pnl: number; pnl_percent: number; reason: string;
+  initial_stop?: number; take_profit_prices?: number[]; signal_timeframe?: string;
 }
 
 type ChartSeries = ReturnType<ReturnType<typeof createChart>["addSeries"]>;
@@ -49,6 +54,11 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
   const [selectedEntryId,setSelectedEntryId] = useState("");
   const [isFullscreen,setIsFullscreen] = useState(false);
   const [windowCenter,setWindowCenter] = useState<number | null>(null);
+  const [showWaves,setShowWaves] = useState(true);
+  const [showInternalWaves,setShowInternalWaves] = useState(true);
+  const [showRetracement,setShowRetracement] = useState(true);
+  const [showEntries,setShowEntries] = useState(true);
+  const [showRiskLevels,setShowRiskLevels] = useState(true);
   const chartCandles = useMemo(() => candleWindow(candles,windowCenter,10_000),[candles,windowCenter]);
   useEffect(() => {
     const container = ref.current; if (!container) return;
@@ -110,10 +120,11 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
       && scenario.expires_at >= visibleFrom && scenario.created_at <= visibleTo);
     const visibleTrades=historicalTrades.filter((trade) => trade.exit_time >= visibleFrom && trade.entry_time <= visibleTo
       && !(trade.reason === "END_OF_DATA" && trade.exit_time < visibleTo));
-    const overlayFingerprint=[visibleFrom,visibleTo,selectedEntryId,
+    const overlayFingerprint=[visibleFrom,visibleTo,selectedEntryId,showWaves,showInternalWaves,showRetracement,showEntries,showRiskLevels,
       ...visiblePatterns.map((item) => `${item.id}:${item.state}:${Object.values(item.points).map((point) => `${point.timestamp}:${point.price}`).join(",")}`),
-      ...visibleEntries.map((item) => `${item.id}:${item.status}:${item.entry_model ?? item.entry_type ?? ""}:${entryResult(item,orderedCandles)}`),
-      ...visibleTrades.map((item) => `${item.id}:${item.pnl}`)].join("|");
+      ...visiblePatterns.flatMap((item) => (item.internal_points ?? []).map((point) => `${point.timestamp}:${point.price}`)),
+      ...visibleEntries.map((item) => `${item.id}:${item.status}:${item.entry_model ?? item.entry_type ?? ""}:${item.stop_loss_price ?? ""}:${item.take_profit_prices?.join(",") ?? ""}:${entryResult(item,orderedCandles)}`),
+      ...visibleTrades.map((item) => `${item.id}:${item.pnl}:${item.initial_stop ?? ""}:${item.take_profit_prices?.join(",") ?? ""}`)].join("|");
     if (overlayFingerprintRef.current === overlayFingerprint) return;
     overlayFingerprintRef.current=overlayFingerprint;
     const staleSeries = waveSeriesRef.current;
@@ -132,56 +143,56 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
       // Several lower-timeframe pivots can map to one H4/D1 candle. The chart
       // requires strictly increasing timestamps, so collapsed waves are skipped.
       if (waveData.length < 2) return;
-      const wave = chart.addSeries(LineSeries, { color, lineWidth: 3, priceLineVisible: false,
-        lastValueVisible: false, title: "" });
-      wave.setData(waveData);
-      waveSeriesRef.current.push(wave);
-      const waveMarkers = [...new Map(points.map((point) => {
-        const time = chartTime(containingCandleTimestamp(orderedCandles, point.timestamp));
-        return [Number(time), { time, position: point.kind === "LOW" ? "belowBar" as const : "aboveBar" as const,
-          color, shape: "circle" as const,
-          text: `${point.label}${waveLegend(point.label) ? ` · ${waveLegend(point.label)}` : ""} · ${pattern.structure_timeframe}` }] as const;
-      })).values()].sort((left, right) => Number(left.time) - Number(right.time));
-      createSeriesMarkers(wave, waveMarkers, { autoScale: false });
+      if (showWaves) {
+        const wave = chart.addSeries(LineSeries, { color, lineWidth: 3, priceLineVisible: false,
+          lastValueVisible: false, title: "" });
+        wave.setData(waveData);
+        waveSeriesRef.current.push(wave);
+        const waveMarkers = [...new Map(points.map((point) => {
+          const time = chartTime(containingCandleTimestamp(orderedCandles, point.timestamp));
+          return [Number(time), { time, position: point.kind === "LOW" ? "belowBar" as const : "aboveBar" as const,
+            color, shape: "circle" as const,
+            text: `${point.label}${waveLegend(point.label) ? ` · ${waveLegend(point.label)}` : ""} · ${pattern.structure_timeframe}` }] as const;
+        })).values()].sort((left, right) => Number(left.time) - Number(right.time));
+        createSeriesMarkers(wave, waveMarkers, { autoScale: false });
+      }
+      if (showInternalWaves) addInternalWave(chart,waveSeriesRef.current,orderedCandles,pattern,color);
+      if (showRetracement) addRetracement(chart,waveSeriesRef.current,orderedCandles,pattern);
       const levels = pattern.strategy_levels;
-      if (levels) {
+      if (levels && showWaves) {
         const structureFrom = containingCandleTimestamp(orderedCandles, levels.structure_from);
         const structureTo = containingCandleTimestamp(orderedCandles, levels.structure_to);
         addLevel(chart, waveSeriesRef.current, structureFrom, structureTo, levels.wave1_break,
           "#90caf9", "Пробой Wave 1", 2);
-        addLevel(chart, waveSeriesRef.current, structureFrom, structureTo, levels.wave2_zone_high,
-          "#7e57c2", `W2 min ${(levels.wave2_min_retracement * 100).toFixed(1)}%`, 3);
-        addLevel(chart, waveSeriesRef.current, structureFrom, structureTo, levels.wave2_zone_low,
-          "#7e57c2", `W2 max ${(levels.wave2_max_retracement * 100).toFixed(1)}%`, 3);
         if (levels.choch != null && levels.trade_from != null) {
           addLevel(chart, waveSeriesRef.current, structureTo,
             containingCandleTimestamp(orderedCandles, levels.trade_from), levels.choch,
             "#ffb74d", "CHOCH", 2);
         }
-        if (levels.stop != null && levels.trade_from != null && levels.trade_to != null) {
-          const tradeFrom = containingCandleTimestamp(orderedCandles, levels.trade_from);
-          const tradeTo = containingCandleTimestamp(orderedCandles, levels.trade_to);
-          addLevel(chart, waveSeriesRef.current, tradeFrom, tradeTo, levels.stop, "#ef5350", "SL", 2);
-          (levels.targets ?? []).forEach((target, index) => addLevel(chart, waveSeriesRef.current,
-            tradeFrom, tradeTo, target, "#26a69a", `TP${index + 1}`, 2));
-        }
       }
     });
     const historicalTradeIds = new Set(visibleTrades.map((trade) => trade.id));
-    visibleEntries.forEach((scenario) => {
+    if (showEntries) visibleEntries.forEach((scenario) => {
       const start = nearestTimestamp(orderedCandles,scenario.created_at);
-      const end = nearestTimestamp(orderedCandles,Math.min(scenario.expires_at,orderedCandles.at(-1)?.timestamp ?? scenario.expires_at));
+      const linkedTrade=visibleTrades.find((trade) => trade.id === (scenario.trade_id ?? scenario.id));
+      const rawEnd=linkedTrade?.exit_time ?? Math.min(scenario.expires_at,orderedCandles.at(-1)?.timestamp ?? scenario.expires_at);
+      const end = levelEndTimestamp(orderedCandles,start,nearestTimestamp(orderedCandles,rawEnd));
       const entry = (scenario.entry_zone_low+scenario.entry_zone_high)/2;
       const result = entryResult(scenario,orderedCandles);
       const color = scenario.origin === "LIVE"
         ? (result === "PASSED" ? "#00e676" : result === "WAITING" ? "#ffca28" : "#90a4ae")
         : (result === "PASSED" ? "#2e7d32" : result === "WAITING" ? "#9e7d24" : "#546e7a");
-      if (start !== end) {
-        const line = chart.addSeries(LineSeries, { color, lineWidth: scenario.id === selectedEntryId ? 4 : 2,
-          lineStyle: result === "MISSED" ? 3 : 2,
-          priceLineVisible: false, lastValueVisible: false, title: "" });
-        line.setData([{ time: chartTime(start), value: entry }, { time: chartTime(end), value: entry }]);
-        waveSeriesRef.current.push(line);
+      addLevel(chart,waveSeriesRef.current,start,end,entry,color,
+        `ENTRY · ${entryModelLabel(scenario.entry_model)} · ${scenario.entry_type ?? "—"}`,
+        result === "MISSED" ? 3 : 2,scenario.id === selectedEntryId ? 4 : 2);
+      if (Math.abs(scenario.entry_zone_high-scenario.entry_zone_low) > 1e-12) {
+        addLevel(chart,waveSeriesRef.current,start,end,scenario.entry_zone_low,color,"Entry zone low",3);
+        addLevel(chart,waveSeriesRef.current,start,end,scenario.entry_zone_high,color,"Entry zone high",3);
+      }
+      if (showRiskLevels && scenario.stop_loss_price != null) {
+        addLevel(chart,waveSeriesRef.current,start,end,scenario.stop_loss_price,"#ef5350","SL",2,2);
+        (scenario.take_profit_prices ?? []).forEach((target,index) =>
+          addLevel(chart,waveSeriesRef.current,start,end,target,"#26a69a",`TP${index+1}`,2,2));
       }
       if (!historicalTradeIds.has(scenario.trade_id ?? scenario.id)) {
         markers.push({ time: chartTime(start), position: scenario.direction === "LONG" ? "belowBar" : "aboveBar",
@@ -201,6 +212,14 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
         ]);
         waveSeriesRef.current.push(tradeLine);
       }
+      const hasScenarioLevels=visibleEntries.some((scenario) => (scenario.trade_id ?? scenario.id) === trade.id);
+      if (showRiskLevels && !hasScenarioLevels) {
+        const riskEnd=levelEndTimestamp(orderedCandles,entryTime,exitTime);
+        if (trade.initial_stop != null) addLevel(chart,waveSeriesRef.current,entryTime,riskEnd,
+          trade.initial_stop,"#ef5350","SL · сделка",2,2);
+        (trade.take_profit_prices ?? []).forEach((target,index) => addLevel(chart,waveSeriesRef.current,
+          entryTime,riskEnd,target,"#26a69a",`TP${index+1} · сделка`,2,2));
+      }
       markers.push({ time:chartTime(entryTime),position:trade.direction === "LONG" ? "belowBar" : "aboveBar",
         color:trade.direction === "LONG" ? "#2e7d32" : "#c62828",
         shape:trade.direction === "LONG" ? "arrowUp" : "arrowDown",
@@ -212,7 +231,8 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
     const sortedMarkers = markers.sort((left, right) => Number(left.time) - Number(right.time));
     if (!markersRef.current) markersRef.current = createSeriesMarkers(candleSeries, sortedMarkers, { autoScale: false });
     else markersRef.current.setMarkers(sortedMarkers);
-  }, [chartCandles, elliottPatterns, entryScenarios, historicalTrades, selectedEntryId]);
+  }, [chartCandles, elliottPatterns, entryScenarios, historicalTrades, selectedEntryId,
+    showEntries,showInternalWaves,showRetracement,showRiskLevels,showWaves]);
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || !chartCandles.length || isLoading || hasInitialFitRef.current) return;
@@ -239,6 +259,19 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
         <Button size="small" variant="outlined" onClick={() => void toggleFullscreen()} sx={{ minWidth: 112, py: .35, textTransform: "none" }}>
           {isFullscreen ? "Свернуть" : "На весь экран"}
         </Button>
+      </Stack>
+    </Stack>
+    <Stack direction="row" useFlexGap sx={{ px:1,pb:1,gap:.25,alignItems:"center",flexWrap:"wrap" }}>
+      <FormControlLabel control={<Switch size="small" checked={showWaves} onChange={(_,value) => setShowWaves(value)} />} label="Волны" />
+      <FormControlLabel control={<Switch size="small" checked={showInternalWaves} onChange={(_,value) => setShowInternalWaves(value)} />} label="Внутренние" />
+      <FormControlLabel control={<Switch size="small" checked={showRetracement} onChange={(_,value) => setShowRetracement(value)} />} label="Retracement W2" />
+      <FormControlLabel control={<Switch size="small" checked={showEntries} onChange={(_,value) => setShowEntries(value)} />} label="Входы" />
+      <FormControlLabel control={<Switch size="small" checked={showRiskLevels} onChange={(_,value) => setShowRiskLevels(value)} />} label="SL / TP" />
+      <Stack direction="row" useFlexGap sx={{ ml:{ sm:"auto" },gap:.5,flexWrap:"wrap" }}>
+        <Chip size="small" sx={{ color:"#42a5f5",borderColor:"#42a5f5" }} variant="outlined" label="Elliott" />
+        <Chip size="small" sx={{ color:"#ffb74d",borderColor:"#ffb74d" }} variant="outlined" label="Entry" />
+        <Chip size="small" color="error" variant="outlined" label="SL" />
+        <Chip size="small" color="success" variant="outlined" label="TP" />
       </Stack>
     </Stack>
     <Box sx={{ position: "relative", width: "100%", height: isFullscreen ? "calc(100vh - 54px)" : 560, flex: isFullscreen ? 1 : "none" }}>
@@ -329,15 +362,76 @@ function entryResultLabel(result: EntryResult) {
 const chartTime = (timestamp: number) => Math.floor(timestamp / 1000) as UTCTimestamp;
 
 function addLevel(chart: ReturnType<typeof createChart>, collection: ChartSeries[],
-  from: number, to: number, value: number, color: string, label: string, lineStyle: number) {
+  from: number, to: number, value: number, color: string, label: string, lineStyle: number,
+  lineWidth: 1 | 2 | 3 | 4 = 1) {
   if (!Number.isFinite(value) || from >= to) return;
-  const series = chart.addSeries(LineSeries, { color, lineWidth: 1, lineStyle,
+  const series = chart.addSeries(LineSeries, { color, lineWidth, lineStyle,
     priceLineVisible: false, lastValueVisible: false, title: "" });
   const startTime = chartTime(from); const endTime = chartTime(to);
   series.setData([{ time: startTime, value }, { time: endTime, value }]);
   createSeriesMarkers(series, [{ time: endTime, position: "aboveBar", color, shape: "circle", text: label }],
     { autoScale: false });
   collection.push(series);
+}
+
+function addRetracement(chart:ReturnType<typeof createChart>,collection:ChartSeries[],candles:Candle[],pattern:LiveElliottPattern) {
+  const p0=pattern.points.P0;const p1=pattern.points.P1;const p2=pattern.points.P2;
+  if (!p0 || !p1 || !p2) return;
+  const from=containingCandleTimestamp(candles,p1.timestamp);
+  const to=levelEndTimestamp(candles,from,containingCandleTimestamp(candles,
+    pattern.strategy_levels?.trade_to ?? pattern.signal_time ?? p2.confirmed_at));
+  const levels=pattern.strategy_levels;
+  if (levels) {
+    const zone=chart.addSeries(BaselineSeries,{
+      baseValue:{ type:"price",price:levels.wave2_zone_low },lineVisible:false,
+      topFillColor1:"rgba(126,87,194,.18)",topFillColor2:"rgba(126,87,194,.06)",
+      bottomFillColor1:"rgba(126,87,194,0)",bottomFillColor2:"rgba(126,87,194,0)",
+      priceLineVisible:false,lastValueVisible:false,title:"",
+    });
+    zone.setData([{ time:chartTime(from),value:levels.wave2_zone_high },
+      { time:chartTime(to),value:levels.wave2_zone_high }]);
+    collection.push(zone);
+    addLevel(chart,collection,from,to,levels.wave2_zone_high,"#7e57c2",
+      `W2 min ${(levels.wave2_min_retracement*100).toFixed(1)}%`,3);
+    addLevel(chart,collection,from,to,levels.wave2_zone_low,"#7e57c2",
+      `W2 max ${(levels.wave2_max_retracement*100).toFixed(1)}%`,3);
+  }
+  const retracement=typeof pattern.features?.wave2_retracement === "number"
+    ? pattern.features.wave2_retracement : Math.abs(p2.price-p1.price)/Math.max(Math.abs(p1.price-p0.price),1e-12);
+  addLevel(chart,collection,from,to,p2.price,"#b39ddb",`W2 факт ${(retracement*100).toFixed(1)}%`,2,2);
+}
+
+function addInternalWave(chart:ReturnType<typeof createChart>,collection:ChartSeries[],candles:Candle[],
+  pattern:LiveElliottPattern,color:string) {
+  const points=pattern.internal_points ?? [];
+  const data=[...new Map(points.map((point) => {
+    const time=chartTime(containingCandleTimestamp(candles,point.timestamp));
+    return [Number(time),{ time,value:point.price,kind:point.kind }] as const;
+  })).values()].sort((left,right) => Number(left.time)-Number(right.time));
+  if (data.length < 2) return;
+  const series=chart.addSeries(LineSeries,{ color,lineWidth:1,lineStyle:2,priceLineVisible:false,
+    lastValueVisible:false,title:"" });
+  series.setData(data.map(({ time,value }) => ({ time,value })));
+  createSeriesMarkers(series,data.map((point,index) => ({ time:point.time,
+    position:point.kind === "LOW" ? "belowBar" as const : "aboveBar" as const,
+    color,shape:"circle" as const,text:`μ${index+1} · ${pattern.entry_timeframe}` })),{ autoScale:false });
+  collection.push(series);
+}
+
+function levelEndTimestamp(candles:Candle[],start:number,end:number) {
+  if (end > start) return end;
+  const index=candles.findIndex((item) => item.timestamp === start);
+  return candles[index+1]?.timestamp ?? start+60_000;
+}
+
+function entryModelLabel(model?:string) {
+  return ({
+    CHOCH_MARKET:"CHOCH по рынку",CHOCH_RETRACE:"CHOCH ретест",WAVE1_BREAK_RETRACE:"Пробой W1 + ретест",
+    WAVE1_BREAK_MARKET:"Пробой W1",WAVE1_BREAK_STOP:"Стоп за W1",WAVE1_BREAK_RETEST_CONFIRM:"Ретест W1",
+    MICRO_WAVE3:"Micro Wave 3",DISPLACEMENT_RETRACE:"Импульс + ретест",P2_LIQUIDITY_SWEEP:"Снятие P2",
+    WAVE2_TRENDLINE_BREAK:"Пробой трендовой W2",ADX_ACCELERATION:"Ускорение ADX",
+    VOLATILITY_EXPANSION:"Рост волатильности",VOLUME_EXPANSION:"Рост объёма",SIMULATION:"Симуляция",
+  } as Record<string,string>)[model ?? ""] ?? model ?? "Модель входа";
 }
 
 function waveLegend(label: string) {

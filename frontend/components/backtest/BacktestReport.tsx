@@ -124,6 +124,7 @@ export function BacktestReport({ result }: { result: BacktestResult }) {
 
       trades={result.trades}
       elliottPatterns={result.elliottPatterns}
+      elliottConfig={result.elliottConfig}
     />}
     {result.elliottDiagnostics && <Alert severity="success" sx={{ mt: 1.5 }}>
       Elliott: {result.elliottDiagnostics.patterns} кандидатов · {result.elliottDiagnostics.signals} сигналов

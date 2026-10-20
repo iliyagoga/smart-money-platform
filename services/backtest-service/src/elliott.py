@@ -764,6 +764,9 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
     serialized = [{"id": item.id, "direction": item.direction, "state": item.state,
                    "invalid_reason": item.invalid_reason, "signal_time": item.signal_time,
                    "points": {key: _point(value) for key, value in item.points.items()}, "features": item.features,
+                   "internal_points": [_point(point) for point in entry_pivots
+                                       if item.points["P0"].timestamp <= point.timestamp
+                                       <= max(item.points["P2"].confirmed_at, item.signal_time or 0)][-24:],
                    "structure_timeframe": ec.structure_timeframe, "entry_timeframe": ec.entry_timeframe}
                   for item in patterns]
     counts: dict[str, int] = {}
