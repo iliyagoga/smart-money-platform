@@ -66,7 +66,7 @@ def test_one_r_uses_separate_amendable_stop_even_with_one_target():
 def test_break_even_amends_the_owned_okx_stop_and_confirms_to_execution():
     import asyncio,json
     from types import SimpleNamespace
-    from unittest.mock import AsyncMock
+    from unittest.mock import AsyncMock,Mock
 
     async def check():
         service=ExchangeGateway(SimpleNamespace(history_concurrency=1))
@@ -202,21 +202,23 @@ def test_availability_reports_okx_http_failure_instead_of_raising_server_error()
 def test_prepare_instruments_registers_and_reenables_portfolio_symbols():
     import asyncio
     from types import SimpleNamespace
-    from unittest.mock import AsyncMock
+    from unittest.mock import AsyncMock,Mock
 
     async def check():
-        service=ExchangeGateway(SimpleNamespace(history_concurrency=1,symbols="BTC-USDT-SWAP"))
-        service.db=AsyncMock();service.websockets={}
-        service.refresh_instrument_specs=AsyncMock(return_value=["AVAX-USDT-SWAP"])
-        service.db.fetch.side_effect=[
-          [{"symbol":"AVAX-USDT-SWAP"}],
-          [{"symbol":"AVAX-USDT-SWAP"},{"symbol":"BTC-USDT-SWAP"}],
-        ]
+        service=ExchangeGateway(SimpleNamespace(
+          history_concurrency=1,symbols="BTC-USDT-SWAP",okx_rest_url="https://www.okx.com"))
+        service.db=AsyncMock();service.websockets={};service.client=AsyncMock()
+        response=Mock();response.json.return_value={"code":"0","data":[{
+          "instId":"AVAX-USDT-SWAP","uly":"AVAX-USDT","tickSz":"0.01","lotSz":"1","minSz":"1",
+          "ctVal":"0.1","state":"live",
+        }]}
+        service.client.get.return_value=response
+        service.db.fetch.return_value=[{"symbol":"AVAX-USDT-SWAP"},{"symbol":"BTC-USDT-SWAP"}]
         result=await service.prepare_instruments(["avax-usdt-swap","AVAX-USDT-SWAP","MISSING-USDT-SWAP"])
         assert result=={"prepared":["AVAX-USDT-SWAP"],"unavailable":["MISSING-USDT-SWAP"]}
         service.db.executemany.assert_awaited_once()
-        assert service.db.executemany.await_args.args[1]==[("AVAX-USDT-SWAP",),("MISSING-USDT-SWAP",)]
-        service.refresh_instrument_specs.assert_awaited_once_with(["AVAX-USDT-SWAP","MISSING-USDT-SWAP"])
+        assert [item[0] for item in service.db.executemany.await_args.args[1]]==["AVAX-USDT-SWAP"]
+        service.client.get.assert_awaited_once()
         assert service.active_symbols==["AVAX-USDT-SWAP","BTC-USDT-SWAP"]
     asyncio.run(check())
 

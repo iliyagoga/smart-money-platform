@@ -37,7 +37,8 @@ async def health():return {"status":"UP","market_data_enabled":settings.market_d
 async def reload_symbols():return {"symbols":await service.refresh_symbols()}
 @app.post("/exchange/instruments/prepare")
 async def prepare_instruments(request:InstrumentPrepareRequest):
-    return await service.prepare_instruments(request.symbols)
+    try:return await service.prepare_instruments(request.symbols)
+    except ValueError as exc:raise HTTPException(502,str(exc)) from exc
 @app.get("/exchange/instruments")
 async def instruments():return {"instruments":await service.instruments()}
 @app.get("/exchange/instruments/{symbol}/availability")

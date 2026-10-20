@@ -3,6 +3,7 @@ import json
 from unittest.mock import AsyncMock
 from uuid import UUID
 
+import httpx
 import pytest
 from fastapi import HTTPException
 
@@ -104,4 +105,13 @@ def test_portfolio_live_reports_exchange_instrument_preparation_failure(monkeypa
             )
         assert raised.value.status_code==409
         assert db.connection.execute.await_count==0
+    asyncio.run(check())
+
+
+def test_portfolio_preparation_timeout_has_actionable_error(monkeypatch):
+    async def check():
+        client=AsyncMock();client.post.side_effect=httpx.ReadTimeout("")
+        monkeypatch.setattr(execution_app.service,"http",client)
+        with pytest.raises(ValueError,match=r"exchange gateway timeout \(ReadTimeout\)"):
+            await execution_app.service.prepare_portfolio_assets(["AVAX-USDT-SWAP"])
     asyncio.run(check())

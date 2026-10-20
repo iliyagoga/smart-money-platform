@@ -70,10 +70,24 @@ class ExecutionService:
     async def prepare_portfolio_assets(self,symbols:list[str]):
         try:
             response=await self.http.post(
-                f"{self.exchange_service_url}/exchange/instruments/prepare",json={"symbols":symbols})
+                f"{self.exchange_service_url}/exchange/instruments/prepare",json={"symbols":symbols},timeout=30)
             response.raise_for_status();result=response.json()
-        except (httpx.HTTPError,ValueError) as exc:
-            raise ValueError(f"Unable to prepare portfolio instruments: {exc}") from exc
+        except httpx.HTTPStatusError as exc:
+            try:
+                payload=exc.response.json()
+                detail=payload.get("detail") if isinstance(payload,dict) else str(payload)[:300]
+            except ValueError:detail=exc.response.text[:300]
+            detail=detail or "empty response"
+            raise ValueError(f"Unable to prepare portfolio instruments: exchange gateway HTTP {exc.response.status_code}: {detail}") from exc
+        except httpx.TimeoutException as exc:
+            raise ValueError(f"Unable to prepare portfolio instruments: exchange gateway timeout ({type(exc).__name__})") from exc
+        except httpx.RequestError as exc:
+            detail=str(exc).strip() or type(exc).__name__
+            raise ValueError(f"Unable to prepare portfolio instruments: exchange gateway connection failed ({detail})") from exc
+        except ValueError as exc:
+            raise ValueError(f"Unable to prepare portfolio instruments: invalid exchange gateway response ({exc})") from exc
+        if not isinstance(result,dict):
+            raise ValueError("Unable to prepare portfolio instruments: invalid exchange gateway response (expected object)")
         unavailable=result.get("unavailable") or []
         if unavailable:
             raise ValueError(f"OKX instrument metadata is unavailable: {', '.join(unavailable)}")

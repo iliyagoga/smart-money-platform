@@ -218,19 +218,42 @@ class ExchangeGateway:
         return refreshed
     async def prepare_instruments(self,symbols):
         symbols=list(dict.fromkeys(symbol.strip().upper() for symbol in symbols))
-        await self.db.executemany(
-            """INSERT INTO trading_assets(symbol,display_name,category,enabled,price_precision,quantity_precision,
-                 minimum_order_size,validation_status)
-               VALUES($1,$1,'crypto',true,2,6,.000001,'PENDING')
-               ON CONFLICT(symbol) DO UPDATE SET enabled=true,updated_at=now()""",
-            [(symbol,) for symbol in symbols],
-        )
-        await self.refresh_instrument_specs(symbols)
-        rows=await self.db.fetch(
-            """SELECT symbol FROM trading_assets
-               WHERE symbol=ANY($1::text[]) AND enabled AND validation_status='ACTIVE'""",symbols,
-        )
-        prepared={row["symbol"] for row in rows}
+        try:
+            response=await self.client.get(
+                self.s.okx_rest_url+"/api/v5/public/instruments",params={"instType":"SWAP"})
+            response.raise_for_status();body=response.json()
+        except (httpx.HTTPError,ValueError) as exc:
+            detail=str(exc).strip() or type(exc).__name__
+            raise ValueError(f"Unable to load OKX SWAP instruments: {detail}") from exc
+        if body.get("code")!="0":
+            raise ValueError(f"Unable to load OKX SWAP instruments: OKX {body.get('code')}: {body.get('msg') or 'unknown error'}")
+        requested=set(symbols)
+        instruments={item.get("instId"):item for item in body.get("data") or [] if item.get("instId") in requested}
+        metadata=[]
+        for symbol in symbols:
+            instrument=instruments.get(symbol)
+            if not instrument:continue
+            try:spec=instrument_spec(instrument)
+            except (KeyError,ValueError,ArithmeticError):continue
+            if spec.get("state") not in {None,"live"}:continue
+            metadata.append((
+                symbol,instrument.get("uly") or symbol,spec["price_precision"],spec["quantity_precision"],
+                spec["minimum_order_size"],spec["tick_size"],spec["lot_size"],spec["contract_value"],
+                json.dumps({"source":"OKX","instrument":instrument}),
+            ))
+        if metadata:
+            await self.db.executemany(
+                """INSERT INTO trading_assets(symbol,display_name,category,enabled,price_precision,quantity_precision,
+                     minimum_order_size,tick_size,lot_size,contract_value,validation_status,exchange_metadata)
+                   VALUES($1,$2,'crypto',true,$3,$4,$5,$6,$7,$8,'ACTIVE',$9::jsonb)
+                   ON CONFLICT(symbol) DO UPDATE SET display_name=excluded.display_name,enabled=true,
+                     price_precision=excluded.price_precision,quantity_precision=excluded.quantity_precision,
+                     minimum_order_size=excluded.minimum_order_size,tick_size=excluded.tick_size,
+                     lot_size=excluded.lot_size,contract_value=excluded.contract_value,
+                     validation_status='ACTIVE',exchange_metadata=excluded.exchange_metadata,updated_at=now()""",
+                metadata,
+            )
+        prepared={item[0] for item in metadata}
         active_rows=await self.db.fetch(
             "SELECT symbol FROM trading_assets WHERE enabled AND validation_status='ACTIVE' ORDER BY symbol"
         )
