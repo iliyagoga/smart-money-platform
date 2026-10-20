@@ -47,6 +47,7 @@ class Position(BaseModel):
     lot_size:float=.000001;minimum_order_size:float=.000001
     protective_filled_quantity:float=0;protective_filled_notional:float=0
     protective_filled_quantities:dict[str,float]={};protective_filled_notionals:dict[str,float]={}
+    protection_pending:bool=False
     exit_filled_quantities:dict[str,float]={}
     funding_percent_per_day:float=0;funding_interval_hours:int=8;maintenance_margin_percent:float=.5;liquidation_fee_percent:float=.5
     fees:float=0;funding:float=0;last_funding_at:int|None=None

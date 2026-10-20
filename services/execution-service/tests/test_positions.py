@@ -199,16 +199,50 @@ def test_live_candles_only_mark_positions_and_do_not_close_them_locally():
         service.save_position.assert_awaited_once()
     asyncio.run(check())
 
-def test_live_config_rejects_features_not_protected_by_exchange_orders():
-    config={"elliott":{"takeProfitCount":2,"breakEvenAtOneR":False}}
+@pytest.mark.parametrize("entry_model",[
+    "CHOCH_MARKET","CHOCH_RETRACE","WAVE1_BREAK_RETRACE","WAVE1_BREAK_MARKET",
+    "WAVE1_BREAK_STOP","WAVE1_BREAK_RETEST_CONFIRM","MICRO_WAVE3","DISPLACEMENT_RETRACE",
+    "P2_LIQUIDITY_SWEEP","WAVE2_TRENDLINE_BREAK","ADX_ACCELERATION",
+    "VOLATILITY_EXPANSION","VOLUME_EXPANSION",
+])
+def test_live_config_accepts_every_backtest_entry_model(entry_model):
+    config={"elliott":{"entryModel":entry_model,"takeProfitCount":2,
+      "firstTakeAction":"MOVE_TO_BREAK_EVEN","breakEvenAtOneR":True}}
     ExecutionService.validate_live_config(config,"DEMO")
-    with pytest.raises(ValueError,match="break-even"):
-        ExecutionService.validate_live_config({"elliott":{"takeProfitCount":1,"breakEvenAtOneR":True}},"PRODUCTION")
-    with pytest.raises(ValueError,match="PARTIAL_CLOSE"):
-        ExecutionService.validate_live_config({"elliott":{"takeProfitCount":2,"firstTakeAction":"MOVE_TO_BREAK_EVEN"}},"DEMO")
-    with pytest.raises(ValueError,match="LIMIT"):
-        ExecutionService.validate_live_config({"elliott":{"takeProfitCount":1,"entryModel":"CHOCH_MARKET"}},"DEMO")
-    ExecutionService.validate_live_config(config,"PAPER")
+    ExecutionService.validate_live_config(config,"PRODUCTION")
+
+def test_live_one_r_requests_exchange_stop_amendment_and_waits_for_confirmation():
+    async def check():
+        service=ExecutionService("postgresql://unused","redis://unused")
+        order=Order(symbol="BTC-USDT",side="BUY",type="MARKET",price=100,quantity=10,status="FILLED")
+        p=position(order_id=order.id,take_profit_prices=[120],execution_mode="DEMO",opened_at=1,
+                   break_even_rule="ONE_R")
+        service.orders[order.id]=order;service.positions[p.id]=p
+        service.save_position=AsyncMock();service.publish=AsyncMock();service.stream=AsyncMock()
+        await service.on_candle(candle(99,106,105).model_copy(update={"timestamp":2}))
+        service.stream.assert_awaited_once()
+        event,payload=service.stream.await_args.args
+        assert event=="position.protection_requested" and payload["stop_loss_price"]==100
+        assert p.protection_pending and not p.protected
+        await service.on_protection_updated({**payload,"status":"UPDATED"})
+        assert p.protected and not p.protection_pending and p.status=="PROTECTED"
+    asyncio.run(check())
+
+def test_live_move_to_break_even_removes_first_target_only_after_exchange_confirmation():
+    async def check():
+        service=ExecutionService("postgresql://unused","redis://unused")
+        order=Order(symbol="BTC-USDT",side="BUY",type="LIMIT",price=100,quantity=10,status="FILLED")
+        p=position(order_id=order.id,take_profit_prices=[110,120],target_allocations=[.5,.5],
+                   execution_mode="DEMO",opened_at=1,break_even_rule="AFTER_TARGET")
+        service.orders[order.id]=order;service.positions[p.id]=p
+        service.save_position=AsyncMock();service.publish=AsyncMock();service.stream=AsyncMock()
+        await service.on_candle(candle(99,111,110).model_copy(update={"timestamp":2}))
+        payload=service.stream.await_args.args[1]
+        assert p.take_profit_prices==[110,120]
+        await service.on_protection_updated({**payload,"status":"UPDATED"})
+        assert p.take_profit_prices==[120] and p.target_allocations==[.5] and p.targets_hit==1
+        assert p.quantity==10
+    asyncio.run(check())
 
 def test_manual_close_payload_cannot_spoof_exit_price_or_reason():
     with pytest.raises(ValidationError):CloseRequest(price=1)

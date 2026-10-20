@@ -43,13 +43,16 @@ def instrument_spec(item):
     }
 
 def attached_exit_orders(local_id,contracts,lot_contracts,tick_size,take_profit_prices,
-                         target_allocations,stop_loss_price):
+                         target_allocations,stop_loss_price,break_even_rule="OFF"):
     """Build OKX attached exits, including split TPs and one SL for the remainder."""
     targets=list(take_profit_prices or [])
     if len(targets)>10:raise ValueError("OKX supports at most 10 split take-profit targets")
     root="SMA"+local_id.replace("-","")[:26]
     orders=[];metadata={}
-    if len(targets)<=1:
+    amendable_stop=break_even_rule in {"ONE_R","AFTER_TARGET"} and stop_loss_price is not None
+    if break_even_rule=="AFTER_TARGET" and len(targets)>1:
+        targets=[targets[-1]];target_allocations=[1]
+    if len(targets)<=1 and not amendable_stop:
         attached={"attachAlgoClOrdId":root+"X"}
         if targets:
             attached.update({"tpTriggerPx":price_to_tick(targets[0],tick_size),
@@ -60,6 +63,7 @@ def attached_exit_orders(local_id,contracts,lot_contracts,tick_size,take_profit_
         if len(attached)>1:
             orders.append(attached);metadata[attached["attachAlgoClOrdId"]]={"kind":"PROTECTIVE"}
         return orders,metadata
+    if len(targets)==1 and not target_allocations:target_allocations=[1]
     if len(target_allocations)!=len(targets):
         raise ValueError("Split take-profit allocations must match the number of targets")
     allocations=[Decimal(str(value)) for value in target_allocations]
@@ -289,17 +293,23 @@ class ExchangeGateway:
             batches=await self.redis.xreadgroup(group,"exchange-1",{"execution.command":">"},count=10,block=2000)
             for _,messages in batches:
                 for message_id,fields in messages:
+                    event={}
                     try:
                         event=json.loads(fields["data"]);payload=event.get("payload",{})
                         if event.get("event_type")=="order.request":await self.place_order(payload)
                         elif event.get("event_type")=="order.cancel_requested":await self.cancel_order(payload["order_id"])
+                        elif event.get("event_type")=="position.protection_requested":await self.amend_protection(payload)
                         await self.redis.xack("execution.command",group,message_id)
                     except asyncio.CancelledError:raise
                     except Exception as exc:
                         self.last_error=f"order command: {type(exc).__name__}: {exc}"[:500]
                         payload=(json.loads(fields["data"]).get("payload") or {})
                         log.exception("Order command failed: local_order_id=%s",payload.get("id"))
-                        if payload.get("id"):
+                        if event.get("event_type")=="position.protection_requested":
+                            await self.record_trading_log(payload,"PROTECTION_REJECTED","REJECTED",{"reason":str(exc)})
+                            await self.redis.xadd("trading.command",{"data":json.dumps({"event_type":"exchange.protection_updated","payload":{
+                              **payload,"status":"REJECTED","reason":str(exc)}})},maxlen=100000,approximate=True)
+                        elif payload.get("id"):
                             await self.db.execute("""UPDATE exchange_orders SET status='REJECTED',
                               payload=payload||jsonb_build_object('error',$2::text),updated_at=now()
                               WHERE local_order_id=$1::uuid""",payload["id"],str(exc))
@@ -373,7 +383,8 @@ class ExchangeGateway:
         args={"instId":payload["symbol"],"tdMode":margin_mode,"side":payload["side"].lower(),"ordType":payload["type"].lower(),"sz":format(contracts,"f"),"clOrdId":cl_ord_id,"tag":"SMPELLIOTT"}
         if payload.get("price") is not None and payload["type"]!="MARKET":args["px"]=price_to_tick(payload["price"],spec["tick_size"])
         attached,exit_algos=attached_exit_orders(local_id,contracts,lot_contracts,spec["tick_size"],
-          payload.get("take_profit_prices",[]),payload.get("target_allocations",[]),payload.get("stop_loss_price"))
+          payload.get("take_profit_prices",[]),payload.get("target_allocations",[]),payload.get("stop_loss_price"),
+          payload.get("break_even_rule","OFF"))
         if attached:args["attachAlgoOrds"]=attached
         exit_algo_cl_ord_id=next(iter(exit_algos),None) if len(exit_algos)==1 else None
         if payload.get("reduce_only"):args["reduceOnly"]=True
@@ -384,6 +395,26 @@ class ExchangeGateway:
         await self.record_trading_log(payload,"ORDER_ACCEPTED","ACCEPTED",{"exchange":ack})
         await self.redis.xadd("trading.command",{"data":json.dumps({"event_type":"exchange.order_updated","payload":{"order_id":local_id,"exchange_order_id":ack.get("ordId"),"status":"OPEN"}})},maxlen=100000,approximate=True)
         return {"order_id":local_id,"exchange_order_id":ack.get("ordId"),"status":"ACCEPTED"}
+    async def amend_protection(self,payload):
+        row=await self.db.fetchrow("""SELECT eo.symbol,eo.exit_algos,o.data->>'execution_mode' AS execution_mode
+          FROM exchange_orders eo LEFT JOIN orders o ON o.id=eo.local_order_id
+          WHERE eo.local_order_id=$1::uuid""",payload["order_id"])
+        if not row:raise ValueError("Entry order is not owned by this system")
+        exit_algos=json.loads(row["exit_algos"]) if isinstance(row["exit_algos"],str) else dict(row["exit_algos"] or {})
+        stop_id=next((key for key,value in exit_algos.items() if value.get("kind")=="STOP_LOSS"),None)
+        if not stop_id:raise ValueError("Protective stop order is unavailable")
+        spec=await self.instrument_order_spec(row["symbol"])
+        stop=price_to_tick(payload["stop_loss_price"],spec["tick_size"])
+        request={"instId":row["symbol"],"algoClOrdId":stop_id,"newSlTriggerPx":stop,
+                 "newSlOrdPx":"-1","newSlTriggerPxType":"last","reqId":("BE"+payload["order_id"].replace("-","")[:30])[:32]}
+        ack=okx_ack(await self.private("POST","/api/v5/trade/amend-algos",request),"protection amendment")
+        exit_algos[stop_id]["stop_loss_price"]=float(payload["stop_loss_price"])
+        await self.db.execute("UPDATE exchange_orders SET exit_algos=$2::jsonb,updated_at=now() WHERE local_order_id=$1::uuid",
+                              payload["order_id"],json.dumps(exit_algos))
+        await self.record_trading_log(payload,"PROTECTION_UPDATED","UPDATED",{"exchange":ack,"request":request})
+        await self.redis.xadd("trading.command",{"data":json.dumps({"event_type":"exchange.protection_updated","payload":{
+          **payload,"status":"UPDATED"}})},maxlen=100000,approximate=True)
+        return {"order_id":payload["order_id"],"status":"UPDATED","stop_loss_price":float(payload["stop_loss_price"])}
     async def cancel_order(self,local_order_id):
         row=await self.db.fetchrow("""SELECT eo.cl_ord_id,eo.symbol,eo.status,o.data->>'execution_mode' AS execution_mode
           FROM exchange_orders eo LEFT JOIN orders o ON o.id=eo.local_order_id WHERE eo.local_order_id=$1::uuid""",local_order_id)

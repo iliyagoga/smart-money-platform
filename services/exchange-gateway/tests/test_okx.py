@@ -48,6 +48,46 @@ def test_split_take_profit_rounding_assigns_remainder_to_last_target():
       Decimal("3"),Decimal("1"),.1,[110,120],[.5,.5],95)
     assert [item["sz"] for item in orders if "tpTriggerPx" in item]==["1","2"]
 
+def test_move_to_break_even_keeps_only_full_size_final_target_and_separate_stop():
+    orders,metadata=attached_exit_orders("00000000-0000-0000-0000-000000000001",
+      Decimal("10"),Decimal("1"),.1,[110,120],[.5,.5],95,"AFTER_TARGET")
+    targets=[item for item in orders if "tpTriggerPx" in item]
+    stops=[item for item in orders if "slTriggerPx" in item]
+    assert len(targets)==1 and targets[0]["tpTriggerPx"]=="120.0" and targets[0]["sz"]=="10"
+    assert len(stops)==1 and {item["kind"] for item in metadata.values()}=={"TAKE_PROFIT","STOP_LOSS"}
+
+def test_one_r_uses_separate_amendable_stop_even_with_one_target():
+    orders,metadata=attached_exit_orders("00000000-0000-0000-0000-000000000001",
+      Decimal("10"),Decimal("1"),.1,[120],[1],95,"ONE_R")
+    assert len(orders)==2
+    assert {item["kind"] for item in metadata.values()}=={"TAKE_PROFIT","STOP_LOSS"}
+
+def test_break_even_amends_the_owned_okx_stop_and_confirms_to_execution():
+    import asyncio,json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    async def check():
+        service=ExchangeGateway(SimpleNamespace(history_concurrency=1))
+        service.db=AsyncMock();service.redis=AsyncMock();service.private=AsyncMock(
+          return_value=[{"algoClOrdId":"stop-1","sCode":"0","sMsg":""}])
+        service.instrument_order_spec=AsyncMock(return_value={"tick_size":.1})
+        service.record_trading_log=AsyncMock()
+        service.db.fetchrow.return_value={"symbol":"BTC-USDT-SWAP","execution_mode":"DEMO",
+          "exit_algos":{"stop-1":{"kind":"STOP_LOSS"},"tp-1":{"kind":"TAKE_PROFIT"}}}
+        payload={"id":"00000000-0000-0000-0000-000000000001",
+          "order_id":"00000000-0000-0000-0000-000000000001","position_id":"position-1",
+          "symbol":"BTC-USDT-SWAP","execution_mode":"DEMO","stop_loss_price":100.04,
+          "trigger_kind":"ONE_R","trigger_price":105}
+        result=await service.amend_protection(payload)
+        path,request=service.private.await_args.args[1:]
+        assert path=="/api/v5/trade/amend-algos"
+        assert request["algoClOrdId"]=="stop-1" and request["newSlTriggerPx"]=="100.0"
+        event=json.loads(service.redis.xadd.await_args.args[1]["data"])
+        assert event["event_type"]=="exchange.protection_updated"
+        assert event["payload"]["status"]=="UPDATED" and result["status"]=="UPDATED"
+    asyncio.run(check())
+
 def test_okx_ack_preserves_detailed_rejection():
     with pytest.raises(ValueError,match='"sCode":"51000"'):
         okx_ack([{"sCode":"51000","sMsg":"Parameter error","ordId":""}],"order")

@@ -72,15 +72,6 @@ class ExecutionService:
         if mode=="PAPER":return
         elliott=config.get("elliott",{})
         if not isinstance(elliott,dict):raise ValueError("elliott config must be an object")
-        def value(camel,snake,default):return elliott.get(camel,elliott.get(snake,default))
-        if bool(value("breakEvenAtOneR","break_even_at_one_r",False)):
-            raise ValueError("DEMO/PRODUCTION does not yet support automatic break-even amendments")
-        if (int(value("takeProfitCount","take_profit_count",2))>1
-                and str(value("firstTakeAction","first_take_action","PARTIAL_CLOSE"))!="PARTIAL_CLOSE"):
-            raise ValueError("DEMO/PRODUCTION multiple targets require PARTIAL_CLOSE at TP1")
-        supported_entries={"CHOCH_RETRACE","WAVE1_BREAK_RETRACE","DISPLACEMENT_RETRACE"}
-        if str(value("entryModel","entry_model","CHOCH_RETRACE")) not in supported_entries:
-            raise ValueError("DEMO/PRODUCTION currently supports LIMIT entry models only")
     async def envelope(self,event_type,payload):return {"message_id":str(uuid4()),"correlation_id":str(uuid4()),"timestamp":int(time()*1000),"source":"execution-service","version":"1.0.0","event_type":event_type,"payload":payload}
     async def publish(self,event_type,payload):await self.redis.publish("position.update",json.dumps(await self.envelope(event_type,payload),separators=(",",":")))
     async def publish_channel(self,channel,event_type,payload):
@@ -97,6 +88,7 @@ class ExecutionService:
                             event=json.loads(fields["data"])
                             if event["event_type"]=="risk.approved":await self.on_approved(event["payload"])
                             elif event["event_type"]=="exchange.order_updated":await self.on_exchange_order(event["payload"])
+                            elif event["event_type"]=="exchange.protection_updated":await self.on_protection_updated(event["payload"])
                             await self.redis.xack("trading.command",self.group,message_id)
                         except Exception:log.exception("Command %s failed",message_id)
             except asyncio.CancelledError:raise
@@ -111,6 +103,7 @@ class ExecutionService:
                         event=json.loads(fields["data"])
                         if event["event_type"]=="risk.approved":await self.on_approved(event["payload"])
                         elif event["event_type"]=="exchange.order_updated":await self.on_exchange_order(event["payload"])
+                        elif event["event_type"]=="exchange.protection_updated":await self.on_protection_updated(event["payload"])
                         await self.redis.xack("trading.command",self.group,message_id)
                     except Exception:log.exception("Pending command %s failed",message_id);return
     async def listen_candles(self):
@@ -258,6 +251,22 @@ class ExecutionService:
     async def save_position(self,p,old,new,trigger):
         await self.db.execute("INSERT INTO positions(id,signal_id,symbol,status,data,opened_at) VALUES($1::uuid,$2::uuid,$3,$4,$5::jsonb,to_timestamp($6/1000.0)) ON CONFLICT(id) DO UPDATE SET status=excluded.status,data=excluded.data,updated_at=now()",p.id,p.signal_id,p.symbol,p.status,json.dumps(p.model_dump(mode="json")),p.opened_at)
         if old!=new:await self.db.execute("INSERT INTO position_state_history(position_id,from_state,to_state,trigger,price) VALUES($1::uuid,$2,$3,$4,$5)",p.id,old,new,trigger,p.current_price)
+    async def request_break_even(self,p:Position,trigger_kind:str,trigger_price:float):
+        if p.protected or p.protection_pending:return False
+        order=self.orders.get(p.order_id)
+        if not order:return False
+        stop=fee_adjusted_break_even(p);p.protection_pending=True
+        try:
+            await self.save_position(p,p.status,p.status,"BREAK_EVEN_REQUESTED")
+            await self.stream("position.protection_requested",{
+              "id":order.id,"order_id":order.id,"position_id":p.id,"symbol":p.symbol,
+              "execution_mode":p.execution_mode,"stop_loss_price":stop,
+              "trigger_kind":trigger_kind,"trigger_price":trigger_price,
+            })
+            return True
+        except Exception:
+            p.protection_pending=False
+            raise
     async def on_candle(self,c:Candle):
         for o in list(self.orders.values()):
             if o.status not in {"OPEN","PENDING","SUBMITTING"} or o.symbol!=c.symbol:continue
@@ -288,7 +297,22 @@ class ExecutionService:
                 p.current_price=c.close;unrealized=p.unrealized()
                 p.max_unrealized_pnl=max(p.max_unrealized_pnl,unrealized)
                 p.max_unrealized_loss=min(p.max_unrealized_loss,unrealized)
-                await self.save_position(p,p.status,p.status,"PRICE_UPDATE")
+                side=1 if p.direction=="LONG" else -1
+                initial_risk=abs(p.entry_price-(p.initial_stop_loss_price or p.entry_price))
+                one_r=p.entry_price+side*initial_risk
+                first_target=(min(p.take_profit_prices) if p.direction=="LONG" else max(p.take_profit_prices)) \
+                  if len(p.take_profit_prices)>1 else None
+                if (not p.protected and not p.protection_pending and initial_risk>0
+                        and p.break_even_rule=="ONE_R"
+                        and (c.high>=one_r if side==1 else c.low<=one_r)):
+                    requested=await self.request_break_even(p,"ONE_R",one_r)
+                    if not requested:await self.save_position(p,p.status,p.status,"PRICE_UPDATE")
+                elif (not p.protected and not p.protection_pending and first_target is not None
+                        and p.break_even_rule=="AFTER_TARGET"
+                        and (c.high>=first_target if side==1 else c.low<=first_target)):
+                    requested=await self.request_break_even(p,"AFTER_TARGET",first_target)
+                    if not requested:await self.save_position(p,p.status,p.status,"PRICE_UPDATE")
+                else:await self.save_position(p,p.status,p.status,"PRICE_UPDATE")
                 await self.publish("position.updated",{"position_id":p.id,"symbol":p.symbol,
                   "current_price":p.current_price,"unrealized_pnl":unrealized,
                   "unrealized_pnl_percent":unrealized/max(p.entry_price*p.quantity,1e-12)*100,
@@ -308,6 +332,33 @@ class ExecutionService:
                 else:
                     await self.save_position(p,old,p.status,"ONE_R_REACHED");await self.publish("position.updated",{"position_id":p.id,"changes":data,"current_price":p.current_price,"unrealized_pnl":p.unrealized(),"unrealized_pnl_percent":p.unrealized()/max(p.entry_price*p.quantity,1e-12)*100,"updated_at":int(time()*1000)})
             if p.status!="CLOSED":await self.save_position(p,p.status,p.status,"PRICE_UPDATE")
+    async def on_protection_updated(self,payload):
+        position=self.positions.get(str(payload.get("position_id") or ""))
+        if not position:
+            order_id=str(payload.get("order_id") or "")
+            position=next((item for item in self.positions.values()
+                           if item.order_id==order_id and item.status!="CLOSED"),None)
+        if not position or position.status=="CLOSED":return
+        if str(payload.get("status","")).upper()!="UPDATED":
+            position.protection_pending=False
+            await self.save_position(position,position.status,position.status,"BREAK_EVEN_REJECTED")
+            await self.publish("position.protection_rejected",{"position_id":position.id,
+              "reason":payload.get("reason") or "Exchange rejected the protective stop amendment"})
+            return
+        old=position.status;position.stop_loss_price=float(payload["stop_loss_price"])
+        position.protection_pending=False;position.protected=True;position.status="PROTECTED"
+        if payload.get("trigger_kind")=="AFTER_TARGET" and position.take_profit_prices:
+            trigger=float(payload.get("trigger_price") or position.take_profit_prices[0])
+            index=min(range(len(position.take_profit_prices)),key=lambda i:abs(position.take_profit_prices[i]-trigger))
+            position.take_profit_prices.pop(index)
+            if index<len(position.target_allocations):position.target_allocations.pop(index)
+            position.targets_hit+=1
+        await self.save_position(position,old,position.status,"BREAK_EVEN_CONFIRMED")
+        await self.publish("position.updated",{"position_id":position.id,"changes":{
+          "stop_loss_price":position.stop_loss_price,"status":position.status},
+          "current_price":position.current_price,"unrealized_pnl":position.unrealized(),
+          "unrealized_pnl_percent":position.unrealized()/max(position.entry_price*position.quantity,1e-12)*100,
+          "updated_at":int(time()*1000)})
     async def close(self,p:Position,quantity:float,price:float,reason:str,exchange_fill:bool=False):
         qty=min(quantity,p.quantity);side=1 if p.direction=="LONG" else -1
         target=reason in {"TAKE_PROFIT","FIXED_RR_TARGET"}
