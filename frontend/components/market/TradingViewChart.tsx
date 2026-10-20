@@ -19,6 +19,7 @@ export interface LiveElliottPattern {
 }
 export interface LiveEntryScenario {
   id: string; direction: "LONG" | "SHORT"; setup_type: string; status: string;
+  trade_id?: string;
   entry_type?: "LIMIT" | "MARKET" | "STOP"; entry_zone_low: number; entry_zone_high: number;
   created_at: number; expires_at: number;
   entry_model?: string;
@@ -48,7 +49,7 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
   const [selectedEntryId,setSelectedEntryId] = useState("");
   const [isFullscreen,setIsFullscreen] = useState(false);
   const [windowCenter,setWindowCenter] = useState<number | null>(null);
-  const chartCandles = useMemo(() => candleWindow(candles,windowCenter,5000),[candles,windowCenter]);
+  const chartCandles = useMemo(() => candleWindow(candles,windowCenter,10_000),[candles,windowCenter]);
   useEffect(() => {
     const container = ref.current; if (!container) return;
     const chart = createChart(container, { width: container.clientWidth, height: container.clientHeight || 560,
@@ -166,6 +167,7 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
         }
       }
     });
+    const historicalTradeIds = new Set(visibleTrades.map((trade) => trade.id));
     visibleEntries.forEach((scenario) => {
       const start = nearestTimestamp(orderedCandles,scenario.created_at);
       const end = nearestTimestamp(orderedCandles,Math.min(scenario.expires_at,orderedCandles.at(-1)?.timestamp ?? scenario.expires_at));
@@ -181,11 +183,28 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
         line.setData([{ time: chartTime(start), value: entry }, { time: chartTime(end), value: entry }]);
         waveSeriesRef.current.push(line);
       }
-      markers.push({ time: chartTime(start), position: scenario.direction === "LONG" ? "belowBar" : "aboveBar",
-        color, shape: scenario.direction === "LONG" ? "arrowUp" : "arrowDown",
-        text: `Вход · ${scenario.origin === "LIVE" ? "LIVE" : "История"} · ${entryResultLabel(result)} · ${scenario.direction} · Модель: ${scenario.entry_model ?? scenario.entry_type ?? "—"}` });
+      if (!historicalTradeIds.has(scenario.trade_id ?? scenario.id)) {
+        markers.push({ time: chartTime(start), position: scenario.direction === "LONG" ? "belowBar" : "aboveBar",
+          color, shape: scenario.direction === "LONG" ? "arrowUp" : "arrowDown",
+          text: `Вход · ${scenario.origin === "LIVE" ? "LIVE" : "История"} · ${entryResultLabel(result)} · ${scenario.direction} · Модель: ${scenario.entry_model ?? scenario.entry_type ?? "—"}` });
+      }
     });
     visibleTrades.forEach((trade) => {
+      const entryTime=nearestTimestamp(orderedCandles,trade.entry_time);
+      const exitTime=nearestTimestamp(orderedCandles,trade.exit_time);
+      if (entryTime !== exitTime) {
+        const tradeLine=chart.addSeries(LineSeries,{ color:trade.pnl >= 0 ? "#26a69a" : "#ef5350",lineWidth:2,
+          lineStyle:2,priceLineVisible:false,lastValueVisible:false,title:"" });
+        tradeLine.setData([
+          { time:chartTime(entryTime),value:trade.entry_price },
+          { time:chartTime(exitTime),value:trade.exit_price },
+        ]);
+        waveSeriesRef.current.push(tradeLine);
+      }
+      markers.push({ time:chartTime(entryTime),position:trade.direction === "LONG" ? "belowBar" : "aboveBar",
+        color:trade.direction === "LONG" ? "#2e7d32" : "#c62828",
+        shape:trade.direction === "LONG" ? "arrowUp" : "arrowDown",
+        text:`Сделка · вход · ${trade.direction} · ${trade.entry_price}` });
       markers.push({ time:chartTime(nearestTimestamp(orderedCandles,trade.exit_time)),
         position:trade.pnl >= 0 ? "aboveBar" : "belowBar",color:trade.pnl >= 0 ? "#26a69a" : "#ef5350",
         shape:"square",text:`Выход · ${trade.pnl >= 0 ? "+" : ""}${trade.pnl.toFixed(2)} · ${trade.reason}` });
@@ -267,13 +286,27 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
     </Paper>}
     {!isFullscreen && historicalTrades.length > 0 && <Paper variant="outlined" sx={{ mt:1,p:1.5,bgcolor:"rgba(255,255,255,.02)" }}>
       <Typography variant="subtitle2" sx={{ mb:1 }}>Исторические paper-сделки · не входят в общий PnL</Typography>
-      <Stack spacing={.5}>{[...historicalTrades].sort((left,right) => right.entry_time-left.entry_time).slice(0,20).map((trade) =>
-        <Stack key={trade.id} direction={{ xs:"column",sm:"row" }} sx={{ gap:1,py:.6,borderBottom:1,borderColor:"divider" }}>
+      <Stack spacing={.5}>{[...historicalTrades].sort((left,right) => right.entry_time-left.entry_time).slice(0,20).map((trade) => {
+        const focus = () => {
+          const padding=Math.max(60_000,(trade.exit_time-trade.entry_time)*.25);
+          const range={ from:chartTime(trade.entry_time-padding),to:chartTime(trade.exit_time+padding) };
+          const first=chartCandles[0]?.timestamp;const last=chartCandles.at(-1)?.timestamp;
+          if (first != null && last != null && trade.entry_time >= first && trade.exit_time <= last) {
+            chartRef.current?.timeScale().setVisibleRange(range);
+          } else {
+            pendingFocusRef.current=range;setWindowCenter(trade.entry_time);
+          }
+        };
+        return <Stack key={trade.id} direction={{ xs:"column",sm:"row" }} role="button" tabIndex={0}
+          onClick={focus} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") focus(); }}
+          sx={{ gap:1,py:.6,px:.5,borderBottom:1,borderColor:"divider",borderRadius:1,cursor:"pointer",
+            "&:hover":{ bgcolor:"action.hover" },"&:focus-visible":{ outline:"2px solid",outlineColor:"primary.main" } }}>
           <Typography variant="body2" color={trade.direction === "LONG" ? "success.light" : "error.light"} sx={{ minWidth:55,fontWeight:700 }}>{trade.direction}</Typography>
           <Typography variant="caption" sx={{ minWidth:170 }}>{formatDubaiTimestamp(trade.entry_time)} → {formatDubaiTimestamp(trade.exit_time)}</Typography>
           <Typography variant="caption" sx={{ minWidth:180 }}>Вход {trade.entry_price.toLocaleString("ru-RU")} · выход {trade.exit_price.toLocaleString("ru-RU")}</Typography>
           <Typography variant="body2" color={trade.pnl >= 0 ? "success.main" : "error.main"} sx={{ fontWeight:700 }}>{trade.pnl >= 0 ? "+" : ""}{trade.pnl.toFixed(2)} ({trade.pnl_percent.toFixed(2)}%)</Typography>
-        </Stack>)}</Stack>
+        </Stack>;
+      })}</Stack>
     </Paper>}
   </Paper>;
 }
