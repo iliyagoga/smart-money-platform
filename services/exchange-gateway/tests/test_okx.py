@@ -1,7 +1,8 @@
 from src.okx import auth_headers,book,candle,trade,ws_login
 import pytest
 from pydantic import ValidationError
-from src.service import ExchangeGateway,incremental_start,instrument_spec,okx_ack,okx_error_details,price_to_tick
+from decimal import Decimal
+from src.service import ExchangeGateway,attached_exit_orders,incremental_start,instrument_spec,okx_ack,okx_error_details,price_to_tick
 from src.settings import Settings
 def test_signature_matches_known_hmac():
     h=auth_headers("k","s","p","GET","/api/v5/account/balance",stamp="2020-01-01T00:00:00.000Z");assert h["OK-ACCESS-SIGN"]=="3+YzNZYq3N3si/o/YkbHvC4RpV8WeOY5ZpO7abfFcYA=";assert h["x-simulated-trading"]=="1"
@@ -31,6 +32,21 @@ def test_swap_contract_sizes_are_converted_to_base_asset_units():
 def test_price_is_rounded_to_exchange_tick():
     assert price_to_tick(126.6408,.01)=="126.64"
     assert price_to_tick(130.4784,.01)=="130.48"
+
+def test_split_take_profits_cover_entry_and_keep_one_structural_stop():
+    orders,metadata=attached_exit_orders("00000000-0000-0000-0000-000000000001",
+      Decimal("10"),Decimal("0.01"),.1,[110,120],[.4,.6],95)
+    take_profits=[item for item in orders if "tpTriggerPx" in item]
+    stops=[item for item in orders if "slTriggerPx" in item]
+    assert [Decimal(item["sz"]) for item in take_profits]==[Decimal("4"),Decimal("6")]
+    assert sum(Decimal(item["sz"]) for item in take_profits)==Decimal("10")
+    assert len(stops)==1 and stops[0]["slTriggerPx"]=="95.0"
+    assert {value["kind"] for value in metadata.values()}=={"TAKE_PROFIT","STOP_LOSS"}
+
+def test_split_take_profit_rounding_assigns_remainder_to_last_target():
+    orders,_=attached_exit_orders("00000000-0000-0000-0000-000000000001",
+      Decimal("3"),Decimal("1"),.1,[110,120],[.5,.5],95)
+    assert [item["sz"] for item in orders if "tpTriggerPx" in item]==["1","2"]
 
 def test_okx_ack_preserves_detailed_rejection():
     with pytest.raises(ValueError,match='"sCode":"51000"'):

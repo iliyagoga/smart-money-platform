@@ -42,6 +42,46 @@ def instrument_spec(item):
         "instrument_family":item.get("instFamily"),"fee_group_id":item.get("groupId"),"state":item.get("state"),
     }
 
+def attached_exit_orders(local_id,contracts,lot_contracts,tick_size,take_profit_prices,
+                         target_allocations,stop_loss_price):
+    """Build OKX attached exits, including split TPs and one SL for the remainder."""
+    targets=list(take_profit_prices or [])
+    if len(targets)>10:raise ValueError("OKX supports at most 10 split take-profit targets")
+    root="SMA"+local_id.replace("-","")[:26]
+    orders=[];metadata={}
+    if len(targets)<=1:
+        attached={"attachAlgoClOrdId":root+"X"}
+        if targets:
+            attached.update({"tpTriggerPx":price_to_tick(targets[0],tick_size),
+                             "tpTriggerPxType":"last","tpOrdPx":"-1"})
+        if stop_loss_price is not None:
+            attached.update({"slTriggerPx":price_to_tick(stop_loss_price,tick_size),
+                             "slTriggerPxType":"last","slOrdPx":"-1"})
+        if len(attached)>1:
+            orders.append(attached);metadata[attached["attachAlgoClOrdId"]]={"kind":"PROTECTIVE"}
+        return orders,metadata
+    if len(target_allocations)!=len(targets):
+        raise ValueError("Split take-profit allocations must match the number of targets")
+    allocations=[Decimal(str(value)) for value in target_allocations]
+    if any(value<=0 for value in allocations) or abs(sum(allocations)-Decimal("1"))>Decimal("0.000001"):
+        raise ValueError("Split take-profit allocations must be positive and sum to one")
+    allocated=Decimal("0")
+    for index,(target,allocation) in enumerate(zip(targets,allocations)):
+        size=(contracts-allocated if index==len(targets)-1 else
+              ((contracts*allocation)//lot_contracts)*lot_contracts)
+        if size<=0:raise ValueError("Order quantity is too small for the configured split take-profits")
+        allocated+=size;algo_id=root+f"T{index}"
+        orders.append({"attachAlgoClOrdId":algo_id,"tpTriggerPx":price_to_tick(target,tick_size),
+                       "tpTriggerPxType":"last","tpOrdPx":"-1","sz":format(size,"f")})
+        metadata[algo_id]={"kind":"TAKE_PROFIT","target_price":float(target)}
+    if allocated!=contracts:raise ValueError("Split take-profit sizes do not cover the entry order")
+    if stop_loss_price is not None:
+        algo_id=root+"S"
+        orders.append({"attachAlgoClOrdId":algo_id,"slTriggerPx":price_to_tick(stop_loss_price,tick_size),
+                       "slTriggerPxType":"last","slOrdPx":"-1","amendPxOnTriggerType":"0"})
+        metadata[algo_id]={"kind":"STOP_LOSS"}
+    return orders,metadata
+
 class ExchangeGateway:
     def __init__(self,s):
         self.s=s;self.client=None;self.db=None;self.redis=None;self.tasks=set();self.connected={"public":False,"business":False,"private":False};self.last_error=None
@@ -76,6 +116,7 @@ class ExchangeGateway:
           local_order_id uuid PRIMARY KEY,cl_ord_id text UNIQUE NOT NULL,exchange_order_id text,symbol text NOT NULL,
           status text NOT NULL,payload jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now())""")
         await self.db.execute("ALTER TABLE exchange_orders ADD COLUMN IF NOT EXISTS exit_algo_cl_ord_id text")
+        await self.db.execute("ALTER TABLE exchange_orders ADD COLUMN IF NOT EXISTS exit_algos jsonb NOT NULL DEFAULT '{}'")
         await self.db.execute("CREATE UNIQUE INDEX IF NOT EXISTS exchange_orders_exit_algo_idx ON exchange_orders(exit_algo_cl_ord_id) WHERE exit_algo_cl_ord_id IS NOT NULL")
         await self.db.execute("""CREATE TABLE IF NOT EXISTS live_trading_logs(
           id bigserial PRIMARY KEY,local_order_id uuid,symbol text NOT NULL,execution_mode text NOT NULL,
@@ -210,10 +251,12 @@ class ExchangeGateway:
             if item.get("tag")!="SMPELLIOTT" and not (cl_ord_id.startswith("SMP") or algo_cl_ord_id.startswith("SMA")):continue
             row=await self.db.fetchrow("""SELECT eo.local_order_id,o.data->>'execution_mode' AS execution_mode,
                 coalesce(ta.contract_value,1)::float8 AS contract_value,
-                eo.exit_algo_cl_ord_id=$2 AS position_exit
+                (eo.exit_algo_cl_ord_id=$2 OR coalesce(eo.exit_algos,'{}'::jsonb) ? $2) AS position_exit,
+                coalesce(eo.exit_algos,'{}'::jsonb)->$2 AS exit_metadata
               FROM exchange_orders eo LEFT JOIN orders o ON o.id=eo.local_order_id
               LEFT JOIN trading_assets ta ON ta.symbol=eo.symbol
-              WHERE eo.cl_ord_id=$1 OR eo.exit_algo_cl_ord_id=$2""",cl_ord_id,algo_cl_ord_id)
+              WHERE eo.cl_ord_id=$1 OR eo.exit_algo_cl_ord_id=$2
+                 OR coalesce(eo.exit_algos,'{}'::jsonb) ? $2""",cl_ord_id,algo_cl_ord_id)
             if not row:continue
             state=item.get("state","").upper();mapping={"LIVE":"OPEN","PARTIALLY_FILLED":"PARTIALLY_FILLED","FILLED":"FILLED","CANCELED":"CANCELLED","MMP_CANCELED":"CANCELLED"};status=mapping.get(state,state)
             if not row["position_exit"]:
@@ -221,7 +264,9 @@ class ExchangeGateway:
             await self.record_trading_log({"id":str(row["local_order_id"]),"symbol":item.get("instId","UNKNOWN"),
               "execution_mode":row["execution_mode"] or ("DEMO" if self.s.okx_demo else "PRODUCTION")},
               "ORDER_UPDATE",status,{"exchange_order_id":item.get("ordId"),"exchange":item})
-            await self.redis.xadd("trading.command",{"data":json.dumps({"event_type":"exchange.order_updated","payload":{"order_id":str(row["local_order_id"]),"exchange_order_id":item.get("ordId"),"status":status,"filled_price":float(item.get("avgPx") or item.get("fillPx") or 0),"filled_quantity":float(item.get("accFillSz") or 0)*float(row["contract_value"]),"raw_state":state,"position_exit":bool(row["position_exit"]),"reason":"EXCHANGE_PROTECTIVE_EXIT" if row["position_exit"] else None}})},maxlen=100000,approximate=True)
+            exit_metadata=(json.loads(row["exit_metadata"]) if isinstance(row["exit_metadata"],str)
+                           else row["exit_metadata"] or {})
+            await self.redis.xadd("trading.command",{"data":json.dumps({"event_type":"exchange.order_updated","payload":{"order_id":str(row["local_order_id"]),"exchange_order_id":item.get("ordId"),"status":status,"filled_price":float(item.get("avgPx") or item.get("fillPx") or 0),"filled_quantity":float(item.get("accFillSz") or 0)*float(row["contract_value"]),"raw_state":state,"position_exit":bool(row["position_exit"]),"protective_id":algo_cl_ord_id or None,"protective_kind":exit_metadata.get("kind"),"target_price":exit_metadata.get("target_price"),"reason":"EXCHANGE_PROTECTIVE_EXIT" if row["position_exit"] else None}})},maxlen=100000,approximate=True)
     async def ws_request(self,op,args,request_id):
         await asyncio.wait_for(self.private_ready.wait(),timeout=15);ws=self.websockets.get("private")
         if not ws:raise ValueError("OKX private WebSocket is unavailable")
@@ -327,14 +372,12 @@ class ExchangeGateway:
         local_id=payload["id"];cl_ord_id="SMP"+local_id.replace("-","")[:29]
         args={"instId":payload["symbol"],"tdMode":margin_mode,"side":payload["side"].lower(),"ordType":payload["type"].lower(),"sz":format(contracts,"f"),"clOrdId":cl_ord_id,"tag":"SMPELLIOTT"}
         if payload.get("price") is not None and payload["type"]!="MARKET":args["px"]=price_to_tick(payload["price"],spec["tick_size"])
-        attached={};exit_algo_cl_ord_id=None
-        if payload.get("stop_loss_price") is not None:attached.update({"slTriggerPx":price_to_tick(payload["stop_loss_price"],spec["tick_size"]),"slOrdPx":"-1"})
-        if payload.get("take_profit_prices"):attached.update({"tpTriggerPx":price_to_tick(payload["take_profit_prices"][0],spec["tick_size"]),"tpOrdPx":"-1"})
-        if attached:
-            exit_algo_cl_ord_id="SMA"+local_id.replace("-","")[:29];attached["attachAlgoClOrdId"]=exit_algo_cl_ord_id
-            args["attachAlgoOrds"]=[attached]
+        attached,exit_algos=attached_exit_orders(local_id,contracts,lot_contracts,spec["tick_size"],
+          payload.get("take_profit_prices",[]),payload.get("target_allocations",[]),payload.get("stop_loss_price"))
+        if attached:args["attachAlgoOrds"]=attached
+        exit_algo_cl_ord_id=next(iter(exit_algos),None) if len(exit_algos)==1 else None
         if payload.get("reduce_only"):args["reduceOnly"]=True
-        await self.db.execute("INSERT INTO exchange_orders(local_order_id,cl_ord_id,symbol,status,payload,exit_algo_cl_ord_id) VALUES($1::uuid,$2,$3,'SUBMITTING',$4::jsonb,$5) ON CONFLICT(local_order_id) DO NOTHING",local_id,cl_ord_id,payload["symbol"],json.dumps(args),exit_algo_cl_ord_id)
+        await self.db.execute("INSERT INTO exchange_orders(local_order_id,cl_ord_id,symbol,status,payload,exit_algo_cl_ord_id,exit_algos) VALUES($1::uuid,$2,$3,'SUBMITTING',$4::jsonb,$5,$6::jsonb) ON CONFLICT(local_order_id) DO NOTHING",local_id,cl_ord_id,payload["symbol"],json.dumps(args),exit_algo_cl_ord_id,json.dumps(exit_algos))
         await self.record_trading_log(payload,"ORDER_SUBMITTING","SUBMITTING",{"request":args})
         ack=okx_ack(await self.private("POST","/api/v5/trade/order",args),"order")
         await self.db.execute("UPDATE exchange_orders SET exchange_order_id=$2,status='ACCEPTED',updated_at=now() WHERE local_order_id=$1::uuid",local_id,ack.get("ordId"))

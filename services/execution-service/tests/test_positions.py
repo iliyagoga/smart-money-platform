@@ -171,6 +171,24 @@ def test_exchange_partial_fills_use_cumulative_quantity_and_incremental_price():
         assert service.fill.await_args_list[1].kwargs=={"cumulative_quantity":10,"final":True}
     asyncio.run(check())
 
+def test_each_live_take_profit_and_stop_tracks_its_own_cumulative_fill():
+    async def check():
+        service=ExecutionService("postgresql://unused","redis://unused")
+        order=Order(symbol="BTC-USDT",side="BUY",type="LIMIT",price=100,quantity=10,status="FILLED")
+        p=position(order_id=order.id,take_profit_prices=[110,120],target_allocations=[.5,.5],execution_mode="DEMO")
+        service.orders[order.id]=order;service.positions[p.id]=p;service.close=AsyncMock()
+        await service.on_exchange_order({"order_id":order.id,"position_exit":True,"protective_id":"tp-1",
+          "protective_kind":"TAKE_PROFIT","target_price":110,"status":"FILLED","filled_price":110,"filled_quantity":5})
+        await service.on_exchange_order({"order_id":order.id,"position_exit":True,"protective_id":"tp-2",
+          "protective_kind":"TAKE_PROFIT","target_price":120,"status":"FILLED","filled_price":120,"filled_quantity":5})
+        await service.on_exchange_order({"order_id":order.id,"position_exit":True,"protective_id":"sl",
+          "protective_kind":"STOP_LOSS","status":"FILLED","filled_price":95,"filled_quantity":5})
+        assert [call.args[1] for call in service.close.await_args_list]==[5,5,5]
+        assert [call.args[3] for call in service.close.await_args_list]==[
+          "FIXED_RR_TARGET","FIXED_RR_TARGET","STRUCTURAL_STOP"]
+        assert p.take_profit_prices==[] and p.targets_hit==2
+    asyncio.run(check())
+
 def test_live_candles_only_mark_positions_and_do_not_close_them_locally():
     async def check():
         service=ExecutionService("postgresql://unused","redis://unused")
@@ -183,10 +201,11 @@ def test_live_candles_only_mark_positions_and_do_not_close_them_locally():
 
 def test_live_config_rejects_features_not_protected_by_exchange_orders():
     config={"elliott":{"takeProfitCount":2,"breakEvenAtOneR":False}}
-    with pytest.raises(ValueError,match="exactly one"):
-        ExecutionService.validate_live_config(config,"DEMO")
+    ExecutionService.validate_live_config(config,"DEMO")
     with pytest.raises(ValueError,match="break-even"):
         ExecutionService.validate_live_config({"elliott":{"takeProfitCount":1,"breakEvenAtOneR":True}},"PRODUCTION")
+    with pytest.raises(ValueError,match="PARTIAL_CLOSE"):
+        ExecutionService.validate_live_config({"elliott":{"takeProfitCount":2,"firstTakeAction":"MOVE_TO_BREAK_EVEN"}},"DEMO")
     with pytest.raises(ValueError,match="LIMIT"):
         ExecutionService.validate_live_config({"elliott":{"takeProfitCount":1,"entryModel":"CHOCH_MARKET"}},"DEMO")
     ExecutionService.validate_live_config(config,"PAPER")

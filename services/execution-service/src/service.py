@@ -73,10 +73,11 @@ class ExecutionService:
         elliott=config.get("elliott",{})
         if not isinstance(elliott,dict):raise ValueError("elliott config must be an object")
         def value(camel,snake,default):return elliott.get(camel,elliott.get(snake,default))
-        if int(value("takeProfitCount","take_profit_count",2))!=1:
-            raise ValueError("DEMO/PRODUCTION currently supports exactly one take-profit target")
         if bool(value("breakEvenAtOneR","break_even_at_one_r",False)):
             raise ValueError("DEMO/PRODUCTION does not yet support automatic break-even amendments")
+        if (int(value("takeProfitCount","take_profit_count",2))>1
+                and str(value("firstTakeAction","first_take_action","PARTIAL_CLOSE"))!="PARTIAL_CLOSE"):
+            raise ValueError("DEMO/PRODUCTION multiple targets require PARTIAL_CLOSE at TP1")
         supported_entries={"CHOCH_RETRACE","WAVE1_BREAK_RETRACE","DISPLACEMENT_RETRACE"}
         if str(value("entryModel","entry_model","CHOCH_RETRACE")) not in supported_entries:
             raise ValueError("DEMO/PRODUCTION currently supports LIMIT entry models only")
@@ -343,15 +344,29 @@ class ExecutionService:
             if not position:return
             price=float(payload.get("filled_price") or 0)
             if price<=0:raise ValueError("Protective exit has no execution price")
+            protective_id=str(payload.get("protective_id") or "legacy")
+            processed=position.protective_filled_quantities.get(protective_id,0)
+            prior_notional=position.protective_filled_notionals.get(protective_id,0)
             cumulative=float(payload.get("filled_quantity") or (position.quantity if status=="FILLED" else 0))
-            delta=max(0,cumulative-position.protective_filled_quantity)
+            delta=max(0,cumulative-processed)
             if delta<=1e-12:return
-            incremental_price=max(0,(price*cumulative-position.protective_filled_notional)/delta)
+            incremental_price=max(0,(price*cumulative-prior_notional)/delta)
             if incremental_price<=0:raise ValueError("Protective exit has an invalid cumulative average price")
-            position.protective_filled_quantity=cumulative
-            position.protective_filled_notional=price*cumulative
+            position.protective_filled_quantities[protective_id]=cumulative
+            position.protective_filled_notionals[protective_id]=price*cumulative
+            position.protective_filled_quantity=sum(position.protective_filled_quantities.values())
+            position.protective_filled_notional=sum(position.protective_filled_notionals.values())
+            kind=payload.get("protective_kind")
             profitable=(incremental_price>=position.entry_price if position.direction=="LONG" else incremental_price<=position.entry_price)
-            reason="FIXED_RR_TARGET" if profitable else "STRUCTURAL_STOP"
+            reason=("FIXED_RR_TARGET" if kind=="TAKE_PROFIT" or (kind not in {"STOP_LOSS"} and profitable)
+                    else "STRUCTURAL_STOP")
+            if kind=="TAKE_PROFIT" and status=="FILLED":
+                target=float(payload.get("target_price") or incremental_price)
+                if position.take_profit_prices:
+                    target_index=min(range(len(position.take_profit_prices)),key=lambda i:abs(position.take_profit_prices[i]-target))
+                    position.take_profit_prices.pop(target_index)
+                    if target_index<len(position.target_allocations):position.target_allocations.pop(target_index)
+                position.targets_hit+=1
             await self.close(position,delta,incremental_price,reason,exchange_fill=True)
             return
         if status in {"FILLED","PARTIALLY_FILLED"}:
