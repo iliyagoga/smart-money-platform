@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from math import ceil, floor, sqrt
 from statistics import mean, pstdev
+from typing import Callable
 from uuid import NAMESPACE_URL, uuid5
 
 from .models import BacktestConfig, DirectionMode, ElliottEntryModel, ElliottMacroFilter
@@ -375,14 +376,17 @@ def _round_trade_prices(entry: float, stop: float, targets: list[float], directi
 
 
 def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestConfig,
-                       evaluation_start: int | None = None) -> dict:
+                       evaluation_start: int | None = None,
+                       progress_callback: Callable[[int, str], None] | None = None) -> dict:
     ec = config.elliott
     structure = sorted(candles_by_tf[ec.structure_timeframe], key=lambda item: item["timestamp"])
     entry = sorted(candles_by_tf[ec.entry_timeframe], key=lambda item: item["timestamp"])
     macro = sorted(candles_by_tf[ec.macro_timeframe], key=lambda item: item["timestamp"])
     if not entry:
         raise ValueError(f"no Elliott entry candles for {ec.entry_timeframe}")
+    if progress_callback:progress_callback(5,"Поиск Elliott-паттернов")
     patterns, structure_pivots, entry_pivots = detect_patterns(structure, entry, macro, ec)
+    if progress_callback:progress_callback(30,"Расчёт сделок")
     entry_true_ranges = _true_ranges(entry)
     entry_atr = _rolling(entry_true_ranges, ec.atr_period)
     entry_long_atr = _rolling(entry_true_ranges, min(ec.atr_period * 3, 500))
@@ -448,6 +452,8 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
         position = None
 
     for candle_index, candle in enumerate(entry):
+        if progress_callback and candle_index % max(1,len(entry)//65)==0:
+            progress_callback(min(95,30+int(candle_index/max(1,len(entry))*65)),"Расчёт сделок")
         timestamp = int(candle["timestamp"])
         available_at = timestamp + TIMEFRAME_MILLISECONDS[ec.entry_timeframe]
         if evaluation_start is not None and timestamp < evaluation_start:
@@ -772,6 +778,7 @@ def run_elliott_replay(candles_by_tf: dict[str, list[dict]], config: BacktestCon
     counts: dict[str, int] = {}
     for item in patterns:
         counts[item.state] = counts.get(item.state, 0) + 1
+    if progress_callback:progress_callback(100,"Завершение расчёта")
     return {"initial_capital": config.initial_capital, "final_capital": capital,
             "net_profit": capital - config.initial_capital,
             "total_return_percent": (capital / config.initial_capital - 1) * 100,

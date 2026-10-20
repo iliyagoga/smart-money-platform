@@ -545,7 +545,7 @@ class ExchangeGateway:
             await asyncio.sleep(min(8,.5*2**attempt))
         raise ValueError("OKX history request retry limit exceeded")
     async def create_history(self,job_id,symbol,timeframes,start,end,incremental=False,backfill=False):
-        statuses={timeframe:{"status":"QUEUED","ingested":0,"requests":0,"error":None} for timeframe in timeframes}
+        statuses={timeframe:{"status":"QUEUED","progress":0,"ingested":0,"requests":0,"error":None} for timeframe in timeframes}
         timeframe_from={}
         timeframe_to={}
         if incremental:
@@ -573,7 +573,8 @@ class ExchangeGateway:
             job_id,symbol,json.dumps(timeframes),start,end,0,json.dumps(statuses),json.dumps(timeframe_from),
             "BACKFILL" if backfill else ("INCREMENTAL" if incremental else "FULL"), json.dumps(timeframe_to),
         )
-        self.schedule_history(job_id);return await self.history_job(job_id)
+        self.schedule_history(job_id)
+        job=await self.history_job(job_id);await self.publish_history(job);return job
     def schedule_history(self,job_id):
         key=str(job_id)
         if key in self.running_history:return
@@ -601,7 +602,7 @@ class ExchangeGateway:
             if action=="resume":item["error"]=None
         await self.db.execute("UPDATE exchange_history_jobs SET status=$2,error=NULL,timeframe_status=$3::jsonb,updated_at=now() WHERE id=$1::uuid",job_id,target,json.dumps(statuses))
         if action=="resume":self.schedule_history(job_id)
-        return await self.history_job(job_id)
+        changed=await self.history_job(job_id);await self.publish_history(changed);return changed
     async def download_history(self,job_id):
         async with self.history_semaphore:
             await self.db.execute("UPDATE exchange_history_jobs SET status='RUNNING',updated_at=now() WHERE id=$1::uuid AND status='QUEUED'",job_id)
@@ -614,14 +615,17 @@ class ExchangeGateway:
                 failed={key:value for key,value in current["timeframe_status"].items() if value["status"]=="FAILED"}
                 if failed:
                     error="; ".join(f"{key}: {value['error']}" for key,value in failed.items())
-                    await self.db.execute("UPDATE exchange_history_jobs SET status='FAILED',error=$2,updated_at=now() WHERE id=$1::uuid",job_id,error[:2000]);return
+                    await self.db.execute("UPDATE exchange_history_jobs SET status='FAILED',error=$2,updated_at=now() WHERE id=$1::uuid",job_id,error[:2000])
+                    await self.publish_history(await self.history_job(job_id));return
                 await self.db.execute("UPDATE exchange_history_jobs SET status='COMPLETED',progress=100,updated_at=now() WHERE id=$1::uuid",job_id)
+                await self.publish_history(await self.history_job(job_id))
                 self.add_task(self.rebuild_elliott(job["symbol"],job["timeframes"]))
             except asyncio.CancelledError:raise
             except Exception as exc:
                 await self.db.execute("UPDATE exchange_history_jobs SET status='FAILED',error=$2,updated_at=now() WHERE id=$1::uuid",job_id,str(exc)[:2000])
+                await self.publish_history(await self.history_job(job_id))
     async def download_timeframe(self,job_id,job,timeframe):
-        details=job["timeframe_status"].get(timeframe,{"status":"QUEUED","ingested":0,"requests":0,"error":None})
+        details=job["timeframe_status"].get(timeframe,{"status":"QUEUED","progress":0,"ingested":0,"requests":0,"error":None})
         if details["status"]=="COMPLETED":return
         details["status"]="RUNNING";details["error"]=None
         await self.update_timeframe(job_id,timeframe,details)
@@ -646,6 +650,11 @@ class ExchangeGateway:
                 if cursor is not None and oldest>=int(cursor):
                     raise ValueError(f"OKX history pagination stalled at {oldest}")
                 cursor=oldest
+                progress_from=lower_bound if lower_bound is not None else job["from"]
+                progress_to=upper_bound if upper_bound is not None else job["to"]
+                if progress_from is not None and progress_to is not None:
+                    span=max(1,int(progress_to)-int(progress_from))
+                    details["progress"]=min(99,max(1,int((int(progress_to)-oldest)/span*100)))
                 await self.db.execute(
                     """UPDATE exchange_history_jobs SET
                        cursors=jsonb_set(cursors,ARRAY[$2],to_jsonb($3::bigint),true),
@@ -655,7 +664,7 @@ class ExchangeGateway:
                 )
                 await self.update_timeframe(job_id,timeframe,details)
                 if len(page)<300 or (lower_bound is not None and oldest<=lower_bound):break
-            details["status"]="COMPLETED";await self.update_timeframe(job_id,timeframe,details)
+            details["status"]="COMPLETED";details["progress"]=100;await self.update_timeframe(job_id,timeframe,details)
             completed=await self.db.fetchval(
                 "SELECT count(*) FROM exchange_history_jobs j CROSS JOIN LATERAL jsonb_each(j.timeframe_status) e WHERE j.id=$1::uuid AND e.value->>'status'='COMPLETED'",
                 job_id,
@@ -669,6 +678,16 @@ class ExchangeGateway:
             "UPDATE exchange_history_jobs SET timeframe_status=jsonb_set(timeframe_status,ARRAY[$2],$3::jsonb,true),updated_at=now() WHERE id=$1::uuid",
             job_id,timeframe,json.dumps(details),
         )
+        job=await self.history_job(job_id)
+        progress=int(sum(item.get("progress",100 if item["status"]=="COMPLETED" else 0)
+                         for item in job["timeframe_status"].values())/max(1,len(job["timeframe_status"])))
+        await self.db.execute("UPDATE exchange_history_jobs SET progress=$2 WHERE id=$1::uuid AND status<>'COMPLETED'",job_id,min(99,progress))
+        job["progress"]=100 if job["status"]=="COMPLETED" else min(99,progress)
+        await self.publish_history(job)
+    async def publish_history(self,job):
+        if not job:return
+        event={"event_type":"history.loading_progress","source":"exchange-gateway","timestamp":int(time()*1000),"payload":job}
+        await self.redis.publish("history.update",json.dumps(event,separators=(",",":"),default=str))
     async def rebuild_elliott(self,symbol,timeframes):
         try:
             response=await self.client.post(

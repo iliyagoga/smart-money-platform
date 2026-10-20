@@ -40,7 +40,7 @@ export interface PlatformEvent {
   timestamp: string;
   source?: string;
   payload?: { symbol?: string; timeframe?: string; timestamp?: number; open?: number; high?: number;
-    low?: number; close?: number; volume?: number };
+    low?: number; close?: number; volume?: number; [key: string]: unknown };
 }
 
 export interface ServicesResponse {

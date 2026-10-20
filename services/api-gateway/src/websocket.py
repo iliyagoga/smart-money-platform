@@ -2,8 +2,8 @@ import asyncio,json
 from time import time
 from fastapi import HTTPException,WebSocket,WebSocketDisconnect
 
-CHANNELS={"candle.update","trade.executed","orderbook.updated","scenario.update","position.update","trading.config","system.state","system.control"}
-SUBSCRIPTION_EVENTS={"candle.*","trade.executed","orderbook.updated","scenario.*","order.*","position.*","trading.config.*","system.state"}
+CHANNELS={"candle.update","trade.executed","orderbook.updated","scenario.update","position.update","trading.config","history.update","system.state","system.control"}
+SUBSCRIPTION_EVENTS={"candle.*","trade.executed","orderbook.updated","scenario.*","order.*","position.*","trading.config.*","history.*","system.state"}
 
 def websocket_token(ws:WebSocket)->str|None:
     protocols=[x.strip() for x in ws.headers.get("sec-websocket-protocol","").split(",")]

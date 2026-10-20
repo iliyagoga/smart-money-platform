@@ -1,5 +1,5 @@
 "use client";
-import { Accordion, AccordionDetails, AccordionSummary, Alert, Button, Chip, MenuItem, Paper, Stack, TextField, Typography } from "@mui/material";
+import { Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, Chip, LinearProgress, MenuItem, Paper, Stack, TextField, Typography } from "@mui/material";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BacktestSettingsForm } from "../../components/backtest/BacktestSettingsForm";
 import { SectionPage } from "../../components/layout/SectionPage";
@@ -22,9 +22,13 @@ type ElliottPatternsResponse = { symbol: string; patterns: LiveElliottPattern[];
 type LiveEntriesResponse = { symbol: string; entries: LiveEntryScenario[]; total: number };
 type ElliottHistoryResponse = {
   symbol: string; status: "NOT_BUILT" | "BUILDING" | "WAITING_FOR_DATA" | "COMPLETED" | "FAILED";
-  error?: string; message?: string; updated_at?: number;
+  error?: string; message?: string; updated_at?: number; progress?: number; phase?: string;
   patterns: LiveElliottPattern[]; entries: LiveEntryScenario[]; trades: HistoricalPaperTrade[];
 };
+type HistoryStatus = "QUEUED" | "RUNNING" | "PAUSED" | "CANCELLED" | "COMPLETED" | "FAILED";
+type HistoryJob = { id:string;symbol:string;status:HistoryStatus;progress:number;ingested:number;
+  timeframe_status:Record<string,{ status:HistoryStatus;progress?:number;ingested:number;requests:number;error?:string }> };
+type CalculationProgress = { symbol:string;status:ElliottHistoryResponse["status"];progress:number;phase?:string;error?:string };
 type HistoricalPaperTrade = {
   id: string; direction: "LONG" | "SHORT"; entry_time: number; entry_price: number;
   exit_time: number; exit_price: number; pnl: number; pnl_percent: number; reason: string;
@@ -40,6 +44,8 @@ export default function MarketPage() {
   const [suppressedActiveAssets,setSuppressedActiveAssets]=useState<Set<string>>(()=>new Set());
   const [settingsExpanded,setSettingsExpanded]=useState(false);
   const [saving, setSaving] = useState(false); const [message, setMessage] = useState(""); const [selectedTf, setSelectedTf] = useState("M15");
+  const [historyJob,setHistoryJob]=useState<HistoryJob>();
+  const [calculationProgress,setCalculationProgress]=useState<CalculationProgress>();
   const tradingConfigs = useApiResource<TradingConfigsResponse>("/api/v1/execution/trading-configs");
   const serverActiveConfigs = useMemo(() => (tradingConfigs.data?.configs ?? []).filter((config) => config.status === "ACTIVE"), [tradingConfigs.data]);
   const activeConfigs = useMemo(
@@ -82,6 +88,34 @@ export default function MarketPage() {
   const reloadHistory = historicalElliott.reload;
   const reloadTradingConfigs=tradingConfigs.reload;
   useEffect(() => {
+    let active=true;setHistoryJob(undefined);
+    if (!viewed)return () => { active=false; };
+    void api<{jobs:HistoryJob[]}>("/api/v1/exchange/exchange/history?limit=50")
+      .then(({jobs}) => { if (active)setHistoryJob(jobs.find((item)=>item.symbol===viewed)); })
+      .catch(()=>undefined);
+    return () => { active=false; };
+  },[viewed]);
+  useEffect(() => {
+    if (!currentHistory)return;
+    setCalculationProgress({ symbol:viewed,status:currentHistory.status,
+      progress:currentHistory.status==="COMPLETED" ? 100 : currentHistory.progress ?? 0,
+      phase:currentHistory.phase,error:currentHistory.error });
+  },[currentHistory,viewed]);
+  useEffect(() => {
+    if (!viewed)return;
+    const historySocket=new EventSocket(["history.*"],[viewed]);
+    const unsubscribe=historySocket.subscribe((event) => {
+      if (event.payload?.symbol!==viewed)return;
+      if (event.event_type==="history.loading_progress")setHistoryJob(event.payload as unknown as HistoryJob);
+      if (event.event_type==="history.calculation_progress") {
+        const progress=event.payload as unknown as CalculationProgress;setCalculationProgress(progress);
+        if (["COMPLETED","FAILED","WAITING_FOR_DATA"].includes(progress.status))reloadHistory();
+      }
+    });
+    void historySocket.connect();
+    return () => { unsubscribe();historySocket.close(); };
+  },[viewed,reloadHistory]);
+  useEffect(() => {
     if (!viewed)return;
     const marketSocket=new EventSocket(["candle.*","scenario.*"],[viewed]);
     const unsubscribeMarket=marketSocket.subscribe((event) => {
@@ -115,7 +149,8 @@ export default function MarketPage() {
       const dataset = await api<{ timeframes: Array<{ timeframe: string; candles: number }> }>(`/api/v1/backtest/datasets/${encodeURIComponent(selected)}`).catch(() => ({ timeframes: [] }));
       const missing = elliottTimeframes.filter((timeframe) => !dataset.timeframes.some((item) => item.timeframe === timeframe && item.candles > 0));
       if (missing.length) {
-        await api("/api/v1/exchange/exchange/history", { method: "POST", body: JSON.stringify({ symbol: selected, timeframes: missing, from_timestamp: Date.now() - 180 * 86400000, to_timestamp: Date.now(), incremental: false, backfill: false }) });
+        const created=await api<HistoryJob>("/api/v1/exchange/exchange/history", { method: "POST", body: JSON.stringify({ symbol: selected, timeframes: missing, from_timestamp: Date.now() - 180 * 86400000, to_timestamp: Date.now(), incremental: false, backfill: false }) });
+        setHistoryJob(created);
         setMessage(`Для ${selected} запрошены свечи: ${missing.join(", ")}. Конфигурация сохраняется.`);
       }
       await api(`/api/v1/backtest/assets`, { method: "POST", body: JSON.stringify({ symbol: selected, category: "crypto" }) }).catch((error: unknown) => { if (!(error instanceof Error) || !error.message.startsWith("409")) throw error; });
@@ -163,7 +198,9 @@ export default function MarketPage() {
   };
   return <SectionPage title="Рынок" description="Регистрация Elliott-активов и отдельный просмотр их состояния."><Stack spacing={2}>
     <Paper variant="outlined" sx={{ p: { xs: 2, md: 3 }, width: "100%" }}><Stack spacing={1.5}><Typography variant="h6">Состояние актива</Typography>{activeAssets.length ? <><Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}><TextField fullWidth select label="Актив для просмотра" value={viewed} onChange={(e) => setViewSymbol(e.target.value)}>{activeAssets.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}</TextField><TextField fullWidth select label="Просматриваемый таймфрейм" value={selectedTf} onChange={(e) => setSelectedTf(e.target.value)} disabled={!availableTimeframes.length}>{availableTimeframes.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}</TextField><Button color="error" variant="contained" disabled={!viewed || saving} onClick={() => void removeLiveAsset()} sx={{ minWidth: 190, alignSelf: "center", borderRadius: 1, px: 2.5, py: .5, boxShadow: "none", textTransform: "none", fontWeight: 700, "&:hover": { boxShadow: "0 4px 12px rgba(211,47,47,.2)" } }}>Удалить актив</Button></Stack>
-      {currentHistory?.status === "BUILDING" && <Alert severity="info">Исторические paper-сделки рассчитываются на сервере…</Alert>}
+      <MarketProgress job={historyJob?.symbol===viewed ? historyJob : undefined}
+        calculation={calculationProgress?.symbol===viewed ? calculationProgress : undefined}
+        chartTimeframe={selectedTf} chartLoading={candles.loading} />
       {currentHistory?.status === "WAITING_FOR_DATA" && <Alert severity="warning">Исторический расчёт ждёт загрузки свечей.</Alert>}
       {currentHistory?.status === "FAILED" && <Alert severity="error">Не удалось рассчитать историю: {currentHistory.error}</Alert>}
       <TradingViewChart key={`${viewed}:${selectedTf}`} candles={candles.data?.candles ?? []} isLoading={candles.loading} elliottPatterns={displayedPatterns} entryScenarios={displayedEntries} historicalTrades={currentHistory?.trades ?? []} /></> : <EmptyState text="Нет активных активов для просмотра. Зарегистрируйте актив в настройках ниже." />}</Stack></Paper>
@@ -185,6 +222,42 @@ export default function MarketPage() {
     {message && <Alert severity={message.includes("сохранена") || message.includes("загружена") || message.includes("вставлена") || message.includes("удалён") ? "success" : "error"}>{message}</Alert>}
     {selectedConfig && <Paper variant="outlined" sx={{ p:{ xs:2,md:3 } }}><Stack spacing={2}><Stack direction="row" sx={{ alignItems:"center",justifyContent:"space-between" }}><Stack direction="row" spacing={1} sx={{ alignItems:"center" }}><Typography variant="h6">Конфигурация {selectedConfig.symbol}</Typography><Chip label={selectedConfig.mode} color={selectedConfig.mode === "PRODUCTION" ? "error" : selectedConfig.mode === "DEMO" ? "warning" : "default"} /></Stack><Button variant="contained" onClick={editActiveConfig}>Редактировать</Button></Stack><ConfigSummary value={selectedConfig.config} /></Stack></Paper>}
   </Stack></SectionPage>;
+}
+
+function MarketProgress({ job,calculation,chartTimeframe,chartLoading }:{
+  job?:HistoryJob;calculation?:CalculationProgress;chartTimeframe:string;chartLoading:boolean;
+}) {
+  const loadingActive=job && ["QUEUED","RUNNING","PAUSED"].includes(job.status);
+  const calculationActive=calculation && ["BUILDING","WAITING_FOR_DATA","FAILED"].includes(calculation.status);
+  if (!chartLoading && !loadingActive && !calculationActive)return null;
+  const statusLabel=(status:HistoryStatus) => ({ QUEUED:"ожидает",RUNNING:"грузится",PAUSED:"пауза",
+    CANCELLED:"отменено",COMPLETED:"готово",FAILED:"ошибка" }[status]);
+  return <Paper variant="outlined" sx={{ px:1.25,py:1,borderColor:"divider",bgcolor:"action.hover" }}>
+    <Stack spacing={.75}>
+      <Stack direction="row" useFlexGap sx={{ alignItems:"center",gap:1,flexWrap:"wrap" }}>
+        <Typography variant="caption" sx={{ fontWeight:700 }}>Подготовка графика</Typography>
+        <Chip size="small" variant="outlined" label={`${chartTimeframe}: ${chartLoading ? "загружается" : "готов"}`} />
+        {loadingActive && <Typography variant="caption" color="text.secondary">Свечи · {job.progress}%</Typography>}
+        {calculationActive && <Typography variant="caption" color="text.secondary">Расчёт · {calculation.progress}%</Typography>}
+      </Stack>
+      {loadingActive && <><LinearProgress variant="determinate" value={job.progress} sx={{ height:4,borderRadius:2 }}/>
+        <Stack direction="row" useFlexGap sx={{ gap:.75,flexWrap:"wrap" }}>
+          {Object.entries(job.timeframe_status).map(([timeframe,item]) => <Box key={timeframe} sx={{ minWidth:92,flex:"1 1 92px" }}>
+            <Stack direction="row" sx={{ justifyContent:"space-between",gap:.5 }}>
+              <Typography variant="caption" sx={{ fontWeight:700 }}>{timeframe}</Typography>
+              <Typography variant="caption" color={item.status==="FAILED" ? "error.main" : "text.secondary"}>{item.progress ?? (item.status==="COMPLETED" ? 100 : 0)}% · {statusLabel(item.status)}</Typography>
+            </Stack>
+            <LinearProgress variant={item.status==="RUNNING" && item.progress===undefined ? "indeterminate" : "determinate"}
+              value={item.progress ?? (item.status==="COMPLETED" ? 100 : 0)} color={item.status==="FAILED" ? "error" : "primary"} sx={{ height:3,borderRadius:2 }} />
+            <Typography variant="caption" color="text.secondary">{item.ingested.toLocaleString("ru-RU")} свечей</Typography>
+          </Box>)}
+        </Stack></>}
+      {calculationActive && <Box>
+        <Stack direction="row" sx={{ justifyContent:"space-between",gap:1 }}><Typography variant="caption">{calculation.phase || "Исторический расчёт"}</Typography><Typography variant="caption" color={calculation.status==="FAILED" ? "error.main" : "text.secondary"}>{calculation.status==="WAITING_FOR_DATA" ? "ждёт данные" : `${calculation.progress}%`}</Typography></Stack>
+        <LinearProgress variant="determinate" value={calculation.progress} color={calculation.status==="FAILED" ? "error" : "secondary"} sx={{ mt:.25,height:4,borderRadius:2 }}/>
+      </Box>}
+    </Stack>
+  </Paper>;
 }
 
 function snakeToCamel(value: unknown): unknown {
@@ -237,16 +310,8 @@ function timeframeWindowLimit(selected: string, macro: string): number {
 
 const candleCache = new Map<string, Candle[]>();
 const browserCacheTimers = new Map<string,number>();
-const candleRequests = new Map<string,Promise<CandlesResponse>>();
 const candleSnapshotLimits = new Map<string,number>();
 const okxSnapshotKeys = new Set<string>();
-
-function requestCandles(path:string):Promise<CandlesResponse> {
-  const pending=candleRequests.get(path);
-  if (pending) return pending;
-  const request=api<CandlesResponse>(path).finally(() => candleRequests.delete(path));
-  candleRequests.set(path,request);return request;
-}
 
 function openCandleCache():Promise<IDBDatabase> {
   return new Promise((resolve,reject) => {
@@ -322,12 +387,13 @@ function useMarketCandles(symbol: string, timeframe: string, limit: number) {
 
   useEffect(() => {
     let cancelled = false;
+    const controller=new AbortController();
     const commit=(next:Candle[]) => {
       const fingerprint=`${key}:${candleFingerprint(next)}`;
       if (fingerprint === fingerprintRef.current) return;
       fingerprintRef.current=fingerprint;setData({ symbol,timeframe,candles:next });
     };
-    if (!symbol) { commit([]); return () => { cancelled = true; }; }
+    if (!symbol) { commit([]); return () => { cancelled = true;controller.abort(); }; }
     const load = async () => {
       setLoading(true);
       try {
@@ -342,12 +408,12 @@ function useMarketCandles(symbol: string, timeframe: string, limit: number) {
       const path=`/api/v1/data/market/candles?symbol=${encodeURIComponent(symbol)}`
         + `&timeframe=${timeframe}&limit=${needsSnapshot ? limit : 1000}`
         + (needsSnapshot || lastTimestamp === undefined ? "" : `&from=${lastTimestamp}`);
-      const databaseRequest=requestCandles(path);
+      const databaseRequest=api<CandlesResponse>(path,{ signal:controller.signal });
       if (!okxSnapshotKeys.has(key)) {
         okxSnapshotKeys.add(key);
         try {
-          const snapshot=await requestCandles(`/api/v1/exchange/exchange/market-candles?symbol=${encodeURIComponent(symbol)}`
-            + `&timeframe=${timeframe}&limit=300`);
+          const snapshot=await api<CandlesResponse>(`/api/v1/exchange/exchange/market-candles?symbol=${encodeURIComponent(symbol)}`
+            + `&timeframe=${timeframe}&limit=300`,{ signal:controller.signal });
           collected=mergeCandles(collected,snapshot.candles);
           if (!cancelled)commit(collected.slice(-limit));
         } catch { okxSnapshotKeys.delete(key); }
@@ -362,7 +428,7 @@ function useMarketCandles(symbol: string, timeframe: string, limit: number) {
       } finally { if (!cancelled) setLoading(false); }
     };
     void load().catch(() => { if (!cancelled) commit(cacheRef.current.get(key) ?? []); });
-    return () => { cancelled = true; };
+    return () => { cancelled = true;controller.abort(); };
   }, [key, limit, reloadKey, symbol, timeframe]);
 
   const currentData = data.symbol === symbol && data.timeframe === timeframe

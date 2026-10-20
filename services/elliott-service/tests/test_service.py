@@ -92,7 +92,7 @@ def test_historical_paper_replay_is_persisted_outside_live_trade_tables(monkeypa
         service=ElliottService(SimpleNamespace(db=db))
         service.trading_config=AsyncMock(return_value={"strategy":"ELLIOTT","elliott":{
           "entryTimeframe":"M15","structureTimeframe":"H1","macroTimeframe":"H4"}})
-        monkeypatch.setattr("backtest_core.elliott.run_elliott_replay",lambda _candles,_config:{
+        monkeypatch.setattr("backtest_core.elliott.run_elliott_replay",lambda _candles,_config,*_progress:{
           "elliott_patterns":[],"total_trades":1,"net_profit":10,"win_rate":100,
           "initial_capital":10000,"final_capital":10010,"dataset":{},"trades":[{
             "pattern_id":"pattern","direction":"LONG","entry_time":900_000,"entry_price":100,

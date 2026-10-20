@@ -129,15 +129,18 @@ class ElliottService:
         if not raw:return None
         normalized=normalize_config(raw);config=BacktestConfig.model_validate(normalized)
         config_hash=hashlib.sha256(json.dumps(normalized,sort_keys=True,separators=(",",":"),default=str).encode()).hexdigest()
+        progress_data={"progress":0,"phase":"Подготовка данных"}
         await self.infra.db.execute("""INSERT INTO elliott_history_snapshots(symbol,status,config_hash,data,error)
-          VALUES($1,'BUILDING',$2,'{}'::jsonb,NULL) ON CONFLICT(symbol) DO UPDATE SET
-          status='BUILDING',config_hash=excluded.config_hash,error=NULL,updated_at=now()""",symbol,config_hash)
+          VALUES($1,'BUILDING',$2,$3::jsonb,NULL) ON CONFLICT(symbol) DO UPDATE SET
+          status='BUILDING',config_hash=excluded.config_hash,data=excluded.data,error=NULL,updated_at=now()""",
+          symbol,config_hash,json.dumps(progress_data))
+        await self._publish_history_progress(symbol,"BUILDING",progress_data)
         try:
             duration={"M1":1,"M5":5,"M15":15,"M30":30,"H1":60,"H4":240,"D1":1440}
             ec=config.elliott;required=list(dict.fromkeys((ec.entry_timeframe,ec.structure_timeframe,ec.macro_timeframe)))
             macro_minutes=duration[ec.macro_timeframe]
             candles_by_tf={}
-            for timeframe in required:
+            for index,timeframe in enumerate(required):
                 limit=min(200_000,max(500,(500*macro_minutes+duration[timeframe]-1)//duration[timeframe]))
                 rows=await self.infra.db.fetch("""SELECT symbol,timeframe,
                   (extract(epoch FROM ts)*1000)::bigint AS timestamp,open::float8,high::float8,
@@ -145,13 +148,23 @@ class ElliottService:
                   FROM (SELECT * FROM candles WHERE symbol=$1 AND timeframe=$2 AND is_closed
                         ORDER BY ts DESC LIMIT $3) history ORDER BY ts""",symbol,timeframe,limit)
                 candles_by_tf[timeframe]=[dict(row) for row in rows]
+                await self._update_history_progress(symbol,config_hash,5+int((index+1)/len(required)*15),f"Подготовка {timeframe}")
             missing=[timeframe for timeframe,items in candles_by_tf.items() if not items]
             if missing:
                 data={"patterns":[],"entries":[],"orders":[],"trades":[],"summary":{},
                       "message":f"Waiting for candles: {', '.join(missing)}"}
                 await self._save_history_snapshot(symbol,"WAITING_FOR_DATA",config_hash,data)
                 return data
-            result=await asyncio.to_thread(run_elliott_replay,candles_by_tf,config)
+            loop=asyncio.get_running_loop();reported=-1
+            def replay_progress(progress:int,phase:str):
+                nonlocal reported
+                overall=20+int(progress*.78)
+                if overall<=reported:return
+                reported=overall
+                asyncio.run_coroutine_threadsafe(
+                    self._update_history_progress(symbol,config_hash,overall,phase),loop,
+                ).result(timeout=10)
+            result=await asyncio.to_thread(run_elliott_replay,candles_by_tf,config,None,replay_progress)
             patterns=result.get("elliott_patterns",[])
             trades=[{**trade,"id":f"history-{symbol}-{trade.get('pattern_id')}-{trade.get('entry_time')}",
                      "symbol":symbol,"origin":"HISTORICAL_PAPER"} for trade in result.get("trades",[])]
@@ -183,11 +196,23 @@ class ElliottService:
         except Exception as exc:
             log.exception("Could not build historical paper replay for %s",symbol)
             await self.infra.db.execute("UPDATE elliott_history_snapshots SET status='FAILED',error=$2,updated_at=now() WHERE symbol=$1",symbol,str(exc)[:2000])
+            await self._publish_history_progress(symbol,"FAILED",{"progress":reported if 'reported' in locals() else 0,"phase":"Ошибка расчёта","error":str(exc)[:2000]})
             return None
 
     async def _save_history_snapshot(self,symbol,status,config_hash,data):
         await self.infra.db.execute("""UPDATE elliott_history_snapshots SET status=$2,config_hash=$3,
           data=$4::jsonb,error=NULL,updated_at=now() WHERE symbol=$1""",symbol,status,config_hash,json.dumps(data,separators=(",",":"),default=str))
+        await self._publish_history_progress(symbol,status,data)
+    async def _update_history_progress(self,symbol,config_hash,progress,phase):
+        data={"progress":progress,"phase":phase}
+        updated=await self.infra.db.execute("""UPDATE elliott_history_snapshots SET
+          data=data || $3::jsonb,updated_at=now() WHERE symbol=$1 AND config_hash=$2""",symbol,config_hash,json.dumps(data))
+        if updated!="UPDATE 0":await self._publish_history_progress(symbol,"BUILDING",data)
+    async def _publish_history_progress(self,symbol,status,data):
+        if not hasattr(self.infra,"publish"):return
+        payload={"symbol":symbol,"status":status,"progress":100 if status=="COMPLETED" else data.get("progress",0),
+                 "phase":data.get("phase","Расчёт завершён" if status=="COMPLETED" else ""),"error":data.get("error")}
+        await self.infra.publish("history.update","history.calculation_progress",payload)
     async def trading_config(self,symbol:str):
         try:
             row=await self.infra.db.fetchrow(
