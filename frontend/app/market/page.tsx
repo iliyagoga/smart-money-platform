@@ -65,6 +65,7 @@ export default function MarketPage() {
     ...(currentHistory?.entries ?? []),...(liveEntries.data?.symbol === viewed ? liveEntries.data.entries : []),
   ].map((item) => [item.id,item])).values()], [currentHistory?.entries,liveEntries.data,viewed]);
   const reloadCandles = candles.reload;
+  const applyLiveCandle = candles.applyLiveCandle;
   useEffect(() => {
     if (!symbol && assets.assets.length) setSymbol(assets.assets[0]);
     setViewSymbol((current) => current && activeAssets.includes(current) ? current : activeAssets[0] ?? "");
@@ -80,7 +81,24 @@ export default function MarketPage() {
   const reloadScenarios = liveEntries.reload;
   const reloadHistory = historicalElliott.reload;
   const reloadTradingConfigs=tradingConfigs.reload;
-  useEffect(() => { const socket = new EventSocket(["candle.*","scenario.*","trading.config.*"]); const unsubscribe = socket.subscribe((event) => { if (event.event_type.startsWith("trading.config.")) reloadTradingConfigs(); if (event.payload?.symbol === viewed) { if (!event.payload.timeframe || event.payload.timeframe === selectedTf) reloadCandles(); reloadPatterns(); reloadScenarios(); } }); void socket.connect(); const timer = window.setInterval(() => { reloadCandles(); reloadPatterns(); reloadScenarios(); reloadHistory(); }, 60_000); return () => { unsubscribe(); socket.close(); window.clearInterval(timer); }; }, [viewed, selectedTf, reloadCandles, reloadPatterns, reloadScenarios, reloadHistory, reloadTradingConfigs]);
+  useEffect(() => {
+    if (!viewed)return;
+    const marketSocket=new EventSocket(["candle.*","scenario.*"],[viewed]);
+    const unsubscribeMarket=marketSocket.subscribe((event) => {
+      if (event.payload?.symbol!==viewed)return;
+      if (event.event_type.startsWith("candle.") && event.payload.timeframe===selectedTf) {
+        const { timestamp,open,high,low,close,volume }=event.payload;
+        if ([timestamp,open,high,low,close,volume].every((value)=>typeof value==="number"))
+          applyLiveCandle({ timestamp:timestamp!,open:open!,high:high!,low:low!,close:close!,volume:volume! });
+      }
+      if (event.event_type.startsWith("scenario.")) { reloadPatterns();reloadScenarios(); }
+    });
+    const configSocket=new EventSocket(["trading.config.*"]);
+    const unsubscribeConfig=configSocket.subscribe(()=>reloadTradingConfigs());
+    void marketSocket.connect();void configSocket.connect();
+    const timer=window.setInterval(() => { reloadCandles();reloadPatterns();reloadScenarios();reloadHistory(); },300_000);
+    return () => { unsubscribeMarket();unsubscribeConfig();marketSocket.close();configSocket.close();window.clearInterval(timer); };
+  },[viewed,selectedTf,applyLiveCandle,reloadCandles,reloadPatterns,reloadScenarios,reloadHistory,reloadTradingConfigs]);
   const save = async () => {
     setSaving(true);setMessage("");
     try {
@@ -221,6 +239,7 @@ const candleCache = new Map<string, Candle[]>();
 const browserCacheTimers = new Map<string,number>();
 const candleRequests = new Map<string,Promise<CandlesResponse>>();
 const candleSnapshotLimits = new Map<string,number>();
+const okxSnapshotKeys = new Set<string>();
 
 function requestCandles(path:string):Promise<CandlesResponse> {
   const pending=candleRequests.get(path);
@@ -292,6 +311,14 @@ function useMarketCandles(symbol: string, timeframe: string, limit: number) {
     reloadTimer.current=window.setTimeout(() => setReloadKey((current) => current + 1),750);
   }, []);
   useEffect(() => () => { if (reloadTimer.current) window.clearTimeout(reloadTimer.current); },[]);
+  const applyLiveCandle=useCallback((incoming:Candle) => {
+    const next=mergeCandles(cacheRef.current.get(key) ?? [],[incoming]).slice(-limit);
+    cacheRef.current.set(key,next);scheduleBrowserCandleWrite(key,next);
+    const fingerprint=`${key}:${candleFingerprint(next)}`;
+    if (fingerprint!==fingerprintRef.current) {
+      fingerprintRef.current=fingerprint;setData({ symbol,timeframe,candles:next });
+    }
+  },[key,limit,symbol,timeframe]);
 
   useEffect(() => {
     let cancelled = false;
@@ -315,7 +342,17 @@ function useMarketCandles(symbol: string, timeframe: string, limit: number) {
       const path=`/api/v1/data/market/candles?symbol=${encodeURIComponent(symbol)}`
         + `&timeframe=${timeframe}&limit=${needsSnapshot ? limit : 1000}`
         + (needsSnapshot || lastTimestamp === undefined ? "" : `&from=${lastTimestamp}`);
-      const response=await requestCandles(path);
+      const databaseRequest=requestCandles(path);
+      if (!okxSnapshotKeys.has(key)) {
+        okxSnapshotKeys.add(key);
+        try {
+          const snapshot=await requestCandles(`/api/v1/exchange/exchange/market-candles?symbol=${encodeURIComponent(symbol)}`
+            + `&timeframe=${timeframe}&limit=300`);
+          collected=mergeCandles(collected,snapshot.candles);
+          if (!cancelled)commit(collected.slice(-limit));
+        } catch { okxSnapshotKeys.delete(key); }
+      }
+      const response=await databaseRequest;
       collected=mergeCandles(collected,response.candles);
       if (needsSnapshot) candleSnapshotLimits.set(key,limit);
       const result = collected.slice(-limit);
@@ -330,5 +367,6 @@ function useMarketCandles(symbol: string, timeframe: string, limit: number) {
 
   const currentData = data.symbol === symbol && data.timeframe === timeframe
     ? data : { symbol, timeframe, candles: cacheRef.current.get(key) ?? [] };
-  return { data: currentData, reload, loading: loading || data.symbol !== symbol || data.timeframe !== timeframe };
+  return { data: currentData, reload, applyLiveCandle,
+    loading: loading || data.symbol !== symbol || data.timeframe !== timeframe };
 }

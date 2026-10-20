@@ -31,3 +31,16 @@ it("ignores malformed messages and delivers valid events", async () => {
   expect(handler).toHaveBeenCalledExactlyOnceWith({ event_type: "position.closed" });
   socket.close();
 });
+
+it("subscribes to only the requested market symbol", async () => {
+  auth.updateToken.mockResolvedValue(false);
+  const transport = { readyState: 0, onopen: vi.fn<() => void>(), close: vi.fn(), send: vi.fn() };
+  vi.stubGlobal("WebSocket", class { constructor() { return transport; } });
+  const socket = new EventSocket(["candle.*"],["AVAX-USDT-SWAP"]);
+  await socket.connect();
+  transport.onopen();
+  expect(transport.send).toHaveBeenCalledExactlyOnceWith(JSON.stringify({
+    op:"subscribe",events:["candle.*"],symbols:["AVAX-USDT-SWAP"],
+  }));
+  socket.close();
+});

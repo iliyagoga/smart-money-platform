@@ -243,6 +243,23 @@ def test_instrument_metadata_remains_usable_when_funding_endpoint_fails():
         assert service.db.execute.await_args.args[1]=="AVAX-USDT-SWAP"
     asyncio.run(check())
 
+def test_history_request_retries_okx_rate_limit_with_shared_throttle():
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock,Mock,patch
+
+    async def check():
+        service=ExchangeGateway(SimpleNamespace(history_concurrency=1,okx_rest_url="https://www.okx.com"))
+        service.client=AsyncMock();service.history_request_interval=0
+        limited=Mock();limited.json.return_value={"code":"50011","msg":"Rate limit reached","data":[]}
+        success=Mock();success.json.return_value={"code":"0","msg":"","data":[["1","1","1","1","1","0","0","0","1"]]}
+        service.client.get.side_effect=[limited,success]
+        with patch("src.service.asyncio.sleep",new=AsyncMock()) as sleep:
+            result=await service.history_candles_request({"instId":"BTC-USDT-SWAP","bar":"1m","limit":300})
+        assert result["code"]=="0" and service.client.get.await_count==2
+        sleep.assert_awaited_once_with(.5)
+    asyncio.run(check())
+
 @pytest.mark.parametrize("changes",[
     {"okx_rest_url":"http://www.okx.com"},
     {"okx_private_ws_url":"ws://wspap.okx.com/ws/v5/private"},

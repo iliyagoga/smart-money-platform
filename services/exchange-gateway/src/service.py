@@ -90,6 +90,7 @@ class ExchangeGateway:
     def __init__(self,s):
         self.s=s;self.client=None;self.db=None;self.redis=None;self.tasks=set();self.connected={"public":False,"business":False,"private":False};self.last_error=None
         self.history_semaphore=asyncio.Semaphore(s.history_concurrency);self.running_history=set()
+        self.history_request_lock=asyncio.Lock();self.history_request_next=0.0;self.history_request_interval=.12
         self.active_symbols=[];self.websockets={};self.market_page_cache={};self.market_page_locks={};self.private_ready=asyncio.Event();self.pending={}
     async def start(self):
         self.client=httpx.AsyncClient(timeout=20)
@@ -497,8 +498,7 @@ class ExchangeGateway:
           FROM trading_assets WHERE enabled ORDER BY symbol""")
         return [{**dict(row),"updated_at":row["updated_at"].isoformat()} for row in rows]
     async def history(self,symbol,timeframe,limit=100):
-        params={"instId":symbol,"bar":TIMEFRAMES[timeframe],"limit":min(limit,300)};r=await self.client.get(self.s.okx_rest_url+"/api/v5/market/history-candles",params=params);r.raise_for_status();body=r.json()
-        if body.get("code")!="0":raise ValueError(body.get("msg","OKX error"))
+        params={"instId":symbol,"bar":TIMEFRAMES[timeframe],"limit":min(limit,300)};body=await self.history_candles_request(params)
         values=[candle(x,symbol,timeframe) for x in body["data"]]
         for value in reversed(values):await self.ingest("/internal/ingest/candles",value)
         return len(values)
@@ -512,9 +512,7 @@ class ExchangeGateway:
             if cached and monotonic()-cached[0]<ttl:return cached[1]
             params={"instId":symbol,"bar":TIMEFRAMES[timeframe],"limit":min(limit,300)}
             if after is not None:params["after"]=str(after)
-            response=await self.client.get(self.s.okx_rest_url+"/api/v5/market/history-candles",params=params)
-            response.raise_for_status();body=response.json()
-            if body.get("code")!="0":raise ValueError(body.get("msg","OKX error"))
+            body=await self.history_candles_request(params)
             values=[candle(item,symbol,timeframe) for item in body.get("data",[])]
             values.sort(key=lambda item:item["timestamp"])
             self.market_page_cache[key]=(monotonic(),values)
@@ -527,10 +525,25 @@ class ExchangeGateway:
     async def history_page(self,symbol,timeframe,after=None):
         params={"instId":symbol,"bar":TIMEFRAMES[timeframe],"limit":300}
         if after is not None:params["after"]=str(after)
-        response=await self.client.get(self.s.okx_rest_url+"/api/v5/market/history-candles",params=params)
-        response.raise_for_status();body=response.json()
-        if body.get("code")!="0":raise ValueError(body.get("msg","OKX error"))
+        body=await self.history_candles_request(params)
         return [candle(item,symbol,timeframe) for item in body["data"]]
+    async def history_candles_request(self,params):
+        for attempt in range(6):
+            async with self.history_request_lock:
+                delay=self.history_request_next-monotonic()
+                if delay>0:await asyncio.sleep(delay)
+                self.history_request_next=monotonic()+self.history_request_interval
+            try:
+                response=await self.client.get(self.s.okx_rest_url+"/api/v5/market/history-candles",params=params)
+                response.raise_for_status();body=response.json()
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code!=429 or attempt==5:raise
+                await asyncio.sleep(min(8,.5*2**attempt));continue
+            if body.get("code")=="0":return body
+            if body.get("code")!="50011" or attempt==5:
+                raise ValueError(f"OKX {body.get('code')}: {body.get('msg') or 'history request failed'}")
+            await asyncio.sleep(min(8,.5*2**attempt))
+        raise ValueError("OKX history request retry limit exceeded")
     async def create_history(self,job_id,symbol,timeframes,start,end,incremental=False,backfill=False):
         statuses={timeframe:{"status":"QUEUED","ingested":0,"requests":0,"error":None} for timeframe in timeframes}
         timeframe_from={}
@@ -629,7 +642,10 @@ class ExchangeGateway:
                           and (upper_bound is None or item["timestamp"]<=upper_bound)]
                 await self.ingest_batch(list(reversed(eligible)))
                 added=len(eligible);count+=added;details["ingested"]+=added;details["requests"]+=1
-                oldest=min(item["timestamp"] for item in page);cursor=oldest
+                oldest=min(item["timestamp"] for item in page)
+                if cursor is not None and oldest>=int(cursor):
+                    raise ValueError(f"OKX history pagination stalled at {oldest}")
+                cursor=oldest
                 await self.db.execute(
                     """UPDATE exchange_history_jobs SET
                        cursors=jsonb_set(cursors,ARRAY[$2],to_jsonb($3::bigint),true),
@@ -639,7 +655,6 @@ class ExchangeGateway:
                 )
                 await self.update_timeframe(job_id,timeframe,details)
                 if len(page)<300 or (lower_bound is not None and oldest<=lower_bound):break
-                await asyncio.sleep(.12)
             details["status"]="COMPLETED";await self.update_timeframe(job_id,timeframe,details)
             completed=await self.db.fetchval(
                 "SELECT count(*) FROM exchange_history_jobs j CROSS JOIN LATERAL jsonb_each(j.timeframe_status) e WHERE j.id=$1::uuid AND e.value->>'status'='COMPLETED'",

@@ -24,7 +24,8 @@ export class EventSocket {
   private readonly handlers = new Set<EventHandler>();
   private readonly statusHandlers = new Set<StatusHandler>();
 
-  constructor(private readonly subscriptionEvents: string[] = allSubscriptionEvents) {}
+  constructor(private readonly subscriptionEvents: string[] = allSubscriptionEvents,
+              private readonly symbols: string[] = []) {}
 
   private reconnect(): void {
     this.statusHandlers.forEach((handler) => handler(false));
@@ -49,7 +50,7 @@ export class EventSocket {
       socket.onopen = () => {
         this.attempt = 0;
         this.statusHandlers.forEach((handler) => handler(true));
-        socket.send(JSON.stringify({ op: "subscribe", events: this.subscriptionEvents }));
+        socket.send(JSON.stringify({ op: "subscribe", events: this.subscriptionEvents, symbols: this.symbols }));
       };
       socket.onmessage = (message) => {
         let event: PlatformEvent;

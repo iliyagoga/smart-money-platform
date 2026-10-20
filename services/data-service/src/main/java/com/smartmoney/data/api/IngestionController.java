@@ -21,7 +21,7 @@ public class IngestionController {
     public Map<String,Integer> candles(@RequestBody List<@Valid Candle> values,
         @RequestHeader(value="X-Correlation-ID",required=false) String id) {
         if (values.size()>300) throw new IllegalArgumentException("A batch cannot contain more than 300 candles");
-        values.forEach(value->service.ingest(value,id)); return Map.of("accepted",values.size());
+        service.ingestBatch(values); return Map.of("accepted",values.size());
     }
     @PostMapping("/ticks") @ResponseStatus(HttpStatus.ACCEPTED)
     public Map<String,Boolean> tick(@Valid @RequestBody MarketTick value, @RequestHeader(value="X-Correlation-ID",required=false) String id) {
