@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, Mock
 
 
 from src.app import app
-from src.models import Candle, Scenario
+from src.models import Candle, Scenario, Timeframe
 from src.service import ElliottService
 
 
@@ -47,6 +47,28 @@ def test_elliott_signal_persisted_and_published_without_smc_pipeline():
         service.elliott.generate.reset_mock()
         await service.process(candle(2), "history-rebuild")
         assert service.elliott.generate.call_args.kwargs["allow_live_emit"] is False
+    asyncio.run(check())
+
+
+def test_live_portfolio_analysis_loads_every_configured_timeframe_from_okx():
+    async def check():
+        service=ElliottService(SimpleNamespace(db=SimpleNamespace(execute=AsyncMock())))
+        service.trading_config=AsyncMock(return_value={"strategy":"ELLIOTT","elliott":{
+          "entryTimeframe":"M15","structureTimeframe":"H1","macroTimeframe":"H4",
+        }})
+        source={
+          ("BTC-USDT-SWAP",Timeframe.M15):[candle(900_000)],
+          ("BTC-USDT-SWAP",Timeframe.H1):[candle(3_600_000)],
+          ("BTC-USDT-SWAP",Timeframe.H4):[candle(14_400_000)],
+        }
+        service.live_market=SimpleNamespace(load=AsyncMock(return_value=source))
+        service.elliott.generate=Mock(return_value=[])
+        await service.process(candle(900_000),"live-correlation")
+        args=service.live_market.load.await_args.args
+        assert args[0]=="BTC-USDT-SWAP"
+        assert set(args[1])=={"M15","H1","H4"}
+        assert args[2:]==("M15",900_000)
+        assert service.elliott.generate.call_args.args[2] is source
     asyncio.run(check())
 
 

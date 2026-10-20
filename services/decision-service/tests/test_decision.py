@@ -124,7 +124,7 @@ def test_live_sizing_uses_edited_current_asset_capital_instead_of_portfolio_equi
         service.db.fetchrow.return_value={"config":{
           "initialCapital":10_000,"currentCapital":100,"riskPerTradePercent":0,"leverage":3,
           "elliott":{"useMargin":True,"reinvestProfits":True},
-        },"lot_size":.01,"minimum_order_size":.01}
+        },"mode":"PRODUCTION","lot_size":.01,"minimum_order_size":.01}
         service.db.fetchval.return_value=0;service.stream=AsyncMock()
         signal=ConflictResolver().signal(scenario("capital","LONG",1)).model_copy(update={
           "entry_price":100,"stop_loss_price":99,
@@ -133,6 +133,36 @@ def test_live_sizing_uses_edited_current_asset_capital_instead_of_portfolio_equi
         assert decision.approved and decision.position_size==1
         assert decision.position_value==100
         assert all(call.args[0]!="portfolio:equity" for call in service.redis.get.await_args_list)
+    asyncio.run(check())
+
+
+def test_production_portfolio_sizing_uses_140_shared_capital_and_asset_allocation():
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    async def check():
+        service=DecisionService("unused","unused")
+        service.config=AsyncMock(return_value=RiskConfig(max_risk_per_trade_percent=1))
+        service.redis=AsyncMock();service.redis.get.return_value="0";service.redis.scard.return_value=0
+        service.db=AsyncMock();service.db.fetch.return_value=[];service.db.fetchval.return_value=0
+        service.db.fetchrow.return_value={"config":{
+          "initialCapital":140,"currentCapital":140,"riskPerTradePercent":1,
+          "portfolioAllocationPercent":60,"portfolioId":"portfolio-1","leverage":1,
+          "elliott":{"useMargin":False,"reinvestProfits":True},
+        },"mode":"PRODUCTION","lot_size":.01,"minimum_order_size":.01}
+        service.stream=AsyncMock()
+        signal=ConflictResolver().signal(scenario("portfolio-capital","LONG",1)).model_copy(update={
+          "entry_price":100,"stop_loss_price":99,
+        })
+        decision=await service.assess(signal)
+        assert decision.approved
+        assert decision.position_size==.84
+        assert decision.position_value==84
+        assert decision.risk_amount==.84
+        streamed=service.stream.await_args.args[2]
+        assert streamed["position_size"]==.84 and streamed["risk_amount"]==.84
+        history_call=service.db.fetch.await_args
+        assert history_call.args[1:]==("PRODUCTION","portfolio-1")
     asyncio.run(check())
 
 

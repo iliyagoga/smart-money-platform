@@ -16,3 +16,16 @@ def test_event_store_accepts_non_uuid_correlation_ids():
            "correlation_id":"okx-1789110956575","payload":{"symbol":"BTC-USDT-SWAP"}}
     asyncio.run(service.persist_event(event))
     assert service.db.execute.await_args.args[5]=="okx-1789110956575"
+
+def test_live_portfolio_snapshot_uses_its_140_capital_and_scoped_trades():
+    async def check():
+        service=AnalyticsService("database","redis",10000);service.db=AsyncMock();service.redis=AsyncMock()
+        service.db.fetchrow.return_value={"mode":"PRODUCTION","config":{
+          "portfolioId":"portfolio-1","initialCapital":140,"currentCapital":145,
+        }}
+        service.db.fetch.return_value=[]
+        equity,daily=await service.sync_portfolio()
+        assert equity==145 and daily==0
+        assert service.db.fetch.await_args.args[1:]==("PRODUCTION","portfolio-1")
+        service.redis.set.assert_any_await("portfolio:equity",145)
+    asyncio.run(check())

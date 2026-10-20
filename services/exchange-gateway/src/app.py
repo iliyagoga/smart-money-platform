@@ -67,6 +67,10 @@ async def history_control(job_id:str,action:str):
 async def balance():
     try:return {"balances":await service.private("GET","/api/v5/account/balance")}
     except ValueError as exc:raise HTTPException(503,str(exc)) from exc
+@app.get("/exchange/account/capacity")
+async def account_capacity(mode:str="PRODUCTION"):
+    try:return await service.account_capacity(mode)
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
 @app.get("/exchange/orders")
 async def exchange_orders(limit:int=Query(default=100,ge=1,le=1000)):
     return {"orders":await service.exchange_orders(limit)}

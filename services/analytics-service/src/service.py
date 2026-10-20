@@ -36,8 +36,23 @@ class AnalyticsService:
     async def trades(self,symbol=None,from_ts=None,to_ts=None):
         rows=await self.db.fetch("SELECT data FROM closed_trades WHERE ($1::text IS NULL OR symbol=$1) AND ($2::bigint IS NULL OR closed_at>=to_timestamp($2/1000.0)) AND ($3::bigint IS NULL OR closed_at<=to_timestamp($3/1000.0)) ORDER BY closed_at",symbol.upper() if symbol else None,from_ts,to_ts)
         return [decode(x["data"]) for x in rows]
+    async def active_portfolio_context(self):
+        try:row=await self.db.fetchrow("""SELECT mode,config FROM trading_configs WHERE status='ACTIVE'
+          AND coalesce(config->>'portfolioId',config->>'portfolio_id') IS NOT NULL ORDER BY updated_at DESC LIMIT 1""")
+        except asyncpg.UndefinedTableError:return None
+        if not row:return None
+        config=decode(row["config"]);initial=float(config.get("initialCapital",config.get("initial_capital",self.initial)))
+        current=float(config.get("currentCapital",config.get("current_capital",initial)))
+        return {"mode":str(row["mode"]).upper(),"portfolio_id":config.get("portfolioId",config.get("portfolio_id")),
+                "initial":initial,"current":current}
     async def sync_portfolio(self):
-        trades=await self.trades();total=sum(float(x["pnl"]) for x in trades);equity=self.initial+total
+        context=await self.active_portfolio_context()
+        if context:
+            rows=await self.db.fetch("""SELECT data FROM closed_trades WHERE data->>'execution_mode'=$1
+              AND data->>'portfolio_id'=$2 ORDER BY closed_at""",context["mode"],context["portfolio_id"])
+            trades=[decode(row["data"]) for row in rows];equity=context["current"]
+        else:
+            trades=await self.trades();total=sum(float(x["pnl"]) for x in trades);equity=self.initial+total
         today=datetime.now(timezone.utc).date();today_pnl=sum(float(x["pnl"]) for x in trades if datetime.fromtimestamp(x["closed_at"]/1000,timezone.utc).date()==today)
         await self.redis.set("portfolio:equity",equity);await self.redis.set("portfolio:daily_pnl",today_pnl)
         return equity,today_pnl

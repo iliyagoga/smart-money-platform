@@ -338,6 +338,17 @@ class ExchangeGateway:
         if config.get("posMode")!="net_mode":
             raise ValueError("OKX account must use net position mode")
         return config
+    async def account_capacity(self,requested_mode):
+        requested=requested_mode.upper();gateway_mode="DEMO" if self.s.okx_demo else "PRODUCTION"
+        if requested!=gateway_mode:raise ValueError(f"Portfolio mode {requested} does not match OKX gateway mode {gateway_mode}")
+        if not self.s.trading_enabled:raise ValueError("OKX trading is disabled")
+        await self.require_safe_account_config()
+        balances=await self.private("GET","/api/v5/account/balance?ccy=USDT")
+        details=(balances[0].get("details",[]) if balances else []) or []
+        usdt=next((item for item in details if item.get("ccy")=="USDT"),None)
+        if not usdt:raise ValueError("USDT balance is unavailable on OKX account")
+        equity=Decimal(str(usdt.get("eq") or 0));available=Decimal(str(usdt.get("availEq") or usdt.get("availBal") or 0))
+        return {"mode":requested,"currency":"USDT","equity":float(equity),"available":float(available)}
     async def instrument_availability(self,symbol,requested_mode):
         requested=requested_mode.upper();gateway_mode="DEMO" if self.s.okx_demo else "PRODUCTION"
         if requested=="PAPER":return {"symbol":symbol,"mode":requested,"available":True,"reason":None}

@@ -11,7 +11,7 @@ class OrderCreate(BaseModel):
     target_allocations:list[float]=[];target_rrs:list[float]=[];break_even_rule:str="ONE_R";move_stop_to_break_even_after_target:int|None=1
     deduplication_key:str|None=None
     leverage:int=Field(default=1,ge=1,le=125);margin_mode:str="cross"
-    execution_mode:str="PAPER";expires_at:int|None=None
+    execution_mode:str="PAPER";portfolio_id:str|None=None;expires_at:int|None=None
     slippage_percent:float=Field(default=0,ge=0,le=10);tick_size:float=Field(default=.01,gt=0)
     lot_size:float=Field(default=.000001,gt=0);minimum_order_size:float=Field(default=.000001,gt=0)
     volume_participation_percent:float=Field(default=5,gt=0,le=100)
@@ -40,6 +40,7 @@ class Position(BaseModel):
     strategy:str="UNKNOWN";setup_type:str="UNKNOWN"
     symbol:str;direction:str;entry_price:float;current_price:float;quantity:float;initial_quantity:float;leverage:int=1
     execution_mode:str="PAPER";margin_mode:str="cross"
+    portfolio_id:str|None=None
     stop_loss_price:float|None=None;take_profit_prices:list[float]=[];status:str="OPENED";opened_at:int=Field(default_factory=now_ms);closed_at:int|None=None
     initial_stop_loss_price:float|None=None
     target_allocations:list[float]=[];break_even_rule:str="ONE_R";move_stop_to_break_even_after_target:int|None=1;targets_hit:int=0

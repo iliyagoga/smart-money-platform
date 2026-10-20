@@ -7,6 +7,11 @@ test("portfolio run renders one report with contributions and asset trades", asy
     assets: ["AAA", "BBB"].map(symbol => ({ symbol, configuration_id: "config", allocation_percent: 50, config: defaultBacktestSettings })),
   }] } }));
   await page.route("**/api/v1/execution/configuration-library", route => route.fulfill({ json: { configurations: [] } }));
+  await page.route("**/api/v1/execution/portfolios/portfolio-test/live", async route => {
+    const body = route.request().postDataJSON();
+    expect(body).toEqual({ mode: "PRODUCTION", capital: 140 });
+    await route.fulfill({ json: { id: "portfolio-test", mode: "PRODUCTION", capital: 140, activated_symbols: ["AAA", "BBB"] } });
+  });
   await page.route("**/api/v1/backtest/portfolio-backtests", async route => {
     const body = route.request().postDataJSON();
     expect(body.initial_capital).toBe(20000);
@@ -47,4 +52,13 @@ test("portfolio run renders one report with contributions and asset trades", asy
   await expect(page.getByRole("cell", { name: "-0.50", exact: true })).toBeVisible();
   await expect(page.getByRole("cell", { name: "AAA", exact: true })).toHaveCount(2);
   await expect(page.getByRole("cell", { name: "BBB", exact: true })).toHaveCount(2);
+  await page.getByLabel("Live-режим").click();
+  await page.getByRole("option", { name: "OKX Production" }).click();
+  await page.getByLabel("Live-капитал, USDT").fill("140");
+  page.once("dialog", async dialog => {
+    expect(dialog.message()).toContain("140 USDT");
+    await dialog.accept();
+  });
+  await page.getByRole("button", { name: "Добавить в live" }).click();
+  await expect(page.getByText("Портфель добавлен в live (PRODUCTION): AAA, BBB.")).toBeVisible();
 });

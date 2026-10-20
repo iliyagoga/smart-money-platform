@@ -113,6 +113,40 @@ def test_live_trading_events_are_persisted_but_paper_events_are_not():
         assert service.db.execute.await_count==1
     asyncio.run(check())
 
+def test_production_order_converts_base_quantity_to_okx_contracts_with_protection():
+    import asyncio,json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    async def check():
+        service=ExchangeGateway(SimpleNamespace(history_concurrency=1,okx_demo=False,margin_mode="cross"))
+        service.db=AsyncMock();service.redis=AsyncMock();service.record_trading_log=AsyncMock()
+        service.require_safe_account_config=AsyncMock(return_value={"posMode":"net_mode"})
+        service.instrument_order_spec=AsyncMock(return_value={"validation_status":"ACTIVE"})
+        service.trading_instrument_spec=AsyncMock(return_value={
+          "contract_value":.01,"lot_size":.0001,"minimum_order_size":.0001,"tick_size":.1,
+        })
+        service.private=AsyncMock(side_effect=[[],[{"ordId":"okx-order-1","sCode":"0","sMsg":""}]])
+        payload={
+          "id":"00000000-0000-0000-0000-000000000001","symbol":"BTC-USDT-SWAP",
+          "execution_mode":"PRODUCTION","side":"BUY","type":"MARKET","quantity":.84,
+          "leverage":1,"margin_mode":"cross","stop_loss_price":99,
+          "take_profit_prices":[102,103],"target_allocations":[.5,.5],"break_even_rule":"OFF",
+        }
+        result=await service.place_order(payload)
+        assert result=={"order_id":payload["id"],"exchange_order_id":"okx-order-1","status":"ACCEPTED"}
+        order_call=service.private.await_args_list[1]
+        assert order_call.args[0:2]==("POST","/api/v5/trade/order")
+        request=order_call.args[2]
+        assert request["instId"]=="BTC-USDT-SWAP" and request["tdMode"]=="cross"
+        assert request["side"]=="buy" and request["ordType"]=="market"
+        assert Decimal(request["sz"])==Decimal("84")
+        assert len(request["attachAlgoOrds"])==3
+        event=json.loads(service.redis.xadd.await_args.args[1]["data"])
+        assert event["event_type"]=="exchange.order_updated"
+        assert event["payload"]["exchange_order_id"]=="okx-order-1"
+    asyncio.run(check())
+
 def test_live_account_requires_net_mode_trade_only_key_and_ip_binding():
     import asyncio
     from types import SimpleNamespace
@@ -130,6 +164,22 @@ def test_live_account_requires_net_mode_trade_only_key_and_ip_binding():
         ]:
             service.private.return_value=[config]
             with pytest.raises(ValueError,match=message):await service.require_safe_account_config()
+    asyncio.run(check())
+
+def test_production_account_capacity_returns_usdt_equity_for_portfolio_preflight():
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    async def check():
+        service=ExchangeGateway(SimpleNamespace(history_concurrency=1,okx_demo=False,trading_enabled=True))
+        service.require_safe_account_config=AsyncMock(return_value={"posMode":"net_mode"})
+        service.private=AsyncMock(return_value=[{"details":[{
+          "ccy":"USDT","eq":"140","availEq":"139.5","availBal":"139.4",
+        }]}])
+        result=await service.account_capacity("PRODUCTION")
+        assert result=={"mode":"PRODUCTION","currency":"USDT","equity":140.0,"available":139.5}
+        service.private.assert_awaited_once_with("GET","/api/v5/account/balance?ccy=USDT")
     asyncio.run(check())
 
 def test_availability_reports_okx_http_failure_instead_of_raising_server_error():

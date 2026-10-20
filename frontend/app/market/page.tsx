@@ -3,6 +3,7 @@ import { Accordion, AccordionDetails, AccordionSummary, Alert, Button, Chip, Men
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BacktestSettingsForm } from "../../components/backtest/BacktestSettingsForm";
 import { SectionPage } from "../../components/layout/SectionPage";
+import { EmptyState } from "../../components/ui/EmptyState";
 import { TradingViewChart, type LiveElliottPattern, type LiveEntryScenario } from "../../components/market/TradingViewChart";
 import { useTradingAssets } from "../../hooks/useTradingAssets";
 import { useApiResource } from "../../hooks/useApiResource";
@@ -36,10 +37,15 @@ export default function MarketPage() {
   const [settings, setSettings] = useState<BacktestSettings>(() => ({ ...defaultBacktestSettings, elliott: { ...defaultBacktestSettings.elliott } }));
   const [editingSymbol,setEditingSymbol]=useState("");
   const [editingInitialCapital,setEditingInitialCapital]=useState<number>();
+  const [suppressedActiveAssets,setSuppressedActiveAssets]=useState<Set<string>>(()=>new Set());
   const [settingsExpanded,setSettingsExpanded]=useState(false);
   const [saving, setSaving] = useState(false); const [message, setMessage] = useState(""); const [selectedTf, setSelectedTf] = useState("M15");
   const tradingConfigs = useApiResource<TradingConfigsResponse>("/api/v1/execution/trading-configs");
-  const activeConfigs = useMemo(() => (tradingConfigs.data?.configs ?? []).filter((config) => config.status === "ACTIVE"), [tradingConfigs.data]);
+  const serverActiveConfigs = useMemo(() => (tradingConfigs.data?.configs ?? []).filter((config) => config.status === "ACTIVE"), [tradingConfigs.data]);
+  const activeConfigs = useMemo(
+    () => serverActiveConfigs.filter((config) => !suppressedActiveAssets.has(config.symbol)),
+    [serverActiveConfigs,suppressedActiveAssets],
+  );
   const activeAssets = useMemo(() => activeConfigs.map((config) => config.symbol), [activeConfigs]);
   const selected = symbol || assets.assets[0] || "";
   const viewed = viewSymbol || activeAssets[0] || "";
@@ -61,8 +67,15 @@ export default function MarketPage() {
   const reloadCandles = candles.reload;
   useEffect(() => {
     if (!symbol && assets.assets.length) setSymbol(assets.assets[0]);
-    if (!viewSymbol && activeAssets.length) setViewSymbol(activeAssets[0]);
-  }, [assets.assets, activeAssets, symbol, viewSymbol]);
+    setViewSymbol((current) => current && activeAssets.includes(current) ? current : activeAssets[0] ?? "");
+  }, [assets.assets, activeAssets, symbol]);
+  useEffect(() => {
+    const serverSymbols=new Set(serverActiveConfigs.map((config)=>config.symbol));
+    setSuppressedActiveAssets((current) => {
+      const next=new Set([...current].filter((item)=>serverSymbols.has(item)));
+      return next.size===current.size ? current : next;
+    });
+  },[serverActiveConfigs]);
   const reloadPatterns = elliottPatterns.reload;
   const reloadScenarios = liveEntries.reload;
   const reloadHistory = historicalElliott.reload;
@@ -90,6 +103,7 @@ export default function MarketPage() {
       await api(`/api/v1/backtest/assets`, { method: "POST", body: JSON.stringify({ symbol: selected, category: "crypto" }) }).catch((error: unknown) => { if (!(error instanceof Error) || !error.message.startsWith("409")) throw error; });
       await api("/api/v1/exchange/exchange/reload-symbols", { method: "POST" });
       await api("/api/v1/execution/trading-configs", { method: "POST", body: JSON.stringify({ symbol: selected, mode: tradingMode, config: configToSave }) });
+      setSuppressedActiveAssets((current)=>{const next=new Set(current);next.delete(selected);return next;});
       setViewSymbol(selected);setEditingSymbol(selected);setEditingInitialCapital(configToSave.initialCapital);
       assets.reload();tradingConfigs.reload();setMessage(`Конфигурация ${selected} сохранена в режиме ${tradingMode}.`);
     } catch (reason) { setMessage(reason instanceof Error ? reason.message : String(reason)); }
@@ -110,13 +124,15 @@ export default function MarketPage() {
   };
   const removeLiveAsset = async () => {
     if (!viewed || !window.confirm(`Удалить ${viewed} из live trading?`)) return;
+    const removed=viewed;
     setSaving(true); setMessage("");
     try {
-      await api(`/api/v1/execution/trading-configs/${encodeURIComponent(viewed)}`, { method: "DELETE" });
-      const remaining = activeAssets.filter((item) => item !== viewed);
+      await api(`/api/v1/execution/trading-configs/${encodeURIComponent(removed)}`, { method: "DELETE" });
+      const remaining = activeAssets.filter((item) => item !== removed);
+      setSuppressedActiveAssets((current)=>new Set(current).add(removed));
       setViewSymbol(remaining[0] ?? "");
       tradingConfigs.reload();
-      setMessage(`Актив ${viewed} удалён из live trading.`);
+      setMessage(`Актив ${removed} удалён из live trading.`);
     } catch (reason) { setMessage(reason instanceof Error ? reason.message : String(reason)); }
     finally { setSaving(false); }
   };
@@ -128,11 +144,11 @@ export default function MarketPage() {
     } catch (reason) { setMessage(reason instanceof Error ? reason.message : String(reason)); }
   };
   return <SectionPage title="Рынок" description="Регистрация Elliott-активов и отдельный просмотр их состояния."><Stack spacing={2}>
-    <Paper variant="outlined" sx={{ p: { xs: 2, md: 3 }, width: "100%" }}><Stack spacing={1.5}><Typography variant="h6">Состояние актива</Typography><Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}><TextField fullWidth select label="Актив для просмотра" value={viewed} onChange={(e) => setViewSymbol(e.target.value)}>{activeAssets.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}</TextField><TextField fullWidth select label="Просматриваемый таймфрейм" value={selectedTf} onChange={(e) => setSelectedTf(e.target.value)} disabled={!availableTimeframes.length}>{availableTimeframes.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}</TextField><Button color="error" variant="contained" disabled={!viewed || saving} onClick={() => void removeLiveAsset()} sx={{ minWidth: 190, alignSelf: "center", borderRadius: 1, px: 2.5, py: .5, boxShadow: "none", textTransform: "none", fontWeight: 700, "&:hover": { boxShadow: "0 4px 12px rgba(211,47,47,.2)" } }}>Удалить актив</Button></Stack>
+    <Paper variant="outlined" sx={{ p: { xs: 2, md: 3 }, width: "100%" }}><Stack spacing={1.5}><Typography variant="h6">Состояние актива</Typography>{activeAssets.length ? <><Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}><TextField fullWidth select label="Актив для просмотра" value={viewed} onChange={(e) => setViewSymbol(e.target.value)}>{activeAssets.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}</TextField><TextField fullWidth select label="Просматриваемый таймфрейм" value={selectedTf} onChange={(e) => setSelectedTf(e.target.value)} disabled={!availableTimeframes.length}>{availableTimeframes.map((item) => <MenuItem key={item} value={item}>{item}</MenuItem>)}</TextField><Button color="error" variant="contained" disabled={!viewed || saving} onClick={() => void removeLiveAsset()} sx={{ minWidth: 190, alignSelf: "center", borderRadius: 1, px: 2.5, py: .5, boxShadow: "none", textTransform: "none", fontWeight: 700, "&:hover": { boxShadow: "0 4px 12px rgba(211,47,47,.2)" } }}>Удалить актив</Button></Stack>
       {currentHistory?.status === "BUILDING" && <Alert severity="info">Исторические paper-сделки рассчитываются на сервере…</Alert>}
       {currentHistory?.status === "WAITING_FOR_DATA" && <Alert severity="warning">Исторический расчёт ждёт загрузки свечей.</Alert>}
       {currentHistory?.status === "FAILED" && <Alert severity="error">Не удалось рассчитать историю: {currentHistory.error}</Alert>}
-      {viewed ? <TradingViewChart key={`${viewed}:${selectedTf}`} candles={candles.data?.candles ?? []} isLoading={candles.loading} elliottPatterns={displayedPatterns} entryScenarios={displayedEntries} historicalTrades={currentHistory?.trades ?? []} /> : <Typography color="text.secondary">Нет активных активов для просмотра.</Typography>}</Stack></Paper>
+      <TradingViewChart key={`${viewed}:${selectedTf}`} candles={candles.data?.candles ?? []} isLoading={candles.loading} elliottPatterns={displayedPatterns} entryScenarios={displayedEntries} historicalTrades={currentHistory?.trades ?? []} /></> : <EmptyState text="Нет активных активов для просмотра. Зарегистрируйте актив в настройках ниже." />}</Stack></Paper>
     <Accordion id="asset-settings" expanded={settingsExpanded} onChange={(_,expanded) => setSettingsExpanded(expanded)}
       disableGutters sx={{ width: "100%", border: 1, borderColor: "divider", scrollMarginTop: 90, "&:before": { display: "none" } }}>
       <AccordionSummary expandIcon={<Typography component="span" sx={{ fontSize: 22 }}>⌄</Typography>}><Typography variant="h6">Настройка торгового актива</Typography></AccordionSummary>

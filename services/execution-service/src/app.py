@@ -72,6 +72,7 @@ class PortfolioWrite(BaseModel):
 
 class PortfolioLiveRequest(BaseModel):
     mode:str="PAPER"
+    capital:float=Field(gt=0)
 
 def configuration_record(row):
     value=dict(row);value["id"]=str(value["id"])
@@ -206,20 +207,42 @@ async def portfolio_to_live(portfolio_id:UUID,request:PortfolioLiveRequest,x_use
     assets=decode_json(row["assets"])
     if sum(float(item["allocation_percent"]) for item in assets)>100.000001:
         raise HTTPException(422,"Live portfolio allocation must not exceed 100%")
+    symbols=[item["symbol"].strip().upper() for item in assets]
+    registered=await service.db.fetch(
+        "SELECT symbol FROM trading_assets WHERE symbol=ANY($1::text[]) AND enabled AND validation_status='ACTIVE'",
+        symbols,
+    )
+    registered_symbols={item["symbol"] for item in registered}
+    unavailable=[symbol for symbol in symbols if symbol not in registered_symbols]
+    if unavailable:
+        raise HTTPException(409,f"Trading asset metadata is unavailable: {', '.join(unavailable)}")
+    try:await service.validate_portfolio_capital(mode,request.capital)
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
+    live_configs=[]
     for item in assets:
+        config={**item["config"],"initialCapital":request.capital,"currentCapital":request.capital,
+                "portfolioAllocationPercent":item["allocation_percent"],"portfolioId":str(portfolio_id)}
+        config.pop("initial_capital",None);config.pop("current_capital",None)
         try:
-            TradingConfigCreate(symbol=item["symbol"],mode=mode,config=item["config"])
-            service.validate_live_config(item["config"],mode)
+            TradingConfigCreate(symbol=item["symbol"],mode=mode,config=config)
+            service.validate_live_config(config,mode)
             await service.validate_execution_mode(item["symbol"],mode)
         except (ValueError,TypeError) as exc:raise HTTPException(409,str(exc)) from exc
+        live_configs.append((item["symbol"],config))
     async with service.db.acquire() as connection:
       async with connection.transaction():
-        for item in assets:
-          config={**item["config"],"portfolioAllocationPercent":item["allocation_percent"],"portfolioId":str(portfolio_id)}
+        await connection.execute("""UPDATE trading_configs SET status='INACTIVE',updated_at=now()
+          WHERE status='ACTIVE' AND NOT (symbol=ANY($1::text[]))""",symbols)
+        for symbol,config in live_configs:
           await connection.execute("""INSERT INTO trading_configs(symbol,mode,status,config) VALUES($1,$2,'ACTIVE',$3::jsonb)
             ON CONFLICT(symbol) DO UPDATE SET mode=excluded.mode,status='ACTIVE',config=excluded.config,updated_at=now()""",
-            item["symbol"],mode,json.dumps(config))
-    return {"id":str(portfolio_id),"mode":mode,"activated_symbols":[item["symbol"] for item in assets]}
+            symbol,mode,json.dumps(config))
+    for symbol,_ in live_configs:
+        await service.publish_channel("trading.config","trading.config.saved",{
+            "symbol":symbol,"mode":mode,"portfolio_id":str(portfolio_id),
+        })
+    return {"id":str(portfolio_id),"mode":mode,"capital":request.capital,
+            "activated_symbols":[symbol for symbol,_ in live_configs]}
 @app.get("/configuration-library")
 async def configuration_library(x_user_id:str=Header(default="local")):
     rows=await service.db.fetch("SELECT id,name,description,config,created_at,updated_at FROM strategy_configurations WHERE owner_id=$1 ORDER BY updated_at DESC",x_user_id)

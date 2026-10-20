@@ -1,6 +1,6 @@
 from __future__ import annotations
 import asyncio,json,logging
-from math import ceil,floor
+from math import ceil,floor,isfinite
 from time import time
 from uuid import uuid4
 import asyncpg,httpx
@@ -67,6 +67,16 @@ class ExecutionService:
             raise ValueError(f"Unable to validate {symbol} in {mode}: {exc}") from exc
         if not availability.get("available"):
             raise ValueError(availability.get("reason") or f"{symbol} is unavailable in {mode}")
+    async def validate_portfolio_capital(self,mode:str,capital:float):
+        if mode=="PAPER":return
+        try:
+            response=await self.http.get(f"{self.exchange_service_url}/exchange/account/capacity",params={"mode":mode})
+            response.raise_for_status();capacity=response.json()
+        except (httpx.HTTPError,ValueError) as exc:
+            raise ValueError(f"Unable to validate OKX account capital in {mode}: {exc}") from exc
+        equity=float(capacity.get("equity",0))
+        if not isfinite(equity) or equity<=0:raise ValueError("OKX USDT equity is unavailable")
+        if capital>equity+1e-8:raise ValueError(f"Live capital {capital:g} USDT exceeds OKX equity {equity:g} USDT")
     @staticmethod
     def validate_live_config(config:dict,mode:str):
         if mode=="PAPER":return
@@ -127,7 +137,7 @@ class ExecutionService:
         maker=abs(float(row["maker_fee_rate"]))*100 if row["maker_fee_rate"] is not None else float(config.get("makerFeePercent",config.get("maker_fee_percent",config.get("feePercent",config.get("fee_percent",0)))))
         taker=abs(float(row["taker_fee_rate"]))*100 if row["taker_fee_rate"] is not None else float(config.get("takerFeePercent",config.get("taker_fee_percent",config.get("feePercent",config.get("fee_percent",0)))))
         funding=float(row["funding_rate"])*300 if row["funding_rate"] is not None else float(config.get("fundingPercentPerDay",config.get("funding_percent_per_day",0)))
-        order=Order(symbol=s["symbol"],side="BUY" if s["direction"]=="LONG" else "SELL",type=s["entry_type"],price=s["entry_price"],quantity=payload["position_size"],stop_loss_price=s["stop_loss_price"],take_profit_prices=s["take_profit_prices"],signal_id=signal_id,target_allocations=s.get("target_allocations",[]),target_rrs=s.get("target_rrs",[]),break_even_rule=s.get("break_even_rule","ONE_R"),move_stop_to_break_even_after_target=s.get("move_stop_to_break_even_after_target",1),deduplication_key=s.get("deduplication_key"),leverage=leverage,margin_mode=config.get("marginMode",config.get("margin_mode","cross")),execution_mode=row["mode"],expires_at=s.get("expires_at"),slippage_percent=float(config.get("slippagePercent",config.get("slippage_percent",0))),tick_size=float(row["tick_size"] or config.get("tickSize",config.get("tick_size",.01))),lot_size=float(row["lot_size"] or config.get("lotSize",config.get("lot_size",.000001))),minimum_order_size=float(row["minimum_order_size"] or config.get("minimumOrderSize",config.get("minimum_order_size",.000001))),volume_participation_percent=float(config.get("volumeParticipationPercent",config.get("volume_participation_percent",5))),maker_fee_percent=maker,taker_fee_percent=taker,funding_percent_per_day=funding,funding_interval_hours=int(config.get("fundingIntervalHours",config.get("funding_interval_hours",8))),maintenance_margin_percent=float(config.get("maintenanceMarginPercent",config.get("maintenance_margin_percent",.5))),liquidation_fee_percent=float(config.get("liquidationFeePercent",config.get("liquidation_fee_percent",.5))))
+        order=Order(symbol=s["symbol"],side="BUY" if s["direction"]=="LONG" else "SELL",type=s["entry_type"],price=s["entry_price"],quantity=payload["position_size"],stop_loss_price=s["stop_loss_price"],take_profit_prices=s["take_profit_prices"],signal_id=signal_id,target_allocations=s.get("target_allocations",[]),target_rrs=s.get("target_rrs",[]),break_even_rule=s.get("break_even_rule","ONE_R"),move_stop_to_break_even_after_target=s.get("move_stop_to_break_even_after_target",1),deduplication_key=s.get("deduplication_key"),leverage=leverage,margin_mode=config.get("marginMode",config.get("margin_mode","cross")),execution_mode=row["mode"],portfolio_id=config.get("portfolioId",config.get("portfolio_id")),expires_at=s.get("expires_at"),slippage_percent=float(config.get("slippagePercent",config.get("slippage_percent",0))),tick_size=float(row["tick_size"] or config.get("tickSize",config.get("tick_size",.01))),lot_size=float(row["lot_size"] or config.get("lotSize",config.get("lot_size",.000001))),minimum_order_size=float(row["minimum_order_size"] or config.get("minimumOrderSize",config.get("minimum_order_size",.000001))),volume_participation_percent=float(config.get("volumeParticipationPercent",config.get("volume_participation_percent",5))),maker_fee_percent=maker,taker_fee_percent=taker,funding_percent_per_day=funding,funding_interval_hours=int(config.get("fundingIntervalHours",config.get("funding_interval_hours",8))),maintenance_margin_percent=float(config.get("maintenanceMarginPercent",config.get("maintenance_margin_percent",.5))),liquidation_fee_percent=float(config.get("liquidationFeePercent",config.get("liquidation_fee_percent",.5))))
         await self.create_order(order)
     async def create_order(self,order:Order):
         existing=next((x for x in self.orders.values() if order.signal_id and x.signal_id==order.signal_id),None)
@@ -151,7 +161,7 @@ class ExecutionService:
           and item.position_id==p.id and item.status in ACTIVE_ORDER_STATUSES),None)
         if existing:return existing
         order=Order(symbol=p.symbol,side="SELL" if p.direction=="LONG" else "BUY",type="MARKET",
-          price=p.current_price,quantity=quantity,execution_mode=p.execution_mode,margin_mode=p.margin_mode,
+          price=p.current_price,quantity=quantity,execution_mode=p.execution_mode,portfolio_id=p.portfolio_id,margin_mode=p.margin_mode,
           leverage=p.leverage,tick_size=p.tick_size,lot_size=p.lot_size,
           minimum_order_size=p.minimum_order_size,maker_fee_percent=p.maker_fee_percent,
           taker_fee_percent=p.taker_fee_percent,reduce_only=True,position_id=p.id,close_reason=reason)
@@ -164,13 +174,23 @@ class ExecutionService:
     async def update_current_capital(self,symbol,pnl):
         row=await self.db.fetchrow("SELECT config FROM trading_configs WHERE symbol=$1 AND status='ACTIVE'",symbol)
         if not row:return
-        config=decode_json(row["config"]);elliott=config.get("elliott",{})
+        config=decode_json(row["config"])
         initial=float(config.get("initialCapital",config.get("initial_capital",0)))
         current=float(config.get("currentCapital",config.get("current_capital",initial)))
-        config["currentCapital"]=max(0,current+float(pnl));config.pop("current_capital",None)
-        await self.db.execute("UPDATE trading_configs SET config=$2::jsonb,updated_at=now() WHERE symbol=$1",symbol,json.dumps(config))
-        await self.publish_channel("trading.config","trading.config.capital_updated",{
-          "symbol":symbol,"current_capital":config["currentCapital"],"realized_pnl":float(pnl)})
+        updated_capital=max(0,current+float(pnl))
+        portfolio_id=config.get("portfolioId",config.get("portfolio_id"))
+        configs=[{"symbol":symbol,"config":config}]
+        if portfolio_id:
+            configs=await self.db.fetch("""SELECT symbol,config FROM trading_configs WHERE status='ACTIVE'
+              AND coalesce(config->>'portfolioId',config->>'portfolio_id')=$1""",str(portfolio_id))
+        for item in configs:
+            item_config=decode_json(item["config"]);item_config["currentCapital"]=updated_capital
+            item_config.pop("current_capital",None)
+            await self.db.execute("UPDATE trading_configs SET config=$2::jsonb,updated_at=now() WHERE symbol=$1",
+                                  item["symbol"],json.dumps(item_config))
+            await self.publish_channel("trading.config","trading.config.capital_updated",{
+              "symbol":item["symbol"],"portfolio_id":portfolio_id,"current_capital":updated_capital,
+              "realized_pnl":float(pnl)})
     async def fill(self,o:Order,price:float,exchange_order_id:str|None=None,executed_at:int|None=None,
                    cumulative_quantity:float|None=None,final:bool=True,cumulative_price:float|None=None):
         cumulative=min(float(cumulative_quantity) if cumulative_quantity is not None else o.quantity,o.quantity)
@@ -221,7 +241,7 @@ class ExecutionService:
               strategy="ELLIOTT",setup_type="ELLIOTT_WAVE3",symbol=o.symbol,
               direction="LONG" if o.side=="BUY" else "SHORT",entry_price=price,current_price=price,
               quantity=delta,initial_quantity=delta,leverage=o.leverage,
-              execution_mode=o.execution_mode,margin_mode=o.margin_mode,
+              execution_mode=o.execution_mode,portfolio_id=o.portfolio_id,margin_mode=o.margin_mode,
               stop_loss_price=o.stop_loss_price,initial_stop_loss_price=o.stop_loss_price,
               take_profit_prices=list(o.take_profit_prices),target_allocations=list(o.target_allocations),
               break_even_rule=o.break_even_rule,
@@ -380,7 +400,7 @@ class ExecutionService:
             old=p.status;p.status="CLOSED";p.closed_at=int(time()*1000);await self.redis.srem("positions:open",p.id);await self.save_position(p,old,"CLOSED",reason)
             duration=max(0,(p.closed_at-p.opened_at)//1000);risk_per_unit=abs(p.entry_price-p.initial_stop_loss_price) if p.initial_stop_loss_price is not None else 0;initial_risk=risk_per_unit*p.initial_quantity
             margin=p.entry_price*p.initial_quantity/(p.leverage if p.leverage>1 else 1)
-            payload={"position_id":p.id,"signal_id":p.signal_id,"scenario_id":p.scenario_id,"strategy":p.strategy,"setup_type":p.setup_type,"symbol":p.symbol,"direction":p.direction,"entry_price":p.entry_price,"initial_stop_loss_price":p.initial_stop_loss_price,"exit_price":exit_price,"quantity":p.initial_quantity,"pnl":p.realized_pnl,"pnl_percent":p.realized_pnl/max(margin,1e-12)*100,"fees":p.fees,"funding":p.funding,"r_multiple":p.realized_pnl/initial_risk if initial_risk>0 else None,"reason":reason,"duration_seconds":duration,"max_unrealized_pnl":p.max_unrealized_pnl,"max_unrealized_loss":p.max_unrealized_loss,"closed_at":p.closed_at}
+            payload={"position_id":p.id,"signal_id":p.signal_id,"scenario_id":p.scenario_id,"strategy":p.strategy,"setup_type":p.setup_type,"symbol":p.symbol,"direction":p.direction,"execution_mode":p.execution_mode,"portfolio_id":p.portfolio_id,"entry_price":p.entry_price,"initial_stop_loss_price":p.initial_stop_loss_price,"exit_price":exit_price,"quantity":p.initial_quantity,"pnl":p.realized_pnl,"pnl_percent":p.realized_pnl/max(margin,1e-12)*100,"fees":p.fees,"funding":p.funding,"r_multiple":p.realized_pnl/initial_risk if initial_risk>0 else None,"reason":reason,"duration_seconds":duration,"max_unrealized_pnl":p.max_unrealized_pnl,"max_unrealized_loss":p.max_unrealized_loss,"closed_at":p.closed_at}
             await self.db.execute("INSERT INTO closed_trades(id,position_id,symbol,pnl,data,closed_at) VALUES($1::uuid,$2::uuid,$3,$4,$5::jsonb,to_timestamp($6/1000.0)) ON CONFLICT(id) DO NOTHING",str(uuid4()),p.id,p.symbol,p.realized_pnl,json.dumps(payload),p.closed_at)
             await self.update_current_capital(p.symbol,p.realized_pnl);await self.publish("position.closed",payload)
         return qty,p.quantity,pnl

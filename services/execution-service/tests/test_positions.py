@@ -3,6 +3,7 @@ from src.service import actionable_candle
 from src.models import *
 from src.service import ExecutionService
 import asyncio
+import httpx
 import pytest
 from pydantic import ValidationError
 from unittest.mock import AsyncMock
@@ -65,6 +66,17 @@ def test_exchange_rejection_reason_is_preserved_on_order():
         service.publish.assert_awaited_once()
     asyncio.run(check())
 
+def test_production_portfolio_capital_must_not_exceed_okx_equity():
+    async def check():
+        service=ExecutionService("postgresql://unused","redis://unused")
+        service.http=AsyncMock()
+        service.http.get.return_value=httpx.Response(200,json={"equity":140,"available":140},
+          request=httpx.Request("GET","http://exchange/account/capacity"))
+        await service.validate_portfolio_capital("PRODUCTION",140)
+        with pytest.raises(ValueError,match="exceeds OKX equity"):
+            await service.validate_portfolio_capital("PRODUCTION",140.01)
+    asyncio.run(check())
+
 def test_order_save_publishes_status_update_for_live_ui():
     async def check():
         service=ExecutionService("postgresql://unused","redis://unused")
@@ -74,6 +86,26 @@ def test_order_save_publishes_status_update_for_live_ui():
         service.publish.assert_awaited_once_with("order.updated",{
           "order_id":order.id,"signal_id":None,"symbol":"BTC-USDT","status":"SUBMITTING","rejection_reason":None,
         })
+    asyncio.run(check())
+
+def test_approved_portfolio_signal_propagates_production_scope_to_order():
+    async def check():
+        service=ExecutionService("postgresql://unused","redis://unused")
+        service.db=AsyncMock();service.create_order=AsyncMock()
+        service.db.fetchrow.return_value={
+          "data":{"symbol":"BTC-USDT-SWAP","direction":"LONG","entry_type":"MARKET",
+                  "entry_price":100,"stop_loss_price":99,"take_profit_prices":[102],
+                  "target_allocations":[1],"target_rrs":[2]},
+          "config":{"portfolioId":"portfolio-1","leverage":1,"elliott":{"useMargin":False}},
+          "mode":"PRODUCTION","tick_size":.1,"lot_size":.0001,"minimum_order_size":.0001,
+          "maker_fee_rate":0,"taker_fee_rate":.0005,"funding_rate":0,
+        }
+        await service.on_approved({
+          "signal_id":"00000000-0000-0000-0000-000000000001","position_size":.84,"leverage":1,
+        })
+        order=service.create_order.await_args.args[0]
+        assert order.execution_mode=="PRODUCTION" and order.portfolio_id=="portfolio-1"
+        assert order.quantity==.84
     asyncio.run(check())
 
 def test_closed_trade_updates_edited_current_capital_when_reinvesting():
@@ -99,6 +131,25 @@ def test_closed_trade_updates_capital_even_when_profit_reinvestment_is_disabled(
         await service.update_current_capital("BTC-USDT",-25.5)
         assert '"currentCapital": 74.5' in service.db.execute.await_args.args[2]
         service.publish_channel.assert_awaited_once()
+    asyncio.run(check())
+
+def test_closed_portfolio_trade_updates_shared_capital_for_every_asset():
+    async def check():
+        service=ExecutionService("postgresql://unused","redis://unused")
+        service.db=AsyncMock();service.publish_channel=AsyncMock()
+        service.db.fetchrow.return_value={"config":{
+          "initialCapital":140,"currentCapital":140,"portfolioId":"portfolio-1",
+          "portfolioAllocationPercent":50,"elliott":{"reinvestProfits":True},
+        }}
+        service.db.fetch.return_value=[
+          {"symbol":"BTC-USDT-SWAP","config":{"currentCapital":140,"portfolioId":"portfolio-1"}},
+          {"symbol":"ETH-USDT-SWAP","config":{"currentCapital":140,"portfolioId":"portfolio-1"}},
+        ]
+        await service.update_current_capital("BTC-USDT-SWAP",5.5)
+        assert service.db.execute.await_count==2
+        for call in service.db.execute.await_args_list:
+            assert '"currentCapital": 145.5' in call.args[2]
+        assert service.publish_channel.await_count==2
     asyncio.run(check())
 
 def test_submitting_order_also_reserves_the_trading_slot():
@@ -154,6 +205,20 @@ def test_partial_take_uses_the_same_entry_and_exit_fees_as_backtest():
         assert remaining==5
         assert p.fees==pytest.approx(.21)
         assert pnl==pytest.approx(49.79)
+    asyncio.run(check())
+
+def test_closed_production_trade_keeps_portfolio_scope_for_risk_history():
+    async def check():
+        service=ExecutionService("postgresql://unused","redis://unused")
+        service.db=AsyncMock();service.redis=AsyncMock();service.save_position=AsyncMock()
+        service.update_current_capital=AsyncMock();service.publish=AsyncMock()
+        p=position(quantity=1,initial_quantity=1,execution_mode="PRODUCTION",portfolio_id="portfolio-1")
+        await service.close(p,1,110,"FIXED_RR_TARGET",exchange_fill=True)
+        insert=next(call for call in service.db.execute.await_args_list if "INSERT INTO closed_trades" in call.args[0])
+        payload=__import__("json").loads(insert.args[5])
+        assert payload["execution_mode"]=="PRODUCTION"
+        assert payload["portfolio_id"]=="portfolio-1"
+        service.update_current_capital.assert_awaited_once()
     asyncio.run(check())
 
 def test_exchange_partial_fills_use_cumulative_quantity_and_incremental_price():

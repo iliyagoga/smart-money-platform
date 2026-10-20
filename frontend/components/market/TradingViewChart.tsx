@@ -1,6 +1,6 @@
 "use client";
 
-import { Box, Button, Chip, FormControlLabel, Paper, Stack, Switch, TablePagination, Typography } from "@mui/material";
+import { Box, Button, Chip, CircularProgress, FormControlLabel, Paper, Stack, Switch, TablePagination, Typography } from "@mui/material";
 import { BaselineSeries, CandlestickSeries, ColorType, LineSeries, createChart, createSeriesMarkers, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePagination } from "../../hooks/usePagination";
@@ -276,6 +276,13 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
     </Stack>
     <Box sx={{ position: "relative", width: "100%", height: isFullscreen ? "calc(100vh - 54px)" : 560, flex: isFullscreen ? 1 : "none" }}>
       <Box ref={ref} sx={{ width: "100%", height: "100%" }} />
+      {isLoading && <Stack role="status" aria-live="polite" direction="row" spacing={1}
+        sx={{ position:"absolute",top:10,left:10,zIndex:4,alignItems:"center",px:1.25,py:.75,
+          borderRadius:1,bgcolor:"rgba(16,23,34,.9)",color:"#dbe5f1",boxShadow:"0 2px 8px rgba(0,0,0,.3)" }}>
+        <CircularProgress size={16} color="inherit"/><Typography variant="caption">Загрузка данных графика…</Typography>
+      </Stack>}
+      {!isLoading && !candles.length && <Stack sx={{ position:"absolute",inset:0,alignItems:"center",justifyContent:"center",
+        color:"#b2b9c6",pointerEvents:"none" }}><Typography>Для выбранного периода свечей нет.</Typography></Stack>}
       <Button aria-label="Автовыравнивание графика" title="Автовыравнивание" onClick={autoFit}
         variant="contained" size="small" sx={{ position: "absolute", right: 10, bottom: 28, zIndex: 3,
           minWidth: 32, width: 32, height: 28, p: 0, bgcolor: "rgba(38,50,66,.92)", color: "#dbe5f1",

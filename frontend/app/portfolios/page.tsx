@@ -28,6 +28,7 @@ export default function PortfoliosPage() {
   const [to,setTo]=useState(today());
   const [portfolioRun, setPortfolioRun] = useState<BacktestRun>();
   const [initialCapital, setInitialCapital] = useState(10000);
+  const [liveCapital, setLiveCapital] = useState<number | "">("");
   const [capitalMode,setCapitalMode]=useState<"ALLOCATED"|"SEQUENTIAL">("ALLOCATED");
   const [mode,setMode]=useState("PAPER");
   const running = portfolioRun?.status === "QUEUED" || portfolioRun?.status === "RUNNING";
@@ -65,8 +66,10 @@ export default function PortfoliosPage() {
   const remove=async(portfolio:Portfolio)=>{if(!window.confirm(`Удалить портфель «${portfolio.name}»?`))return;
     try{await api(`/api/v1/execution/portfolios/${portfolio.id}`,{method:"DELETE"});resource.reload();setMessage("Портфель удалён.");}
     catch(reason){setError(reason instanceof Error?reason.message:String(reason));}};
-  const live=async(portfolio:Portfolio)=>{setBusy(true);setError("");try{const response=await api<{activated_symbols:string[]}>(`/api/v1/execution/portfolios/${portfolio.id}/live`,{
-    method:"POST",body:JSON.stringify({mode})});setMessage(`Портфель добавлен в live (${mode}): ${response.activated_symbols.join(", ")}.`);}
+  const live=async(portfolio:Portfolio)=>{if(typeof liveCapital!=="number"||!Number.isFinite(liveCapital)||liveCapital<=0)return;
+    if(mode==="PRODUCTION"&&!window.confirm(`Активировать реальную торговлю портфелем «${portfolio.name}» с капиталом ${liveCapital} USDT?`))return;
+    setBusy(true);setError("");try{const response=await api<{activated_symbols:string[]}>(`/api/v1/execution/portfolios/${portfolio.id}/live`,{
+    method:"POST",body:JSON.stringify({mode,capital:liveCapital})});setMessage(`Портфель добавлен в live (${mode}): ${response.activated_symbols.join(", ")}.`);}
     catch(reason){setError(reason instanceof Error?reason.message:String(reason));}finally{setBusy(false);}};
   const run=async(portfolio:Portfolio)=>{
     setBusy(true);setRunId(portfolio.id);setPortfolioRun(undefined);setError("");setMessage("");
@@ -96,6 +99,9 @@ export default function PortfoliosPage() {
     {message&&<Alert severity="success" sx={{mb:2}}>{message}</Alert>}
     <Stack direction={{xs:"column",sm:"row"}} spacing={1} sx={{mb:2,justifyContent:"space-between"}}><TextField select size="small" label="Live-режим" value={mode} onChange={event=>setMode(event.target.value)} sx={{minWidth:210}}>
       <MenuItem value="PAPER">Paper</MenuItem><MenuItem value="DEMO">OKX Demo</MenuItem><MenuItem value="PRODUCTION">OKX Production</MenuItem></TextField>
+      <TextField size="small" type="number" label="Live-капитал, USDT" value={liveCapital}
+        onChange={event=>setLiveCapital(event.target.value===""?"":Number(event.target.value))}
+        slotProps={{htmlInput:{min:0.01,step:100}}} sx={{minWidth:210}}/>
       <Button variant="contained" onClick={()=>{reset();setOpen(true);}}>Создать портфель</Button></Stack>
     {!portfolios.length?<EmptyState text="Портфелей пока нет"/>:<Stack spacing={2}>{pagination.visible.map(portfolio=><Paper key={portfolio.id} variant="outlined" sx={{p:2.5}}><Stack spacing={1.5}>
       <Stack direction={{xs:"column",md:"row"}} sx={{justifyContent:"space-between",gap:1}}><Box><Typography variant="h6">{portfolio.name}</Typography><Typography color="text.secondary">{portfolio.description||"Без описания"}</Typography></Box>
@@ -109,7 +115,7 @@ export default function PortfoliosPage() {
           <MenuItem value="ALLOCATED">Параллельно · фиксированные доли</MenuItem>
           <MenuItem value="SEQUENTIAL">Последовательно · общий капитал</MenuItem>
         </TextField>
-        <Button variant="outlined" disabled={busy || running || !Number.isFinite(initialCapital) || initialCapital <= 0 || !from || !to || from > to || (capitalMode==="ALLOCATED"&&portfolio.assets.reduce((sum,item)=>sum+item.allocation_percent,0)>100)} onClick={()=>void run(portfolio)}>Прогнать датасет</Button><Button variant="contained" color={mode==="PRODUCTION"?"error":"primary"} disabled={busy||portfolio.assets.reduce((sum,item)=>sum+item.allocation_percent,0)>100} onClick={()=>void live(portfolio)}>Добавить в live</Button></Stack>
+        <Button variant="outlined" disabled={busy || running || !Number.isFinite(initialCapital) || initialCapital <= 0 || !from || !to || from > to || (capitalMode==="ALLOCATED"&&portfolio.assets.reduce((sum,item)=>sum+item.allocation_percent,0)>100)} onClick={()=>void run(portfolio)}>Прогнать датасет</Button><Button variant="contained" color={mode==="PRODUCTION"?"error":"primary"} disabled={busy||typeof liveCapital!=="number"||!Number.isFinite(liveCapital)||liveCapital<=0||portfolio.assets.reduce((sum,item)=>sum+item.allocation_percent,0)>100} onClick={()=>void live(portfolio)}>Добавить в live</Button></Stack>
       {capitalMode==="SEQUENTIAL"&&<Typography variant="body2" color="text.secondary">Одновременно открыта только одна сделка. Для каждой новой сделки доля актива считается от актуального капитала.</Typography>}
       {runId === portfolio.id && portfolioRun && <Stack spacing={1}>
         {running && <LinearProgress variant="determinate" value={portfolioRun.progress}/>}

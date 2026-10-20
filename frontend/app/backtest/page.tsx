@@ -132,8 +132,12 @@ export default function BacktestPage() {
     const lastPage = Math.max(0, Math.ceil((runsResource.data?.total ?? 0) / historyRowsPerPage) - 1);
     if (historyPage > lastPage) setHistoryPage(lastPage);
   }, [historyPage, historyRowsPerPage, runsResource.data?.total]);
-  const selectedAsset = asset || assets[0];
-  const selectedOkxAsset = okxAsset || assets[0];
+  const selectedAsset = asset && assets.includes(asset) ? asset : assets[0] ?? "";
+  const selectedOkxAsset = okxAsset && assets.includes(okxAsset) ? okxAsset : assets[0] ?? "";
+  useEffect(() => {
+    if (asset && !assets.includes(asset)) setAsset(assets[0] ?? "");
+    if (okxAsset && !assets.includes(okxAsset)) setOkxAsset(assets[0] ?? "");
+  }, [asset,assets,okxAsset]);
   useEffect(() => {
     if (!okxAsset && assets.length) setOkxAsset(assets[0]);
   }, [assets, okxAsset]);

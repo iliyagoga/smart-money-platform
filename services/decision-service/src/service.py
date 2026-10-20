@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio,json,logging
+from datetime import datetime,timezone
 from time import time
 from uuid import uuid4
 import asyncpg,httpx
@@ -136,12 +137,18 @@ class DecisionService:
             if decision.approved or decision.rejection_reason=="Another trade is still active":break
     async def assess(self,signal:TradeSignal,capital:float|None=None,ignore_loss_limits:bool=False):
         cfg=await self.config()
-        daily=float(await self.redis.get("portfolio:daily_pnl") or 0);positions=int(await self.redis.scard("positions:open"))
-        recent=await self.db.fetch("SELECT pnl::float8,extract(epoch from closed_at)*1000 AS closed_at_ms FROM closed_trades ORDER BY closed_at DESC LIMIT 100")
-        strategy_row=await self.db.fetchrow("""SELECT tc.config,ta.lot_size,ta.minimum_order_size
+        positions=int(await self.redis.scard("positions:open"))
+        strategy_row=await self.db.fetchrow("""SELECT tc.config,tc.mode,ta.lot_size,ta.minimum_order_size
           FROM trading_configs tc LEFT JOIN trading_assets ta ON ta.symbol=tc.symbol
           WHERE tc.symbol=$1 AND tc.status='ACTIVE'""",signal.symbol)
         strategy=decode_json(strategy_row["config"]) if strategy_row else {}
+        mode=str(strategy_row["mode"]).upper() if strategy_row else "PAPER"
+        portfolio_id=config_value(strategy,"portfolioId","portfolio_id",None)
+        recent=await self.db.fetch("""SELECT pnl::float8,extract(epoch from closed_at)*1000 AS closed_at_ms
+          FROM closed_trades WHERE data->>'execution_mode'=$1
+          AND ($2::text IS NULL OR data->>'portfolio_id'=$2) ORDER BY closed_at DESC LIMIT 100""",mode,portfolio_id)
+        today_start=int(datetime.now(timezone.utc).replace(hour=0,minute=0,second=0,microsecond=0).timestamp()*1000)
+        daily=sum(float(row["pnl"]) for row in recent if int(row["closed_at_ms"])>=today_start)
         elliott=config_value(strategy,"elliott","elliott",{}) or {}
         risk_percent=config_value(strategy,"riskPerTradePercent","risk_per_trade_percent",None)
         allocation=config_value(strategy,"portfolioAllocationPercent","portfolio_allocation_percent",100)

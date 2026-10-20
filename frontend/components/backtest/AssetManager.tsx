@@ -1,7 +1,7 @@
 "use client";
 
 import { Alert, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle, Stack, TextField, Typography } from "@mui/material";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { isValidAssetSymbol, normalizeAssetSymbol, useTradingAssets } from "../../hooks/useTradingAssets";
 import { useAuth } from "../auth/AuthProvider";
 
@@ -25,6 +25,8 @@ export function AssetManager(props: AssetManagerProps) {
   const [newAsset, setNewAsset] = useState("");
   const [error, setError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const deletingRef = useRef(false);
   const normalizedAsset = normalizeAssetSymbol(newAsset);
   const isValid = isValidAssetSymbol(normalizedAsset) && !assets.includes(normalizedAsset);
   const canManage = roles.includes("admin");
@@ -46,14 +48,15 @@ export function AssetManager(props: AssetManagerProps) {
   };
 
   const remove = async (asset: string) => {
-    if (assets.length === 1) return;
+    if (deletingRef.current || assets.length <= 1) return;
+    deletingRef.current=true;setIsDeleting(true);setError("");
     try {
       await removeAsset(asset);
       onAssetsChanged?.();
-      if (selectedAsset === asset) onSelect(assets.find((item) => item !== asset) ?? assets[0]);
+      if (selectedAsset === asset) onSelect(assets.find((item) => item !== asset) ?? "");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
-    }
+    } finally { deletingRef.current=false;setIsDeleting(false); }
   };
 
   return <>
@@ -63,10 +66,11 @@ export function AssetManager(props: AssetManagerProps) {
         label={asset}
         color={asset === selectedAsset ? "primary" : "default"}
         variant={asset === selectedAsset ? "filled" : "outlined"}
+        disabled={isDeleting}
         onClick={() => onSelect(asset)}
-        onDelete={canManage && assets.length > 1 ? () => void remove(asset) : undefined}
+        onDelete={canManage && assets.length > 1 && !isDeleting ? () => void remove(asset) : undefined}
       />)}
-      <Button variant="outlined" onClick={() => setIsOpen(true)} disabled={!canManage}>+ Добавить актив</Button>
+      <Button variant="outlined" onClick={() => setIsOpen(true)} disabled={!canManage||isDeleting}>+ Добавить актив</Button>
     </Stack>
     {error && !isOpen && <Alert severity="error" sx={{ mt: 2 }}>{error}</Alert>}
     <Dialog open={isOpen} onClose={() => !isSaving && setIsOpen(false)} maxWidth="md">
