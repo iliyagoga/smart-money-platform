@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import re
 from fastapi import FastAPI,HTTPException,Query
 from pydantic import BaseModel,Field,model_validator
 from uuid import uuid4
@@ -10,6 +11,14 @@ service=ExchangeGateway(settings)
 async def lifespan(app):await service.start();yield;await service.stop()
 app=FastAPI(title="OKX Exchange Gateway",version="1.0.0",lifespan=lifespan)
 class SyncRequest(BaseModel):symbol:str="BTC-USDT-SWAP";timeframe:str="M15";limit:int=100
+class InstrumentPrepareRequest(BaseModel):
+    symbols:list[str]=Field(min_length=1,max_length=100)
+    @model_validator(mode="after")
+    def normalize(self):
+        self.symbols=list(dict.fromkeys(symbol.strip().upper() for symbol in self.symbols))
+        if any(not re.fullmatch(r"[A-Z0-9]{2,15}-[A-Z0-9]{2,10}-SWAP",symbol) for symbol in self.symbols):
+            raise ValueError("Invalid OKX swap symbol")
+        return self
 class HistoryRequest(BaseModel):
     symbol:str="BTC-USDT-SWAP";timeframes:list[str]=["M1","M5","M15","M30","H1","H4","D1"]
     from_timestamp:int|None=Field(default=None,ge=0);to_timestamp:int|None=Field(default=None,ge=0)
@@ -26,6 +35,9 @@ class HistoryRequest(BaseModel):
 async def health():return {"status":"UP","market_data_enabled":settings.market_data_enabled,"trading_enabled":settings.trading_enabled,"connections":service.connected,"symbols":service.symbols,"demo":settings.okx_demo,"last_error":service.last_error}
 @app.post("/exchange/reload-symbols")
 async def reload_symbols():return {"symbols":await service.refresh_symbols()}
+@app.post("/exchange/instruments/prepare")
+async def prepare_instruments(request:InstrumentPrepareRequest):
+    return await service.prepare_instruments(request.symbols)
 @app.get("/exchange/instruments")
 async def instruments():return {"instruments":await service.instruments()}
 @app.get("/exchange/instruments/{symbol}/availability")

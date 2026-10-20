@@ -67,6 +67,16 @@ class ExecutionService:
             raise ValueError(f"Unable to validate {symbol} in {mode}: {exc}") from exc
         if not availability.get("available"):
             raise ValueError(availability.get("reason") or f"{symbol} is unavailable in {mode}")
+    async def prepare_portfolio_assets(self,symbols:list[str]):
+        try:
+            response=await self.http.post(
+                f"{self.exchange_service_url}/exchange/instruments/prepare",json={"symbols":symbols})
+            response.raise_for_status();result=response.json()
+        except (httpx.HTTPError,ValueError) as exc:
+            raise ValueError(f"Unable to prepare portfolio instruments: {exc}") from exc
+        unavailable=result.get("unavailable") or []
+        if unavailable:
+            raise ValueError(f"OKX instrument metadata is unavailable: {', '.join(unavailable)}")
     async def validate_portfolio_capital(self,mode:str,capital:float):
         if mode=="PAPER":return
         try:

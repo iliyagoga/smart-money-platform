@@ -58,7 +58,8 @@ class PortfolioDb:
 def test_portfolio_live_uses_explicit_shared_capital_and_publishes_each_asset(monkeypatch):
     async def check():
         db=PortfolioDb();monkeypatch.setattr(execution_app.service,"db",db)
-        validate=AsyncMock();validate_capital=AsyncMock();publish=AsyncMock()
+        prepare=AsyncMock();validate=AsyncMock();validate_capital=AsyncMock();publish=AsyncMock()
+        monkeypatch.setattr(execution_app.service,"prepare_portfolio_assets",prepare)
         monkeypatch.setattr(execution_app.service,"validate_execution_mode",validate)
         monkeypatch.setattr(execution_app.service,"validate_portfolio_capital",validate_capital)
         monkeypatch.setattr(execution_app.service,"publish_channel",publish)
@@ -67,6 +68,7 @@ def test_portfolio_live_uses_explicit_shared_capital_and_publishes_each_asset(mo
         )
         assert result["capital"]==140
         assert result["activated_symbols"]==["BTC-USDT-SWAP","ETH-USDT-SWAP"]
+        prepare.assert_awaited_once_with(["BTC-USDT-SWAP","ETH-USDT-SWAP"])
         validate_capital.assert_awaited_once_with("PRODUCTION",140)
         assert validate.await_count==2 and publish.await_count==2
         assert db.connection.execute.await_count==3
@@ -81,6 +83,21 @@ def test_portfolio_live_uses_explicit_shared_capital_and_publishes_each_asset(mo
 def test_portfolio_live_rejects_asset_without_active_local_metadata(monkeypatch):
     async def check():
         db=PortfolioDb(registered=False);monkeypatch.setattr(execution_app.service,"db",db)
+        monkeypatch.setattr(execution_app.service,"prepare_portfolio_assets",AsyncMock())
+        with pytest.raises(HTTPException,match="ETH-USDT-SWAP") as raised:
+            await execution_app.portfolio_to_live(
+                PORTFOLIO_ID,execution_app.PortfolioLiveRequest(mode="PRODUCTION",capital=140),"user-1",
+            )
+        assert raised.value.status_code==409
+        assert db.connection.execute.await_count==0
+    asyncio.run(check())
+
+
+def test_portfolio_live_reports_exchange_instrument_preparation_failure(monkeypatch):
+    async def check():
+        db=PortfolioDb();monkeypatch.setattr(execution_app.service,"db",db)
+        prepare=AsyncMock(side_effect=ValueError("OKX instrument metadata is unavailable: ETH-USDT-SWAP"))
+        monkeypatch.setattr(execution_app.service,"prepare_portfolio_assets",prepare)
         with pytest.raises(HTTPException,match="ETH-USDT-SWAP") as raised:
             await execution_app.portfolio_to_live(
                 PORTFOLIO_ID,execution_app.PortfolioLiveRequest(mode="PRODUCTION",capital=140),"user-1",

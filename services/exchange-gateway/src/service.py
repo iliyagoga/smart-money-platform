@@ -173,13 +173,14 @@ class ExchangeGateway:
                 self.connected[name]=False;await asyncio.sleep(delay+random.random());delay=min(delay*2,60)  # nosec B311
             finally:self.websockets.pop(name,None)
     async def refresh_symbols(self):
-        try:rows=await self.db.fetch("SELECT symbol FROM trading_assets WHERE enabled ORDER BY symbol")
+        try:rows=await self.db.fetch("SELECT symbol FROM trading_assets WHERE enabled AND validation_status='ACTIVE' ORDER BY symbol")
         except asyncpg.UndefinedTableError:rows=[]
         self.active_symbols=[row["symbol"] for row in rows]
         await self.refresh_instrument_specs(self.active_symbols)
         for connection in list(self.websockets.values()):await connection.close()
         return self.symbols
     async def refresh_instrument_specs(self,symbols):
+        refreshed=[]
         for symbol in symbols:
             try:
                 response=await self.client.get(
@@ -188,8 +189,12 @@ class ExchangeGateway:
                 response.raise_for_status();body=response.json();items=body.get("data") or []
                 if body.get("code")!="0" or not items:continue
                 instrument=items[0];spec=instrument_spec(instrument)
-                funding_response=await self.client.get(self.s.okx_rest_url+"/api/v5/public/funding-rate",params={"instId":symbol})
-                funding_body=funding_response.json();funding=(funding_body.get("data") or [{}])[0]
+                funding={}
+                try:
+                    funding_response=await self.client.get(self.s.okx_rest_url+"/api/v5/public/funding-rate",params={"instId":symbol})
+                    funding_response.raise_for_status();funding_body=funding_response.json()
+                    if funding_body.get("code")=="0":funding=(funding_body.get("data") or [{}])[0]
+                except Exception as exc:self.last_error=f"funding metadata {symbol}: {type(exc).__name__}: {exc}"[:500]
                 maker=taker=None
                 if all((self.s.okx_api_key,self.s.okx_secret_key,self.s.okx_passphrase)) and spec["fee_group_id"]:
                     try:
@@ -207,8 +212,32 @@ class ExchangeGateway:
                     spec["quantity_precision"],spec["contract_value"],maker,taker,float(funding.get("fundingRate") or 0),
                     int(funding.get("nextFundingTime") or 0),json.dumps({"source":"OKX","instrument":instrument,"funding":funding}),
                 )
+                refreshed.append(symbol)
             except Exception as exc:
                 self.last_error=f"instrument metadata {symbol}: {type(exc).__name__}: {exc}"[:500]
+        return refreshed
+    async def prepare_instruments(self,symbols):
+        symbols=list(dict.fromkeys(symbol.strip().upper() for symbol in symbols))
+        await self.db.executemany(
+            """INSERT INTO trading_assets(symbol,display_name,category,enabled,price_precision,quantity_precision,
+                 minimum_order_size,validation_status)
+               VALUES($1,$1,'crypto',true,2,6,.000001,'PENDING')
+               ON CONFLICT(symbol) DO UPDATE SET enabled=true,updated_at=now()""",
+            [(symbol,) for symbol in symbols],
+        )
+        await self.refresh_instrument_specs(symbols)
+        rows=await self.db.fetch(
+            """SELECT symbol FROM trading_assets
+               WHERE symbol=ANY($1::text[]) AND enabled AND validation_status='ACTIVE'""",symbols,
+        )
+        prepared={row["symbol"] for row in rows}
+        active_rows=await self.db.fetch(
+            "SELECT symbol FROM trading_assets WHERE enabled AND validation_status='ACTIVE' ORDER BY symbol"
+        )
+        self.active_symbols=[row["symbol"] for row in active_rows]
+        for connection in list(self.websockets.values()):await connection.close()
+        return {"prepared":[symbol for symbol in symbols if symbol in prepared],
+                "unavailable":[symbol for symbol in symbols if symbol not in prepared]}
     async def ingest(self,path,payload):
         response=await self.client.post(self.s.data_service_url+path,json=payload,headers={"X-Correlation-ID":"okx-"+str(payload.get("timestamp",0))})
         if response.is_error:raise ValueError(f"{path}: {response.status_code} {response.text[:300]} payload={payload}")

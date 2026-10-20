@@ -199,6 +199,48 @@ def test_availability_reports_okx_http_failure_instead_of_raising_server_error()
         assert result["reason"]=="OKX HTTP 503: upstream unavailable"
     asyncio.run(check())
 
+def test_prepare_instruments_registers_and_reenables_portfolio_symbols():
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    async def check():
+        service=ExchangeGateway(SimpleNamespace(history_concurrency=1,symbols="BTC-USDT-SWAP"))
+        service.db=AsyncMock();service.websockets={}
+        service.refresh_instrument_specs=AsyncMock(return_value=["AVAX-USDT-SWAP"])
+        service.db.fetch.side_effect=[
+          [{"symbol":"AVAX-USDT-SWAP"}],
+          [{"symbol":"AVAX-USDT-SWAP"},{"symbol":"BTC-USDT-SWAP"}],
+        ]
+        result=await service.prepare_instruments(["avax-usdt-swap","AVAX-USDT-SWAP","MISSING-USDT-SWAP"])
+        assert result=={"prepared":["AVAX-USDT-SWAP"],"unavailable":["MISSING-USDT-SWAP"]}
+        service.db.executemany.assert_awaited_once()
+        assert service.db.executemany.await_args.args[1]==[("AVAX-USDT-SWAP",),("MISSING-USDT-SWAP",)]
+        service.refresh_instrument_specs.assert_awaited_once_with(["AVAX-USDT-SWAP","MISSING-USDT-SWAP"])
+        assert service.active_symbols==["AVAX-USDT-SWAP","BTC-USDT-SWAP"]
+    asyncio.run(check())
+
+def test_instrument_metadata_remains_usable_when_funding_endpoint_fails():
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock,Mock
+
+    async def check():
+        service=ExchangeGateway(SimpleNamespace(
+          history_concurrency=1,okx_rest_url="https://www.okx.com",
+          okx_api_key="",okx_secret_key="",okx_passphrase=""))
+        service.db=AsyncMock();service.client=AsyncMock()
+        instrument=Mock();instrument.json.return_value={"code":"0","data":[{
+          "instId":"AVAX-USDT-SWAP","tickSz":"0.01","lotSz":"1","minSz":"1","ctVal":"0.1",
+          "state":"live",
+        }]}
+        funding=Mock();funding.raise_for_status.side_effect=RuntimeError("funding unavailable")
+        service.client.get.side_effect=[instrument,funding]
+        assert await service.refresh_instrument_specs(["AVAX-USDT-SWAP"])==["AVAX-USDT-SWAP"]
+        service.db.execute.assert_awaited_once()
+        assert service.db.execute.await_args.args[1]=="AVAX-USDT-SWAP"
+    asyncio.run(check())
+
 @pytest.mark.parametrize("changes",[
     {"okx_rest_url":"http://www.okx.com"},
     {"okx_private_ws_url":"ws://wspap.okx.com/ws/v5/private"},

@@ -208,6 +208,8 @@ async def portfolio_to_live(portfolio_id:UUID,request:PortfolioLiveRequest,x_use
     if sum(float(item["allocation_percent"]) for item in assets)>100.000001:
         raise HTTPException(422,"Live portfolio allocation must not exceed 100%")
     symbols=[item["symbol"].strip().upper() for item in assets]
+    try:await service.prepare_portfolio_assets(symbols)
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
     registered=await service.db.fetch(
         "SELECT symbol FROM trading_assets WHERE symbol=ANY($1::text[]) AND enabled AND validation_status='ACTIVE'",
         symbols,
