@@ -152,7 +152,8 @@ class ElliottService:
             missing=[timeframe for timeframe,items in candles_by_tf.items() if not items]
             if missing:
                 data={"patterns":[],"entries":[],"orders":[],"trades":[],"summary":{},
-                      "message":f"Waiting for candles: {', '.join(missing)}"}
+                      "progress":20,"phase":f"Ожидание свечей: {', '.join(missing)}",
+                      "missing_timeframes":missing,"message":f"Waiting for candles: {', '.join(missing)}"}
                 await self._save_history_snapshot(symbol,"WAITING_FOR_DATA",config_hash,data)
                 return data
             loop=asyncio.get_running_loop();reported=-1
@@ -211,7 +212,8 @@ class ElliottService:
     async def _publish_history_progress(self,symbol,status,data):
         if not hasattr(self.infra,"publish"):return
         payload={"symbol":symbol,"status":status,"progress":100 if status=="COMPLETED" else data.get("progress",0),
-                 "phase":data.get("phase","Расчёт завершён" if status=="COMPLETED" else ""),"error":data.get("error")}
+                 "phase":data.get("phase","Расчёт завершён" if status=="COMPLETED" else ""),"error":data.get("error"),
+                 "missing_timeframes":data.get("missing_timeframes",[]),"message":data.get("message")}
         await self.infra.publish("history.update","history.calculation_progress",payload)
     async def trading_config(self,symbol:str):
         try:

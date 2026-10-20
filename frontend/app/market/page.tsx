@@ -22,13 +22,13 @@ type ElliottPatternsResponse = { symbol: string; patterns: LiveElliottPattern[];
 type LiveEntriesResponse = { symbol: string; entries: LiveEntryScenario[]; total: number };
 type ElliottHistoryResponse = {
   symbol: string; status: "NOT_BUILT" | "BUILDING" | "WAITING_FOR_DATA" | "COMPLETED" | "FAILED";
-  error?: string; message?: string; updated_at?: number; progress?: number; phase?: string;
+  error?: string; message?: string; updated_at?: number; progress?: number; phase?: string;missing_timeframes?:string[];
   patterns: LiveElliottPattern[]; entries: LiveEntryScenario[]; trades: HistoricalPaperTrade[];
 };
 type HistoryStatus = "QUEUED" | "RUNNING" | "PAUSED" | "CANCELLED" | "COMPLETED" | "FAILED";
 type HistoryJob = { id:string;symbol:string;status:HistoryStatus;progress:number;ingested:number;
   timeframe_status:Record<string,{ status:HistoryStatus;progress?:number;ingested:number;requests:number;error?:string }> };
-type CalculationProgress = { symbol:string;status:ElliottHistoryResponse["status"];progress:number;phase?:string;error?:string };
+type CalculationProgress = { symbol:string;status:ElliottHistoryResponse["status"];progress:number;phase?:string;error?:string;missing_timeframes?:string[] };
 type HistoricalPaperTrade = {
   id: string; direction: "LONG" | "SHORT"; entry_time: number; entry_price: number;
   exit_time: number; exit_price: number; pnl: number; pnl_percent: number; reason: string;
@@ -45,7 +45,9 @@ export default function MarketPage() {
   const [settingsExpanded,setSettingsExpanded]=useState(false);
   const [saving, setSaving] = useState(false); const [message, setMessage] = useState(""); const [selectedTf, setSelectedTf] = useState("M15");
   const [historyJob,setHistoryJob]=useState<HistoryJob>();
+  const [historyJobReadyFor,setHistoryJobReadyFor]=useState("");
   const [calculationProgress,setCalculationProgress]=useState<CalculationProgress>();
+  const recoveryRequests=useRef(new Set<string>());
   const tradingConfigs = useApiResource<TradingConfigsResponse>("/api/v1/execution/trading-configs");
   const serverActiveConfigs = useMemo(() => (tradingConfigs.data?.configs ?? []).filter((config) => config.status === "ACTIVE"), [tradingConfigs.data]);
   const activeConfigs = useMemo(
@@ -88,19 +90,32 @@ export default function MarketPage() {
   const reloadHistory = historicalElliott.reload;
   const reloadTradingConfigs=tradingConfigs.reload;
   useEffect(() => {
-    let active=true;setHistoryJob(undefined);
+    let active=true;setHistoryJob(undefined);setHistoryJobReadyFor("");
     if (!viewed)return () => { active=false; };
     void api<{jobs:HistoryJob[]}>("/api/v1/exchange/exchange/history?limit=50")
       .then(({jobs}) => { if (active)setHistoryJob(jobs.find((item)=>item.symbol===viewed)); })
-      .catch(()=>undefined);
+      .catch(()=>undefined).finally(() => { if (active)setHistoryJobReadyFor(viewed); });
     return () => { active=false; };
   },[viewed]);
   useEffect(() => {
     if (!currentHistory)return;
+    const missing=historyMissingTimeframes(currentHistory);
     setCalculationProgress({ symbol:viewed,status:currentHistory.status,
       progress:currentHistory.status==="COMPLETED" ? 100 : currentHistory.progress ?? 0,
-      phase:currentHistory.phase,error:currentHistory.error });
+      phase:currentHistory.phase,error:currentHistory.error,missing_timeframes:missing });
   },[currentHistory,viewed]);
+  useEffect(() => {
+    const missing=currentHistory?.status==="WAITING_FOR_DATA" ? historyMissingTimeframes(currentHistory) : [];
+    const activeJob=historyJob && ["QUEUED","RUNNING","PAUSED"].includes(historyJob.status);
+    if (!viewed || historyJobReadyFor!==viewed || !missing.length || activeJob)return;
+    const key=`${viewed}:${[...missing].sort().join(",")}`;
+    if (recoveryRequests.current.has(key))return;
+    recoveryRequests.current.add(key);
+    void api<HistoryJob>("/api/v1/exchange/exchange/history", { method:"POST",body:JSON.stringify({
+      symbol:viewed,timeframes:missing,from_timestamp:Date.now()-180*86400000,to_timestamp:Date.now(),
+      incremental:false,backfill:false,
+    }) }).then((created)=>setHistoryJob(created)).catch(()=>recoveryRequests.current.delete(key));
+  },[currentHistory,historyJob,historyJobReadyFor,viewed]);
   useEffect(() => {
     if (!viewed)return;
     const historySocket=new EventSocket(["history.*"],[viewed]);
@@ -150,7 +165,7 @@ export default function MarketPage() {
       const missing = elliottTimeframes.filter((timeframe) => !dataset.timeframes.some((item) => item.timeframe === timeframe && item.candles > 0));
       if (missing.length) {
         const created=await api<HistoryJob>("/api/v1/exchange/exchange/history", { method: "POST", body: JSON.stringify({ symbol: selected, timeframes: missing, from_timestamp: Date.now() - 180 * 86400000, to_timestamp: Date.now(), incremental: false, backfill: false }) });
-        setHistoryJob(created);
+        setHistoryJob(created);setHistoryJobReadyFor(selected);
         setMessage(`Для ${selected} запрошены свечи: ${missing.join(", ")}. Конфигурация сохраняется.`);
       }
       await api(`/api/v1/backtest/assets`, { method: "POST", body: JSON.stringify({ symbol: selected, category: "crypto" }) }).catch((error: unknown) => { if (!(error instanceof Error) || !error.message.startsWith("409")) throw error; });
@@ -201,7 +216,7 @@ export default function MarketPage() {
       <MarketProgress job={historyJob?.symbol===viewed ? historyJob : undefined}
         calculation={calculationProgress?.symbol===viewed ? calculationProgress : undefined}
         chartTimeframe={selectedTf} chartLoading={candles.loading} />
-      {currentHistory?.status === "WAITING_FOR_DATA" && <Alert severity="warning">Исторический расчёт ждёт загрузки свечей.</Alert>}
+      {currentHistory?.status === "WAITING_FOR_DATA" && <Alert severity="warning">Исторический расчёт ждёт TF: {historyMissingTimeframes(currentHistory).join(", ") || "нет данных"}. Догрузка запускается автоматически.</Alert>}
       {currentHistory?.status === "FAILED" && <Alert severity="error">Не удалось рассчитать историю: {currentHistory.error}</Alert>}
       <TradingViewChart key={`${viewed}:${selectedTf}`} candles={candles.data?.candles ?? []} isLoading={candles.loading} elliottPatterns={displayedPatterns} entryScenarios={displayedEntries} historicalTrades={currentHistory?.trades ?? []} /></> : <EmptyState text="Нет активных активов для просмотра. Зарегистрируйте актив в настройках ниже." />}</Stack></Paper>
     <Accordion id="asset-settings" expanded={settingsExpanded} onChange={(_,expanded) => setSettingsExpanded(expanded)}
@@ -224,6 +239,12 @@ export default function MarketPage() {
   </Stack></SectionPage>;
 }
 
+function historyMissingTimeframes(history:ElliottHistoryResponse):string[] {
+  if (history.missing_timeframes?.length)return history.missing_timeframes;
+  const match=history.message?.match(/Waiting for candles:\s*(.+)$/i);
+  return match ? match[1].split(",").map((item)=>item.trim()).filter((item)=>allTimeframes.includes(item)) : [];
+}
+
 function MarketProgress({ job,calculation,chartTimeframe,chartLoading }:{
   job?:HistoryJob;calculation?:CalculationProgress;chartTimeframe:string;chartLoading:boolean;
 }) {
@@ -236,9 +257,9 @@ function MarketProgress({ job,calculation,chartTimeframe,chartLoading }:{
     <Stack spacing={.75}>
       <Stack direction="row" useFlexGap sx={{ alignItems:"center",gap:1,flexWrap:"wrap" }}>
         <Typography variant="caption" sx={{ fontWeight:700 }}>Подготовка графика</Typography>
-        <Chip size="small" variant="outlined" label={`${chartTimeframe}: ${chartLoading ? "загружается" : "готов"}`} />
+        <Chip size="small" variant="outlined" label={`График ${chartTimeframe}: ${chartLoading ? "загружается" : "готов"}`} />
         {loadingActive && <Typography variant="caption" color="text.secondary">Свечи · {job.progress}%</Typography>}
-        {calculationActive && <Typography variant="caption" color="text.secondary">Расчёт · {calculation.progress}%</Typography>}
+        {calculationActive && <Typography variant="caption" color="text.secondary">{calculation.status==="WAITING_FOR_DATA" ? `История: ждём ${calculation.missing_timeframes?.join(", ") || "свечи"}` : `Расчёт · ${calculation.progress}%`}</Typography>}
       </Stack>
       {loadingActive && <><LinearProgress variant="determinate" value={job.progress} sx={{ height:4,borderRadius:2 }}/>
         <Stack direction="row" useFlexGap sx={{ gap:.75,flexWrap:"wrap" }}>

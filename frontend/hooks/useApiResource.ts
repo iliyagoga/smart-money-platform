@@ -19,15 +19,19 @@ export function useApiResource<T>(path: string, debounceMs = 0): ApiResource<T> 
 
   useEffect(() => {
     let isActive = true;
+    const controller = new AbortController();
     setIsLoading(true);
     setError("");
     const timer = setTimeout(() => {
-      api<T>(path)
+      api<T>(path, { signal: controller.signal })
         .then((response) => { if (isActive) setData(response); })
-        .catch((reason: unknown) => { if (isActive) setError(reason instanceof Error ? reason.message : String(reason)); })
+        .catch((reason: unknown) => {
+          if (isActive && (!(reason instanceof DOMException) || reason.name !== "AbortError"))
+            setError(reason instanceof Error ? reason.message : String(reason));
+        })
         .finally(() => { if (isActive) setIsLoading(false); });
     }, debounceMs);
-    return () => { isActive = false; clearTimeout(timer); };
+    return () => { isActive = false; clearTimeout(timer);controller.abort(); };
   }, [path, requestNumber, debounceMs]);
 
   return { data, error, isLoading, reload };
