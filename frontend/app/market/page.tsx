@@ -50,7 +50,7 @@ export default function MarketPage() {
   const elliottPatterns = useApiResource<ElliottPatternsResponse>(`/api/v1/elliott/elliott/patterns?symbol=${encodeURIComponent(viewed)}`);
   const liveEntries = useApiResource<LiveEntriesResponse>(`/api/v1/elliott/elliott/entries?symbol=${encodeURIComponent(viewed)}`);
   const historicalElliott = useApiResource<ElliottHistoryResponse>(`/api/v1/elliott/elliott/history?symbol=${encodeURIComponent(viewed)}`);
-  const candles = useOkxCandles(viewed,selectedTf,candleLimit);
+  const candles = useMarketCandles(viewed,selectedTf,candleLimit);
   const currentHistory = historicalElliott.data?.symbol === viewed ? historicalElliott.data : undefined;
   const displayedPatterns = currentHistory?.status === "COMPLETED"
     ? currentHistory.patterns : (elliottPatterns.data?.symbol === viewed ? elliottPatterns.data.patterns : []);
@@ -66,7 +66,7 @@ export default function MarketPage() {
   const reloadScenarios = liveEntries.reload;
   const reloadHistory = historicalElliott.reload;
   const reloadTradingConfigs=tradingConfigs.reload;
-  useEffect(() => { const socket = new EventSocket(["candle.*","scenario.*","trading.config.*"]); const unsubscribe = socket.subscribe((event) => { if (event.event_type.startsWith("trading.config.")) reloadTradingConfigs(); if (event.payload?.symbol === viewed) { if (!event.payload.timeframe || event.payload.timeframe === selectedTf) reloadCandles(); reloadPatterns(); reloadScenarios(); } }); void socket.connect(); const timer = window.setInterval(() => { reloadCandles(); reloadPatterns(); reloadScenarios(); reloadHistory(); }, 15_000); return () => { unsubscribe(); socket.close(); window.clearInterval(timer); }; }, [viewed, selectedTf, reloadCandles, reloadPatterns, reloadScenarios, reloadHistory, reloadTradingConfigs]);
+  useEffect(() => { const socket = new EventSocket(["candle.*","scenario.*","trading.config.*"]); const unsubscribe = socket.subscribe((event) => { if (event.event_type.startsWith("trading.config.")) reloadTradingConfigs(); if (event.payload?.symbol === viewed) { if (!event.payload.timeframe || event.payload.timeframe === selectedTf) reloadCandles(); reloadPatterns(); reloadScenarios(); } }); void socket.connect(); const timer = window.setInterval(() => { reloadCandles(); reloadPatterns(); reloadScenarios(); reloadHistory(); }, 60_000); return () => { unsubscribe(); socket.close(); window.clearInterval(timer); }; }, [viewed, selectedTf, reloadCandles, reloadPatterns, reloadScenarios, reloadHistory, reloadTradingConfigs]);
   const save = async () => {
     setSaving(true);setMessage("");
     try {
@@ -202,6 +202,15 @@ function timeframeWindowLimit(selected: string, macro: string): number {
 
 const candleCache = new Map<string, Candle[]>();
 const browserCacheTimers = new Map<string,number>();
+const candleRequests = new Map<string,Promise<CandlesResponse>>();
+const candleSnapshotLimits = new Map<string,number>();
+
+function requestCandles(path:string):Promise<CandlesResponse> {
+  const pending=candleRequests.get(path);
+  if (pending) return pending;
+  const request=api<CandlesResponse>(path).finally(() => candleRequests.delete(path));
+  candleRequests.set(path,request);return request;
+}
 
 function openCandleCache():Promise<IDBDatabase> {
   return new Promise((resolve,reject) => {
@@ -248,14 +257,24 @@ function mergeCandles(current: Candle[], incoming: Candle[]): Candle[] {
     .sort((left, right) => left.timestamp - right.timestamp);
 }
 
-function useOkxCandles(symbol: string, timeframe: string, limit: number) {
-  const key = `${symbol}:${timeframe}`;
+function hasCandleGap(candles:Candle[],timeframe:string):boolean {
+  const step=(timeframeMinutes[timeframe] ?? 15)*60_000;
+  return candles.some((item,index) => index>0 && item.timestamp-candles[index-1].timestamp!==step);
+}
+
+function useMarketCandles(symbol: string, timeframe: string, limit: number) {
+  const key = `market-v2:${symbol}:${timeframe}`;
   const [data, setData] = useState<CandlesResponse>({ symbol, timeframe, candles: candleCache.get(key) ?? [] });
   const [reloadKey, setReloadKey] = useState(0);
   const [loading,setLoading] = useState(false);
   const cacheRef = useRef(candleCache);
   const fingerprintRef = useRef(`${key}:${candleFingerprint(data.candles)}`);
-  const reload = useCallback(() => setReloadKey((current) => current + 1), []);
+  const reloadTimer=useRef<number|undefined>(undefined);
+  const reload = useCallback(() => {
+    if (reloadTimer.current) window.clearTimeout(reloadTimer.current);
+    reloadTimer.current=window.setTimeout(() => setReloadKey((current) => current + 1),750);
+  }, []);
+  useEffect(() => () => { if (reloadTimer.current) window.clearTimeout(reloadTimer.current); },[]);
 
   useEffect(() => {
     let cancelled = false;
@@ -273,28 +292,15 @@ function useOkxCandles(symbol: string, timeframe: string, limit: number) {
         cacheRef.current.set(key,collected);
         if (!cancelled) commit(collected.slice(-limit));
       }
-      const first = await api<CandlesResponse>(
-        `/api/v1/exchange/exchange/market-candles?symbol=${encodeURIComponent(symbol)}`
-        + `&timeframe=${timeframe}&limit=${Math.min(300,limit)}`,
-      );
-      collected = mergeCandles(collected,first.candles);
-      if (!cancelled && !cacheRef.current.get(key)?.length) commit(collected.slice(-limit));
-      let cursor = collected[0]?.timestamp;
-      while (!cancelled && collected.length < limit && first.candles.length) {
-        const remaining = Math.min(300,limit-collected.length);
-        const page = await api<CandlesResponse>(
-          `/api/v1/exchange/exchange/market-candles?symbol=${encodeURIComponent(symbol)}`
-          + `&timeframe=${timeframe}&limit=${remaining}&after=${cursor}`,
-        );
-        if (!page.candles.length) break;
-        const previousSize = collected.length;
-        collected = mergeCandles(collected,page.candles);
-        const nextCursor = collected[0]?.timestamp;
-        if (collected.length === previousSize || nextCursor === cursor) break;
-        cursor = nextCursor;
-        cacheRef.current.set(key,collected);
-        if (page.candles.length < remaining) break;
-      }
+      const lastTimestamp=collected.at(-1)?.timestamp;
+      const checkedLimit=candleSnapshotLimits.get(key) ?? 0;
+      const needsSnapshot=checkedLimit<limit || (checkedLimit===0 && hasCandleGap(collected.slice(-limit),timeframe));
+      const path=`/api/v1/data/market/candles?symbol=${encodeURIComponent(symbol)}`
+        + `&timeframe=${timeframe}&limit=${needsSnapshot ? limit : 1000}`
+        + (needsSnapshot || lastTimestamp === undefined ? "" : `&from=${lastTimestamp}`);
+      const response=await requestCandles(path);
+      collected=mergeCandles(collected,response.candles);
+      if (needsSnapshot) candleSnapshotLimits.set(key,limit);
       const result = collected.slice(-limit);
       cacheRef.current.set(key,result);
       scheduleBrowserCandleWrite(key,result);

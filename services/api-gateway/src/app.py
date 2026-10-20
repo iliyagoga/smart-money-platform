@@ -89,6 +89,11 @@ async def security_headers(request:Request,call_next):
     return response
 
 async def check_rate_limit(request:Request,subject:str,category:str="read"):
+    # Authenticated reads are intentionally unlimited. The market screen is fed by
+    # websocket events and cached snapshots, and throttling those GETs makes a busy
+    # chart fail even though it cannot mutate platform state.
+    if category == "read":
+        return
     limit={"read":settings.requests_per_minute,"mutation":settings.mutations_per_minute,
            "expensive":settings.expensive_requests_per_minute}[category]
     key=f"rate-limit:{subject}:{category}:{int(time()//60)}"

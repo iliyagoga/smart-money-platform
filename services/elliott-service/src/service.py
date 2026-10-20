@@ -5,12 +5,14 @@ from collections import defaultdict
 from .infrastructure import Infrastructure,resilient_loop
 from .models import *
 from .elliott_live import ElliottLiveEngine, normalize_config
+from .okx_market import OkxMarketDataUnavailable,OkxMarketSource,TIMEFRAME_MILLISECONDS
 
 log=logging.getLogger(__name__)
 class ElliottService:
-    def __init__(self,infra:Infrastructure):
+    def __init__(self,infra:Infrastructure,okx_rest_url:str|None=None):
         self.infra=infra;self.candles=defaultdict(list);self.scenarios={};self.elliott=ElliottLiveEngine();self.task=None
         self.history_tasks:dict[str,asyncio.Task]={};self.outbox_task=None
+        self.live_market=OkxMarketSource(okx_rest_url) if okx_rest_url else None
     def store_candle(self,candle:Candle):
         bars=self.candles[(candle.symbol,candle.timeframe)]
         bars[:]=[item for item in bars if item.timestamp!=candle.timestamp]
@@ -28,6 +30,7 @@ class ElliottService:
         if self.task:self.task.cancel()
         if self.outbox_task:self.outbox_task.cancel()
         for task in self.history_tasks.values():task.cancel()
+        if self.live_market:await self.live_market.close()
 
     async def outbox_loop(self):
         while True:
@@ -50,7 +53,8 @@ class ElliottService:
           SELECT symbol,timeframe,(extract(epoch FROM ts)*1000)::bigint AS timestamp,
                  open::float8,high::float8,low::float8,close::float8,volume::float8,
                  quote_volume::float8,trades_count,is_closed
-          FROM (SELECT *,row_number() OVER(PARTITION BY symbol,timeframe ORDER BY ts DESC) AS rn FROM candles) recent
+          FROM (SELECT *,row_number() OVER(PARTITION BY symbol,timeframe ORDER BY ts DESC) AS rn FROM candles
+                WHERE is_closed) recent
           WHERE rn<=500 ORDER BY symbol,timeframe,ts
         """)
         for row in rows:self.store_candle(Candle.model_validate(dict(row)))
@@ -88,7 +92,7 @@ class ElliottService:
                  open::float8,high::float8,low::float8,close::float8,volume::float8,
                  quote_volume::float8,trades_count,is_closed
           FROM (SELECT *,row_number() OVER(PARTITION BY symbol,timeframe ORDER BY ts DESC) AS rn
-                FROM candles WHERE symbol=$1 AND timeframe=ANY($2::text[])) recent
+                FROM candles WHERE symbol=$1 AND timeframe=ANY($2::text[]) AND is_closed) recent
           WHERE rn<=$3 ORDER BY ts,timeframe
         """,symbol,[str(item) for item in timeframes],limit)
         before=len(self.scenarios)
@@ -215,10 +219,27 @@ class ElliottService:
     async def process(self,candle:Candle,correlation_id:str|None=None):
         self.store_candle(candle)
         trading_config=await self.trading_config(candle.symbol)
-        strategy=(normalize_config(trading_config or {}).get("strategy") if trading_config else None)
+        normalized=normalize_config(trading_config or {})
+        strategy=(normalized.get("strategy") if trading_config else None)
         if strategy=="ELLIOTT":
-            try:generated=self.elliott.generate(candle.symbol,candle,self.candles,trading_config,
+            try:
+                candle_source=self.candles;analysis_candle=candle
+                ec=normalized.get("elliott",{})
+                entry_timeframe=ec.get("entry_timeframe","M15")
+                if self.live_market and correlation_id != "history-rebuild" and str(candle.timeframe)==entry_timeframe:
+                    macro_timeframe=ec.get("macro_timeframe","H4")
+                    required=list(dict.fromkeys((entry_timeframe,ec.get("structure_timeframe","H1"),macro_timeframe)))
+                    macro_duration=TIMEFRAME_MILLISECONDS[macro_timeframe]
+                    limits={timeframe:min(200_000,max(500,(500*macro_duration+TIMEFRAME_MILLISECONDS[timeframe]-1)
+                                                          //TIMEFRAME_MILLISECONDS[timeframe]))
+                            for timeframe in required}
+                    candle_source=await self.live_market.load(candle.symbol,limits,entry_timeframe,candle.timestamp)
+                    analysis_candle=candle_source[(candle.symbol,Timeframe(entry_timeframe))][-1]
+                generated=self.elliott.generate(candle.symbol,analysis_candle,candle_source,trading_config,
                                                 allow_live_emit=correlation_id != "history-rebuild")
+            except OkxMarketDataUnavailable as exc:
+                log.warning("Live Elliott analysis is waiting for complete OKX data for %s: %s",candle.symbol,exc)
+                generated=[]
             except (ValueError,KeyError):
                 log.exception("Invalid Elliott live config for %s",candle.symbol);generated=[]
         else:generated=[]

@@ -7,7 +7,7 @@ from .service import ElliottService
 from .settings import settings
 
 infra=Infrastructure(settings.database_url,settings.redis_url)
-service=ElliottService(infra)
+service=ElliottService(infra,settings.okx_rest_url)
 class RebuildRequest(BaseModel):
     symbol:str;timeframes:list[Timeframe];limit:int=Field(default=500,ge=100,le=2000)
 
