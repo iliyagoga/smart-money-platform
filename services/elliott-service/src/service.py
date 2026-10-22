@@ -50,19 +50,21 @@ class ElliottService:
                 if item["id"]==scenario.id:item["origin"]="LIVE";break
     async def restore(self):
         rows=await self.infra.db.fetch("""
-          SELECT symbol,timeframe,(extract(epoch FROM ts)*1000)::bigint AS timestamp,
-                 open::float8,high::float8,low::float8,close::float8,volume::float8,
-                 quote_volume::float8,trades_count,is_closed
-          FROM (SELECT *,row_number() OVER(PARTITION BY symbol,timeframe ORDER BY ts DESC) AS rn FROM candles
-                WHERE is_closed) recent
-          WHERE rn<=500 ORDER BY symbol,timeframe,ts
+          SELECT recent.symbol,recent.timeframe,(extract(epoch FROM recent.ts)*1000)::bigint AS timestamp,
+                 recent.open::float8,recent.high::float8,recent.low::float8,recent.close::float8,recent.volume::float8,
+                 recent.quote_volume::float8,recent.trades_count,recent.is_closed
+          FROM (SELECT DISTINCT symbol,timeframe FROM candles WHERE is_closed) pairs
+          CROSS JOIN LATERAL (SELECT * FROM candles c WHERE c.symbol=pairs.symbol AND c.timeframe=pairs.timeframe
+                              AND c.is_closed ORDER BY c.ts DESC LIMIT 500) recent
+          ORDER BY recent.symbol,recent.timeframe,recent.ts
         """)
         for row in rows:self.store_candle(Candle.model_validate(dict(row)))
         scenarios=await self.infra.db.fetch("SELECT data FROM scenarios WHERE status='ACTIVE' AND data->>'setup_type'='ELLIOTT_WAVE3'")
         for row in scenarios:
             item=Scenario.model_validate_json(row["data"] if isinstance(row["data"],str) else json.dumps(row["data"]))
             self.scenarios[item.id]=item
-        live_elliott=await self.infra.db.fetch("SELECT data FROM scenarios WHERE data->>'setup_type'='ELLIOTT_WAVE3'")
+        live_elliott=await self.infra.db.fetch("""SELECT data FROM scenarios
+          WHERE data->>'setup_type'='ELLIOTT_WAVE3' AND created_at>now()-interval '180 days'""")
         for row in live_elliott:
             value=json.loads(row["data"]) if isinstance(row["data"],str) else row["data"]
             pattern_id=value.get("id")
@@ -79,6 +81,9 @@ class ElliottService:
                     if message["channel"]=="trading.config":
                         symbol=str(payload.get("symbol","")).strip().upper()
                         if symbol and envelope.get("event_type")=="trading.config.saved":self.schedule_history_snapshot(symbol)
+                        if symbol and envelope.get("event_type")=="trading.config.deleted":
+                            task=self.history_tasks.get(symbol)
+                            if task:task.cancel()
                     elif payload.get("is_closed",True):
                         await self.process(Candle.model_validate(payload),envelope.get("correlation_id"))
                 except Exception:
@@ -221,15 +226,15 @@ class ElliottService:
                 """SELECT tc.config,ta.tick_size,ta.lot_size,ta.minimum_order_size,
                   ta.maker_fee_rate,ta.taker_fee_rate,ta.funding_rate
                   FROM trading_configs tc JOIN trading_assets ta ON ta.symbol=tc.symbol
-                  WHERE tc.symbol=$1 AND tc.status='ACTIVE' AND ta.validation_status='ACTIVE'""",symbol,
+                  WHERE tc.symbol=$1 AND tc.status='ACTIVE' AND ta.enabled AND ta.validation_status='ACTIVE'""",symbol,
             )
         except asyncpg.UndefinedTableError:
             return None
         if not row:return None
         value=row["config"];value=json.loads(value) if isinstance(value,str) else dict(value)
         value={**value,"tickSize":row["tick_size"],"lotSize":row["lot_size"],
-          "minimumOrderSize":row["minimum_order_size"],"makerFeePercent":abs(row["maker_fee_rate"] or 0)*100,
-          "takerFeePercent":abs(row["taker_fee_rate"] or 0)*100,"fundingPercentPerDay":(row["funding_rate"] or 0)*300}
+          "minimumOrderSize":row["minimum_order_size"],"makerFeePercent":-(row["maker_fee_rate"] or 0)*100,
+          "takerFeePercent":-(row["taker_fee_rate"] or 0)*100,"fundingPercentPerDay":(row["funding_rate"] or 0)*300}
         return value
     async def restore_elliott_patterns(self):
         try:rows=await self.infra.db.fetch("SELECT symbol,config FROM trading_configs WHERE status='ACTIVE'")

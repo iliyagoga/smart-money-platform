@@ -2,6 +2,7 @@ from src.models import *
 from src.resolver import ConflictResolver
 from src.risk import RiskManager
 from src.service import DecisionService,simulated_elliott_scenario
+import httpx
 
 def scenario(id,direction,confidence):return Scenario(id=id,symbol="BTC-USDT",timeframe="M15",direction=direction,setup_type="TEST",confidence=confidence,entry_zone_low=99,entry_zone_high=101,stop_loss_price=95,take_profit_prices=[110],expires_at=9999999999999)
 def test_conflict_rejects_inconclusive_directions():
@@ -126,6 +127,7 @@ def test_live_sizing_uses_edited_current_asset_capital_instead_of_portfolio_equi
           "elliott":{"useMargin":True,"reinvestProfits":True},
         },"mode":"PRODUCTION","lot_size":.01,"minimum_order_size":.01}
         service.db.fetchval.return_value=0;service.stream=AsyncMock()
+        service.http=AsyncMock();service.http.get.return_value=httpx.Response(200,json={"available":1000},request=httpx.Request("GET","http://exchange/account/capacity"))
         signal=ConflictResolver().signal(scenario("capital","LONG",1)).model_copy(update={
           "entry_price":100,"stop_loss_price":99,
         })
@@ -151,6 +153,7 @@ def test_production_portfolio_sizing_uses_140_shared_capital_and_asset_allocatio
           "elliott":{"useMargin":False,"reinvestProfits":True},
         },"mode":"PRODUCTION","lot_size":.01,"minimum_order_size":.01}
         service.stream=AsyncMock()
+        service.http=AsyncMock();service.http.get.return_value=httpx.Response(200,json={"available":140},request=httpx.Request("GET","http://exchange/account/capacity"))
         signal=ConflictResolver().signal(scenario("portfolio-capital","LONG",1)).model_copy(update={
           "entry_price":100,"stop_loss_price":99,
         })

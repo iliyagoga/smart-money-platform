@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from uuid import NAMESPACE_URL,uuid5
 
 from .models import Candle, Scenario, Timeframe
 
@@ -23,6 +24,9 @@ def normalize_config(value):
     if isinstance(value, list):
         return [normalize_config(item) for item in value]
     return value
+
+def live_scenario_id(symbol:str,entry_timeframe:str,pattern_id:str)->str:
+    return str(uuid5(NAMESPACE_URL,f"elliott-live:{symbol}:{entry_timeframe}:{pattern_id}"))
 
 
 def _strategy_levels(pattern, config, ec, plan: dict | None = None) -> dict:
@@ -268,13 +272,14 @@ class ElliottLiveEngine:
             plan = plans.get(pattern.id)
             if not pattern.signal_time or not plan:
                 continue
+            scenario_id=live_scenario_id(symbol,ec.entry_timeframe,pattern.id)
             entries.append({
-                "id":pattern.id,"direction":pattern.direction,"setup_type":"ELLIOTT_WAVE3",
+                "id":scenario_id,"direction":pattern.direction,"setup_type":"ELLIOTT_WAVE3",
                 "status":"ACTIVE" if pattern.signal_time+expiry >= available_at else "EXPIRED",
                 "entry_type":plan["entry_type"],"entry_zone_low":plan["entry"],"entry_zone_high":plan["entry"],
                 "created_at":pattern.signal_time,"expires_at":pattern.signal_time+expiry,
                 "entry_model":str(ec.entry_model),
-                "origin":"LIVE" if pattern.id in self.live_signal_ids else "HISTORICAL",
+                "origin":"LIVE" if scenario_id in self.live_signal_ids else "HISTORICAL",
                 "stop_loss_price":plan["stop"],"take_profit_prices":plan["targets"],
             })
         self.latest_entries[symbol]=entries
@@ -283,7 +288,8 @@ class ElliottLiveEngine:
         result = []
         for pattern in sorted((item for item in patterns if item.signal_time), key=lambda item: item.signal_time):
             plan = plans.get(pattern.id)
-            if pattern.id in self.emitted or not plan:
+            scenario_id=live_scenario_id(symbol,ec.entry_timeframe,pattern.id)
+            if scenario_id in self.emitted or not plan:
                 continue
             allocations = [1.0] if ec.take_profit_count == 1 else list(ec.take_profit_allocations)
             first_take_action = str(ec.first_take_action)
@@ -291,14 +297,14 @@ class ElliottLiveEngine:
                 "AFTER_TARGET" if first_take_action == "MOVE_TO_BREAK_EVEN" else "OFF"
             )
             result.append(Scenario(
-                id=pattern.id, symbol=symbol, timeframe=Timeframe(ec.entry_timeframe),
+                id=scenario_id, symbol=symbol, timeframe=Timeframe(ec.entry_timeframe),
                 direction=pattern.direction, setup_type="ELLIOTT_WAVE3", confidence=1,
                 entry_zone_low=plan["entry"], entry_zone_high=plan["entry"], entry_type=plan["entry_type"],
                 stop_loss_price=plan["stop"], take_profit_prices=plan["targets"], target_allocations=allocations,
                 target_rrs=plan["target_rrs"],
                 break_even_rule=break_even,
                 move_stop_to_break_even_after_target=1 if break_even == "AFTER_TARGET" else None,
-                one_trade_per_zone=True, deduplication_key=f"ELLIOTT:{pattern.id}",
+                one_trade_per_zone=True, deduplication_key=f"ELLIOTT:{scenario_id}",
                 reasons=["Elliott Wave 2 confirmed", "Wave 3 CHOCH confirmed"],
                 objects_used=[{"kind": "ELLIOTT_PATTERN", "id": pattern.id}],
                 created_at=available_at, expires_at=pattern.signal_time + expiry,

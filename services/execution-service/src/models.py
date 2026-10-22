@@ -11,11 +11,11 @@ class OrderCreate(BaseModel):
     target_allocations:list[float]=[];target_rrs:list[float]=[];break_even_rule:str="ONE_R";move_stop_to_break_even_after_target:int|None=1
     deduplication_key:str|None=None
     leverage:int=Field(default=1,ge=1,le=125);margin_mode:str="cross"
-    execution_mode:str="PAPER";portfolio_id:str|None=None;expires_at:int|None=None
+    execution_mode:str="PAPER";portfolio_id:str|None=None;activation_id:str|None=None;expires_at:int|None=None
     slippage_percent:float=Field(default=0,ge=0,le=10);tick_size:float=Field(default=.01,gt=0)
     lot_size:float=Field(default=.000001,gt=0);minimum_order_size:float=Field(default=.000001,gt=0)
     volume_participation_percent:float=Field(default=5,gt=0,le=100)
-    maker_fee_percent:float=Field(default=0,ge=-1,le=10);taker_fee_percent:float=Field(default=0,ge=0,le=10)
+    maker_fee_percent:float=Field(default=0,ge=-1,le=10);taker_fee_percent:float=Field(default=0,ge=-1,le=10)
     funding_percent_per_day:float=Field(default=0,ge=-10,le=10);funding_interval_hours:int=Field(default=8,ge=1,le=24)
     maintenance_margin_percent:float=Field(default=.5,ge=0,le=20);liquidation_fee_percent:float=Field(default=.5,ge=0,le=10)
     reduce_only:bool=False;position_id:str|None=None;close_reason:str|None=None
@@ -49,6 +49,10 @@ class Position(BaseModel):
     protective_filled_quantity:float=0;protective_filled_notional:float=0
     protective_filled_quantities:dict[str,float]={};protective_filled_notionals:dict[str,float]={}
     protection_pending:bool=False
+    requested_stop_loss_price:float|None=None
+    protection_trigger_kind:str|None=None
+    protection_trigger_price:float|None=None
+    force_exit:bool=False
     exit_filled_quantities:dict[str,float]={}
     funding_percent_per_day:float=0;funding_interval_hours:int=8;maintenance_margin_percent:float=.5;liquidation_fee_percent:float=.5
     fees:float=0;funding:float=0;last_funding_at:int|None=None

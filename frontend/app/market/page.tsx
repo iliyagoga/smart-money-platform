@@ -195,12 +195,14 @@ export default function MarketPage() {
     const removed=viewed;
     setSaving(true); setMessage("");
     try {
-      await api(`/api/v1/execution/trading-configs/${encodeURIComponent(removed)}`, { method: "DELETE" });
+      const stop=await api<{status:string;pending_orders:number;pending_positions:number}>(`/api/v1/execution/trading-configs/${encodeURIComponent(removed)}`, { method: "DELETE" });
       const remaining = activeAssets.filter((item) => item !== removed);
       setSuppressedActiveAssets((current)=>new Set(current).add(removed));
       setViewSymbol(remaining[0] ?? "");
       tradingConfigs.reload();
-      setMessage(`Актив ${removed} удалён из live trading.`);
+      setMessage(stop.status==="STOPPING"
+        ? `Новые сделки по ${removed} остановлены. Бэкенд отменяет вход и закрывает открытую позицию.`
+        : `Актив ${removed} удалён из live trading.`);
     } catch (reason) { setMessage(reason instanceof Error ? reason.message : String(reason)); }
     finally { setSaving(false); }
   };

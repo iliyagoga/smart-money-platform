@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI,Header,HTTPException
 from .models import *
-from .service import DecisionService
+from .service import DecisionService,decode_json
 from .settings import settings
 
 service=DecisionService(settings.database_url,settings.redis_url,settings.confidence_threshold,
@@ -13,7 +13,10 @@ app=FastAPI(title="Decision and Risk Service",version="1.0.0",lifespan=lifespan)
 
 @app.get("/health")
 async def health():
-    try:await service.redis.ping();await service.db.fetchval("SELECT 1");return {"status":"UP"}
+    try:
+        await service.redis.ping();await service.db.fetchval("SELECT 1")
+        if not service.tasks or any(task.done() for task in service.tasks):raise RuntimeError("Risk worker has stopped")
+        return {"status":"UP"}
     except Exception as exc:raise HTTPException(503,"Dependency unavailable") from exc
 @app.get("/risk/config",response_model=RiskConfig)
 async def risk_config():return await service.config()
@@ -25,7 +28,7 @@ async def risk_calculate(request:RiskCalculateRequest):
     if not signal:
         row=await service.db.fetchrow("SELECT data FROM trade_signals WHERE id=$1::uuid",request.signal_id)
         if not row:raise HTTPException(404,"Signal not found")
-        signal=TradeSignal.model_validate(row["data"])
+        signal=TradeSignal.model_validate(decode_json(row["data"]))
     return await service.assess(signal,request.capital)
 @app.post("/internal/scenarios/evaluate")
 async def evaluate(scenario:Scenario):return await service.evaluate(scenario)

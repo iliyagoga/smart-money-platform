@@ -50,6 +50,7 @@ class PortfolioDb:
     async def fetchrow(self,*_):return {"assets":self.assets}
 
     async def fetch(self,*_):
+        if "owner_id IS NOT NULL" in _[0]:return []
         if not self.registered:return [{"symbol":"BTC-USDT-SWAP"}]
         return [{"symbol":item["symbol"]} for item in self.assets]
 
@@ -62,6 +63,7 @@ def test_portfolio_live_uses_explicit_shared_capital_and_publishes_each_asset(mo
         prepare=AsyncMock();validate=AsyncMock();validate_capital=AsyncMock();publish=AsyncMock()
         monkeypatch.setattr(execution_app.service,"prepare_portfolio_assets",prepare)
         monkeypatch.setattr(execution_app.service,"validate_execution_mode",validate)
+        monkeypatch.setattr(execution_app.service,"validate_strategy_config",AsyncMock())
         monkeypatch.setattr(execution_app.service,"validate_portfolio_capital",validate_capital)
         monkeypatch.setattr(execution_app.service,"publish_channel",publish)
         result=await execution_app.portfolio_to_live(
@@ -114,4 +116,53 @@ def test_portfolio_preparation_timeout_has_actionable_error(monkeypatch):
         monkeypatch.setattr(execution_app.service,"http",client)
         with pytest.raises(ValueError,match=r"exchange gateway timeout \(ReadTimeout\)"):
             await execution_app.service.prepare_portfolio_assets(["AVAX-USDT-SWAP"])
+    asyncio.run(check())
+
+
+def test_manual_live_asset_prepares_exchange_metadata_and_checks_equity(monkeypatch):
+    async def check():
+        db=AsyncMock();db.fetchval.return_value=None
+        db.fetchrow.return_value={"symbol":"AVAX-USDT-SWAP","mode":"PRODUCTION","status":"ACTIVE",
+                                  "config":strategy_config()}
+        monkeypatch.setattr(execution_app.service,"db",db)
+        monkeypatch.setattr(execution_app.service,"orders",{})
+        monkeypatch.setattr(execution_app.service,"positions",{})
+        prepare=AsyncMock();validate=AsyncMock();capital=AsyncMock();publish=AsyncMock()
+        monkeypatch.setattr(execution_app.service,"prepare_portfolio_assets",prepare)
+        monkeypatch.setattr(execution_app.service,"validate_strategy_config",validate)
+        monkeypatch.setattr(execution_app.service,"validate_execution_mode",validate)
+        monkeypatch.setattr(execution_app.service,"validate_portfolio_capital",capital)
+        monkeypatch.setattr(execution_app.service,"publish_channel",publish)
+        result=await execution_app.save_trading_config(execution_app.TradingConfigCreate(
+          symbol="AVAX-USDT-SWAP",mode="PRODUCTION",config=strategy_config()),"user-1")
+        assert result["status"]=="ACTIVE"
+        prepare.assert_awaited_once_with(["AVAX-USDT-SWAP"])
+        capital.assert_awaited_once_with("PRODUCTION",10_000)
+        assert validate.await_count==2
+        publish.assert_awaited_once()
+    asyncio.run(check())
+
+
+def test_removing_active_asset_disables_entries_and_requests_exit(monkeypatch):
+    from src.models import Order,Position
+
+    async def check():
+        db=AsyncMock();db.fetchval.return_value="BTC-USDT-SWAP"
+        monkeypatch.setattr(execution_app.service,"db",db)
+        order=Order(symbol="BTC-USDT-SWAP",side="BUY",type="MARKET",quantity=1,
+                    execution_mode="PRODUCTION",status="SUBMITTING")
+        position=Position(order_id=order.id,symbol=order.symbol,direction="LONG",entry_price=100,
+                          current_price=100,quantity=1,initial_quantity=1,execution_mode="PRODUCTION")
+        monkeypatch.setattr(execution_app.service,"orders",{order.id:order})
+        monkeypatch.setattr(execution_app.service,"positions",{position.id:position})
+        cancel=AsyncMock();close=AsyncMock();publish=AsyncMock()
+        monkeypatch.setattr(execution_app.service,"request_cancel",cancel)
+        monkeypatch.setattr(execution_app.service,"request_position_close",close)
+        monkeypatch.setattr(execution_app.service,"publish_channel",publish)
+        result=await execution_app.delete_trading_config(order.symbol,"user-1")
+        assert result["status"]=="STOPPING"
+        assert "status='INACTIVE'" in db.fetchval.await_args.args[0]
+        cancel.assert_awaited_once_with(order)
+        close.assert_awaited_once_with(position,1,"ASSET_REMOVED")
+        publish.assert_awaited_once()
     asyncio.run(check())

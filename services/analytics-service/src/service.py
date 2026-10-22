@@ -32,6 +32,9 @@ class AnalyticsService:
             except asyncio.CancelledError:await ps.aclose();raise
             except Exception:await ps.aclose();await asyncio.sleep(2)
     async def persist_event(self,event):
+        if event.get("source")=="data-service" and event["event_type"] in {
+                "candle.update","trade.executed","orderbook.updated"}:
+            return
         await self.db.execute("INSERT INTO event_store(message_id,event_ts,event_type,source,correlation_id,payload) VALUES($1::uuid,to_timestamp($2/1000.0),$3,$4,$5,$6::jsonb) ON CONFLICT DO NOTHING",event["message_id"],event["timestamp"],event["event_type"],event["source"],event.get("correlation_id"),json.dumps(event["payload"]))
     async def trades(self,symbol=None,from_ts=None,to_ts=None):
         rows=await self.db.fetch("SELECT data FROM closed_trades WHERE ($1::text IS NULL OR symbol=$1) AND ($2::bigint IS NULL OR closed_at>=to_timestamp($2/1000.0)) AND ($3::bigint IS NULL OR closed_at<=to_timestamp($3/1000.0)) ORDER BY closed_at",symbol.upper() if symbol else None,from_ts,to_ts)

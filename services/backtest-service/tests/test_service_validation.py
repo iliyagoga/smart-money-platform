@@ -40,3 +40,16 @@ def test_backtest_requires_complete_ordered_test_period():
     for boundaries in [{"test_from": 100}, {"test_from": 200, "test_to": 100}]:
         with pytest.raises(ValidationError):
             BacktestCreate(symbol="BTC-USDT", **boundaries)
+def test_live_config_validation_rejects_invalid_elliott_timeframes():
+    import asyncio
+    import pytest
+    from pydantic import ValidationError
+    from src.app import validate_live_config
+
+    async def check():
+        assert await validate_live_config({"strategy":"ELLIOTT","elliott":{
+            "entryTimeframe":"M15","structureTimeframe":"H1","macroTimeframe":"H4"}})=={"valid":True}
+        with pytest.raises(ValidationError,match="entry < structure < macro"):
+            await validate_live_config({"strategy":"ELLIOTT","elliott":{
+                "entryTimeframe":"H4","structureTimeframe":"H1","macroTimeframe":"M15"}})
+    asyncio.run(check())

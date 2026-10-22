@@ -179,6 +179,7 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379
       EXCHANGE_SERVICE_URL: http://exchange-gateway:8070
+      BACKTEST_SERVICE_URL: http://backtest-service:8080
       EXECUTION_MODE: ${EXECUTION_MODE:-paper}
       STREAM_GROUP: execution-service
       CONSUMER_NAME: execution-1
@@ -189,6 +190,8 @@ services:
         condition: service_healthy
       decision-service:
         condition: service_healthy
+      exchange-gateway:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8030/health')\""]
       interval: 10s
@@ -251,9 +254,9 @@ services:
     restart: unless-stopped
     environment:
       OKX_REST_URL: ${OKX_REST_URL:-https://www.okx.com}
-      OKX_PUBLIC_WS_URL: ${OKX_PUBLIC_WS_URL:-wss://ws.okx.com:8443/ws/v5/public}
-      OKX_BUSINESS_WS_URL: ${OKX_BUSINESS_WS_URL:-wss://ws.okx.com:8443/ws/v5/business}
-      OKX_PRIVATE_WS_URL: ${OKX_PRIVATE_WS_URL:-wss://wspap.okx.com:8443/ws/v5/private}
+      OKX_PUBLIC_WS_URL: ${OKX_PUBLIC_WS_URL:-wss://ws.okx.com/ws/v5/public}
+      OKX_BUSINESS_WS_URL: ${OKX_BUSINESS_WS_URL:-wss://ws.okx.com/ws/v5/business}
+      OKX_PRIVATE_WS_URL: ${OKX_PRIVATE_WS_URL:-}
       OKX_API_KEY: ${OKX_API_KEY:-}
       OKX_SECRET_KEY: ${OKX_SECRET_KEY:-}
       OKX_PASSPHRASE: ${OKX_PASSPHRASE:-}
@@ -273,6 +276,8 @@ services:
       data-service:
         condition: service_healthy
       elliott-service:
+        condition: service_healthy
+      backtest-service:
         condition: service_healthy
       postgres:
         condition: service_healthy
@@ -331,7 +336,7 @@ services:
       backtest-service:
         condition: service_healthy
       exchange-gateway:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8050/health')\""]
       interval: 10s

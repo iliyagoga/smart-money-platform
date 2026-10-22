@@ -551,9 +551,13 @@ class BacktestService:
 
     async def disable_asset(self, symbol: str):
         async with self.db.acquire() as connection:
-            return await connection.fetchval(
-                "UPDATE trading_assets SET enabled=false,updated_at=now() WHERE symbol=$1 RETURNING symbol", symbol.upper()
-            )
+            async with connection.transaction():
+                removed=await connection.fetchval(
+                    "UPDATE trading_assets SET enabled=false,updated_at=now() WHERE symbol=$1 RETURNING symbol", symbol.upper()
+                )
+                if removed and await connection.fetchval("SELECT to_regclass('public.trading_configs') IS NOT NULL"):
+                    await connection.execute("UPDATE trading_configs SET status='INACTIVE',updated_at=now() WHERE symbol=$1",removed)
+                return removed
 
     async def export(self, run_id: UUID, user_id: str, format_name: str):
         run = await self.run(run_id, user_id)

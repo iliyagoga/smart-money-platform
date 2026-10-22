@@ -41,7 +41,7 @@ class DecisionService:
         rows=await self.db.fetch("SELECT data FROM scenarios WHERE status='ACTIVE' AND data->>'setup_type'='ELLIOTT_WAVE3'")
         for row in rows:
             try:
-                s=Scenario.model_validate(row["data"])
+                s=Scenario.model_validate(decode_json(row["data"]))
                 if s.expires_at>now_ms():self.scenarios[s.id]=s
                 else:await self.db.execute("UPDATE scenarios SET status='EXPIRED' WHERE id=$1::uuid",s.id)
             except Exception:log.exception("Could not restore Elliott scenario")
@@ -52,7 +52,8 @@ class DecisionService:
                 if signal.expires_at is None or signal.expires_at>now_ms():
                     self.signals[signal.signal_id]=signal;self.waiting.add(signal.signal_id)
             except Exception:log.exception("Could not restore waiting trade signal")
-        self.tasks=[asyncio.create_task(self.listen())]
+        self.tasks=[asyncio.create_task(self.listen()),asyncio.create_task(self.recover())]
+        for scenario in list(self.scenarios.values()):await self.evaluate(scenario)
     async def stop(self):
         for task in self.tasks:task.cancel()
         for task in self.pending.values():task.cancel()
@@ -76,6 +77,27 @@ class DecisionService:
                         self.reserved_signal_id=None;await self.retry_waiting()
             except asyncio.CancelledError:await pubsub.aclose();raise
             except Exception:log.exception("Scenario listener failed");await pubsub.aclose();await asyncio.sleep(2)
+    async def recover(self):
+        while True:
+            try:
+                active=await self.db.fetchval("SELECT EXISTS(SELECT 1 FROM orders WHERE status IN ('PENDING','OPEN','SUBMITTING','PARTIALLY_FILLED','CANCEL_REQUESTED','UNKNOWN') UNION ALL SELECT 1 FROM positions WHERE status!='CLOSED')")
+                if not active:self.reserved_signal_id=None
+                await self.retry_waiting()
+                rows=await self.db.fetch("""SELECT s.data FROM scenarios s LEFT JOIN trade_signals ts ON ts.scenario_id=s.id
+                  WHERE s.status='ACTIVE' AND s.data->>'setup_type'='ELLIOTT_WAVE3' AND ts.id IS NULL""")
+                for row in rows:
+                    scenario=Scenario.model_validate(decode_json(row["data"]))
+                    if scenario.expires_at>now_ms():await self.evaluate(scenario)
+                approvals=await self.db.fetch("""SELECT ts.data FROM trade_signals ts LEFT JOIN orders o ON o.signal_id=ts.id
+                  WHERE ts.status IN ('PENDING','APPROVED') AND o.id IS NULL AND ts.created_at>now()-interval '1 day'""")
+                for row in approvals:
+                    signal=TradeSignal.model_validate(decode_json(row["data"]))
+                    if signal.expires_at is None or signal.expires_at>now_ms():await self.assess(signal)
+                for scenario in list(self.scenarios.values()):
+                    if scenario.status=="ACTIVE" and scenario.expires_at>now_ms():await self.evaluate(scenario)
+            except asyncio.CancelledError:raise
+            except Exception:log.exception("Decision recovery failed")
+            await asyncio.sleep(10)
     async def evaluate(self,scenario:Scenario):
         if scenario.setup_type != "ELLIOTT_WAVE3":
             return None
@@ -144,9 +166,20 @@ class DecisionService:
         strategy=decode_json(strategy_row["config"]) if strategy_row else {}
         mode=str(strategy_row["mode"]).upper() if strategy_row else "PAPER"
         portfolio_id=config_value(strategy,"portfolioId","portfolio_id",None)
+        if not strategy_row:
+            decision=RiskDecision(signal_id=signal.signal_id,approved=False,rejection_reason="Trading asset is inactive")
+            self.waiting.discard(signal.signal_id)
+            await self.db.execute("UPDATE trade_signals SET status='REJECTED' WHERE id=$1::uuid",signal.signal_id)
+            return decision
+        activated_at=config_value(strategy,"activatedAt","activated_at",0)
+        if activated_at and signal.created_at<int(activated_at):
+            decision=RiskDecision(signal_id=signal.signal_id,approved=False,rejection_reason="Signal predates live activation")
+            self.waiting.discard(signal.signal_id)
+            await self.db.execute("UPDATE trade_signals SET status='REJECTED' WHERE id=$1::uuid",signal.signal_id)
+            return decision
         recent=await self.db.fetch("""SELECT pnl::float8,extract(epoch from closed_at)*1000 AS closed_at_ms
           FROM closed_trades WHERE data->>'execution_mode'=$1
-          AND ($2::text IS NULL OR data->>'portfolio_id'=$2) ORDER BY closed_at DESC LIMIT 100""",mode,portfolio_id)
+          AND ($2::text IS NULL OR data->>'portfolio_id'=$2) ORDER BY closed_at DESC""",mode,portfolio_id)
         today_start=int(datetime.now(timezone.utc).replace(hour=0,minute=0,second=0,microsecond=0).timestamp()*1000)
         daily=sum(float(row["pnl"]) for row in recent if int(row["closed_at_ms"])>=today_start)
         elliott=config_value(strategy,"elliott","elliott",{}) or {}
@@ -156,7 +189,20 @@ class DecisionService:
         leverage=int(config_value(strategy,"leverage","leverage",1))
         configured_initial=float(config_value(strategy,"initialCapital","initial_capital",self.default_capital))
         configured_current=float(config_value(strategy,"currentCapital","current_capital",configured_initial))
-        capital=float(capital) if capital is not None else configured_current
+        reinvest=bool(config_value(elliott,"reinvestProfits","reinvest_profits",True))
+        capital=float(capital) if capital is not None else (configured_current if reinvest else min(configured_current,configured_initial))
+        capital_ceiling=None
+        if mode in {"DEMO","PRODUCTION"}:
+            try:
+                response=await self.http.get(f"{self.exchange_service_url}/exchange/account/capacity",params={"mode":mode})
+                response.raise_for_status();capacity=response.json()
+                capital_ceiling=float(capacity["available"])
+                if capital_ceiling<=0:raise ValueError("OKX available balance is zero")
+            except (httpx.HTTPError,ValueError,KeyError) as exc:
+                decision=RiskDecision(signal_id=signal.signal_id,approved=False,rejection_reason=f"OKX capacity unavailable: {exc}")
+                self.waiting.add(signal.signal_id)
+                await self.db.execute("UPDATE trade_signals SET status='WAITING' WHERE id=$1::uuid",signal.signal_id)
+                return decision
         consecutive_losses=0;last_loss_at=None
         for row in recent:
             if row["pnl"]>=0:break
@@ -171,12 +217,15 @@ class DecisionService:
               lot_size=float(strategy_row["lot_size"]) if strategy_row and strategy_row["lot_size"] else None,
               minimum_order_size=(float(strategy_row["minimum_order_size"])
                                   if strategy_row and strategy_row["minimum_order_size"] else None),
-              capital_ceiling=None)
+              capital_ceiling=capital_ceiling)
             await self.db.execute("INSERT INTO risk_decisions(signal_id,approved,data) VALUES($1::uuid,$2,$3::jsonb)",signal.signal_id,decision.approved,json.dumps(decision.model_dump(mode="json")))
             if decision.approved:
                 self.reserved_signal_id=signal.signal_id;self.waiting.discard(signal.signal_id)
                 await self.db.execute("UPDATE trade_signals SET status='APPROVED' WHERE id=$1::uuid",signal.signal_id)
                 payload=decision.model_dump();payload["approved_at"]=payload.pop("timestamp");payload.pop("approved");payload.pop("rejection_reason")
+                payload["activation_id"]=config_value(strategy,"activationId","activation_id")
+                payload["execution_mode"]=mode
+                payload["portfolio_id"]=portfolio_id
                 await self.stream("trading.command","risk.approved",payload)
             else:
                 waiting=decision.rejection_reason=="Another trade is still active"

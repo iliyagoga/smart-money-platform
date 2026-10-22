@@ -12,10 +12,15 @@ def test_statistics():
 def test_event_store_accepts_non_uuid_correlation_ids():
     service=AnalyticsService("database","redis",10000);service.db=AsyncMock()
     event={"message_id":"00000000-0000-0000-0000-000000000001","timestamp":1,
-           "event_type":"candle.update","source":"data-service",
+           "event_type":"order.updated","source":"execution-service",
            "correlation_id":"okx-1789110956575","payload":{"symbol":"BTC-USDT-SWAP"}}
     asyncio.run(service.persist_event(event))
     assert service.db.execute.await_args.args[5]=="okx-1789110956575"
+
+def test_market_events_are_kept_in_market_tables_without_duplicate_event_log_writes():
+    service=AnalyticsService("database","redis",10000);service.db=AsyncMock()
+    asyncio.run(service.persist_event({"event_type":"candle.update","source":"data-service"}))
+    service.db.execute.assert_not_awaited()
 
 def test_live_portfolio_snapshot_uses_its_140_capital_and_scoped_trades():
     async def check():

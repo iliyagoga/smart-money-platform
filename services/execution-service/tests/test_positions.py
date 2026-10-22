@@ -6,7 +6,7 @@ import asyncio
 import httpx
 import pytest
 from pydantic import ValidationError
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock,Mock
 
 def position(**changes):
     data=dict(order_id="o",symbol="BTC-USDT",direction="LONG",entry_price=100,current_price=100,quantity=10,initial_quantity=10,stop_loss_price=95,initial_stop_loss_price=95,take_profit_prices=[110])
@@ -15,7 +15,8 @@ def candle(low,high,close):return Candle(symbol="BTC-USDT",timeframe="M1",timest
 
 def test_only_new_m1_candles_are_used_for_execution():
     item=candle(99,101,100).model_copy(update={"timestamp":120_000})
-    assert actionable_candle(item,120_001)
+    assert actionable_candle(item,120_000)
+    assert not actionable_candle(item,120_001)
     assert not actionable_candle(item.model_copy(update={"timestamp":60_000}),120_000)
     assert not actionable_candle(item.model_copy(update={"timeframe":"H4"}),120_001)
 def test_stop_has_conservative_priority():
@@ -86,6 +87,55 @@ def test_order_save_publishes_status_update_for_live_ui():
         service.publish.assert_awaited_once_with("order.updated",{
           "order_id":order.id,"signal_id":None,"symbol":"BTC-USDT","status":"SUBMITTING","rejection_reason":None,
         })
+    asyncio.run(check())
+
+def test_late_open_cannot_roll_back_a_filled_order():
+    async def check():
+        service=ExecutionService("unused","unused")
+        order=Order(symbol="BTC-USDT-SWAP",side="BUY",type="MARKET",quantity=1,status="FILLED")
+        service.orders[order.id]=order;service.save_order=AsyncMock()
+        await service.on_exchange_order({"order_id":order.id,"status":"OPEN"})
+        assert order.status=="FILLED"
+        service.save_order.assert_not_awaited()
+    asyncio.run(check())
+
+def test_cancelled_order_applies_its_cumulative_fill_first():
+    async def check():
+        service=ExecutionService("unused","unused")
+        order=Order(symbol="BTC-USDT-SWAP",side="BUY",type="LIMIT",price=100,quantity=2,status="OPEN")
+        service.orders[order.id]=order;service.fill=AsyncMock();service.save_order=AsyncMock();service.publish=AsyncMock()
+        await service.on_exchange_order({"order_id":order.id,"status":"CANCELLED",
+          "filled_price":100,"filled_quantity":1})
+        assert service.fill.await_args.kwargs["cumulative_quantity"]==1
+        assert order.status=="CANCELLED"
+        service.publish.assert_awaited_once()
+    asyncio.run(check())
+
+def test_unprotected_partial_fill_forces_reduce_only_exit():
+    async def check():
+        service=ExecutionService("unused","unused")
+        order=Order(symbol="BTC-USDT-SWAP",side="BUY",type="LIMIT",price=100,quantity=2,status="OPEN")
+        position=Position(order_id=order.id,symbol=order.symbol,direction="LONG",entry_price=100,
+                          current_price=100,quantity=1,initial_quantity=1,execution_mode="PRODUCTION")
+        service.orders[order.id]=order;service.positions[position.id]=position
+        service.fill=AsyncMock();service.save_position=AsyncMock();service.request_position_close=AsyncMock()
+        await service.on_exchange_order({"order_id":order.id,"status":"PARTIALLY_FILLED",
+          "filled_price":100,"filled_quantity":1,"unprotected_partial":True})
+        assert position.force_exit
+        service.request_position_close.assert_awaited_once_with(position,1,"UNPROTECTED_PARTIAL")
+    asyncio.run(check())
+
+def test_missing_exchange_stop_forces_exit_without_browser():
+    async def check():
+        service=ExecutionService("unused","unused")
+        position=Position(order_id="order-1",symbol="BTC-USDT-SWAP",direction="LONG",
+                          entry_price=100,current_price=100,quantity=1,initial_quantity=1,
+                          execution_mode="PRODUCTION")
+        service.positions[position.id]=position
+        service.save_position=AsyncMock();service.request_position_close=AsyncMock()
+        await service.on_protection_missing({"position_id":position.id,"symbol":position.symbol})
+        assert position.force_exit
+        service.request_position_close.assert_awaited_once_with(position,1,"PROTECTION_MISSING")
     asyncio.run(check())
 
 def test_approved_portfolio_signal_propagates_production_scope_to_order():
@@ -211,11 +261,19 @@ def test_closed_production_trade_keeps_portfolio_scope_for_risk_history():
     async def check():
         service=ExecutionService("postgresql://unused","redis://unused")
         service.db=AsyncMock();service.redis=AsyncMock();service.save_position=AsyncMock()
-        service.update_current_capital=AsyncMock();service.publish=AsyncMock()
+        class Connection:
+            def __init__(self):
+                self.execute=AsyncMock();self.fetchval=AsyncMock(side_effect=["locked","inserted"])
+            async def __aenter__(self):return self
+            async def __aexit__(self,*_):return False
+            def transaction(self):return self
+        connection=Connection();service.db.acquire=Mock(return_value=connection)
+        service.update_current_capital=AsyncMock(return_value=[]);service.publish=AsyncMock()
+        service.db.fetch.return_value=[]
         p=position(quantity=1,initial_quantity=1,execution_mode="PRODUCTION",portfolio_id="portfolio-1")
         await service.close(p,1,110,"FIXED_RR_TARGET",exchange_fill=True)
-        insert=next(call for call in service.db.execute.await_args_list if "INSERT INTO closed_trades" in call.args[0])
-        payload=__import__("json").loads(insert.args[5])
+        insert=next(call for call in connection.fetchval.await_args_list if "INSERT INTO closed_trades" in call.args[0])
+        payload=__import__("json").loads(insert.args[4])
         assert payload["execution_mode"]=="PRODUCTION"
         assert payload["portfolio_id"]=="portfolio-1"
         service.update_current_capital.assert_awaited_once()
@@ -233,7 +291,7 @@ def test_exchange_partial_fills_use_cumulative_quantity_and_incremental_price():
           "filled_price":103,"filled_quantity":10})
         assert service.fill.await_args_list[0].args[1]==100
         assert service.fill.await_args_list[1].args[1]==pytest.approx(105)
-        assert service.fill.await_args_list[1].kwargs=={"cumulative_quantity":10,"final":True}
+        assert service.fill.await_args_list[1].kwargs=={"cumulative_quantity":10,"final":True,"exec_type":None}
     asyncio.run(check())
 
 def test_each_live_take_profit_and_stop_tracks_its_own_cumulative_fill():

@@ -1,11 +1,12 @@
 from contextlib import asynccontextmanager
 from uuid import UUID
+import re
 
 from pydantic import AwareDatetime
 
 from fastapi import FastAPI, Header, HTTPException, Query, Response
 
-from .models import AssetCreate, BacktestCreate, OptimizationSessionCreate, OptimizationSessionUpdate, PortfolioBacktestCreate
+from .models import AssetCreate, BacktestConfig, BacktestCreate, OptimizationSessionCreate, OptimizationSessionUpdate, PortfolioBacktestCreate
 from .service import BacktestService
 from .settings import settings
 
@@ -20,6 +21,18 @@ async def lifespan(app):
 
 
 app = FastAPI(title="Elliott Wave Backtest Service", version="1.0.0", lifespan=lifespan)
+
+def normalize_live_config(value):
+    if isinstance(value,dict):
+        return {re.sub(r"(?<!^)(?=[A-Z])","_",str(key)).lower():normalize_live_config(item)
+                for key,item in value.items()}
+    if isinstance(value,list):return [normalize_live_config(item) for item in value]
+    return value
+
+@app.post("/internal/validate-live-config")
+async def validate_live_config(config:dict):
+    BacktestConfig.model_validate(normalize_live_config(config))
+    return {"valid":True}
 
 
 @app.get("/health")

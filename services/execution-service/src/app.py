@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import json
+import logging
 from math import isfinite
 import asyncpg
 from fastapi import FastAPI,Header,HTTPException,Query
@@ -8,6 +9,7 @@ from .service import ExecutionService,decode_json
 from .settings import settings
 from pydantic import BaseModel,Field,model_validator
 from uuid import UUID,uuid4
+from time import time
 
 def analyze_trades(items: list[dict]):
     total=len(items);wins=[item for item in items if item.get("pnl",0)>0];losses=[item for item in items if item.get("pnl",0)<0]
@@ -86,14 +88,18 @@ def portfolio_record(row):
     return value
 
 service=ExecutionService(settings.database_url,settings.redis_url,settings.stream_group,settings.consumer_name,
-  settings.execution_mode,settings.exchange_service_url)
+  settings.execution_mode,settings.exchange_service_url,settings.backtest_service_url)
 @asynccontextmanager
 async def lifespan(app):await service.start();yield;await service.stop()
 app=FastAPI(title="Execution and Position Service",version="1.0.0",lifespan=lifespan)
+log=logging.getLogger(__name__)
 
 @app.get("/health")
 async def health():
-    try:await service.redis.ping();await service.db.fetchval("SELECT 1");return {"status":"UP","mode":service.mode}
+    try:
+        await service.redis.ping();await service.db.fetchval("SELECT 1")
+        if not service.tasks or any(task.done() for task in service.tasks):raise RuntimeError("Trading worker has stopped")
+        return {"status":"UP","mode":service.mode}
     except Exception as exc:raise HTTPException(503,"Dependency unavailable") from exc
 @app.get("/orders")
 async def orders(symbol:str|None=None,status:str|None=None,limit:int=Query(100,ge=1,le=1000),offset:int=Query(0,ge=0)):
@@ -125,38 +131,62 @@ async def positions():
     return {"positions":[{**x.model_dump(),"unrealized_pnl":x.unrealized()} for x in items]}
 
 @app.get("/trading-configs")
-async def trading_configs():
-    rows=await service.db.fetch("SELECT symbol,mode,status,config,created_at,updated_at FROM trading_configs ORDER BY symbol")
+async def trading_configs(x_user_id:str=Header(default="local")):
+    rows=await service.db.fetch("""SELECT symbol,mode,status,config,created_at,updated_at FROM trading_configs
+      WHERE owner_id=$1 OR owner_id IS NULL ORDER BY symbol""",x_user_id)
     return {"configs":[dict(row) for row in rows]}
 
 @app.post("/trading-configs",status_code=201)
-async def save_trading_config(request: TradingConfigCreate):
+async def save_trading_config(request: TradingConfigCreate,x_user_id:str=Header(default="local")):
     symbol=request.symbol.strip().upper()
     if not symbol: raise HTTPException(422,"symbol must not be empty")
     mode=request.normalized_mode
     if mode not in {"PAPER","DEMO","PRODUCTION"}:raise HTTPException(422,"mode must be PAPER, DEMO or PRODUCTION")
+    if any(item.symbol==symbol and item.status in {"PENDING","OPEN","SUBMITTING","PARTIALLY_FILLED","CANCEL_REQUESTED","UNKNOWN"} for item in service.orders.values()) or any(item.symbol==symbol and item.status!="CLOSED" for item in service.positions.values()):
+        raise HTTPException(409,"Finish the existing trade before changing this asset")
+    owner=await service.db.fetchval("SELECT owner_id FROM trading_configs WHERE symbol=$1",symbol)
+    if owner is not None and owner!=x_user_id:raise HTTPException(409,"Trading asset belongs to another user")
     try:
+        await service.prepare_portfolio_assets([symbol])
         service.validate_live_config(request.config,mode)
+        await service.validate_strategy_config(request.config)
         await service.validate_execution_mode(symbol,mode)
+        capital=float(request.config.get("currentCapital",request.config.get("current_capital",
+                      request.config.get("initialCapital",request.config.get("initial_capital",0)))))
+        await service.validate_portfolio_capital(mode,capital)
     except ValueError as exc:raise HTTPException(409,str(exc)) from exc
-    row=await service.db.fetchrow("""INSERT INTO trading_configs(symbol,mode,status,config) VALUES($1,$2,'ACTIVE',$3::jsonb)
-      ON CONFLICT(symbol) DO UPDATE SET mode=excluded.mode,status='ACTIVE',config=excluded.config,updated_at=now()
-      RETURNING symbol,mode,status,config,created_at,updated_at""",symbol,mode,json.dumps(request.config))
+    config={**request.config,"activationId":str(uuid4()),"activatedAt":int(time()*1000)}
+    row=await service.db.fetchrow("""INSERT INTO trading_configs(symbol,mode,status,config,owner_id) VALUES($1,$2,'ACTIVE',$3::jsonb,$4)
+      ON CONFLICT(symbol) DO UPDATE SET mode=excluded.mode,status='ACTIVE',config=excluded.config,
+        owner_id=excluded.owner_id,updated_at=now()
+      WHERE trading_configs.owner_id IS NULL OR trading_configs.owner_id=excluded.owner_id
+      RETURNING symbol,mode,status,config,created_at,updated_at""",symbol,mode,json.dumps(config),x_user_id)
+    if not row:raise HTTPException(409,"Trading asset belongs to another user")
     await service.publish_channel("trading.config","trading.config.saved",{"symbol":symbol,"mode":mode})
     return dict(row)
 @app.delete("/trading-configs/{symbol}")
-async def delete_trading_config(symbol: str):
+async def delete_trading_config(symbol: str,x_user_id:str=Header(default="local")):
     symbol=symbol.strip().upper()
     if not symbol:raise HTTPException(422,"symbol must not be empty")
-    has_order=any(item.symbol==symbol and item.status in {"PENDING","OPEN","SUBMITTING","PARTIALLY_FILLED","CANCEL_REQUESTED"} for item in service.orders.values())
-    has_position=any(item.symbol==symbol and item.status!="CLOSED" for item in service.positions.values())
-    if has_order or has_position:
-        raise HTTPException(409,"Close the active order or position before removing the trading asset")
-    removed=await service.db.fetchval("DELETE FROM trading_configs WHERE symbol=$1 RETURNING symbol",symbol)
+    removed=await service.db.fetchval("""UPDATE trading_configs SET status='INACTIVE',updated_at=now()
+      WHERE symbol=$1 AND status='ACTIVE' AND (owner_id=$2 OR owner_id IS NULL) RETURNING symbol""",symbol,x_user_id)
     if not removed:raise HTTPException(404,"Trading asset not found")
     await service.db.execute("DELETE FROM elliott_history_snapshots WHERE symbol=$1",symbol)
-    await service.publish_channel("trading.config","trading.config.deleted",{"symbol":symbol})
-    return {"success":True,"symbol":removed}
+    try:await service.publish_channel("trading.config","trading.config.deleted",{"symbol":symbol})
+    except Exception:log.exception("Asset stop event will be recovered by backend polling")
+    pending_orders=[order for order in service.orders.values() if order.symbol==symbol and order.status in {
+      "PENDING","OPEN","SUBMITTING","PARTIALLY_FILLED","UNKNOWN"}]
+    pending_positions=[position for position in service.positions.values() if position.symbol==symbol and position.status!="CLOSED"]
+    for order in pending_orders:
+        try:await service.request_cancel(order)
+        except Exception:log.exception("Order cancellation will be retried by backend supervisor")
+    for position in pending_positions:
+        try:
+            if position.execution_mode=="PAPER":await service.close(position,position.quantity,position.current_price,"ASSET_REMOVED")
+            else:await service.request_position_close(position,position.quantity,"ASSET_REMOVED")
+        except Exception:log.exception("Position exit will be retried by backend supervisor")
+    return {"success":True,"symbol":removed,"status":"STOPPING" if pending_orders or pending_positions else "STOPPED",
+            "pending_orders":len(pending_orders),"pending_positions":len(pending_positions)}
 
 @app.get("/portfolios")
 async def portfolios(x_user_id:str=Header(default="local")):
@@ -194,20 +224,34 @@ async def update_portfolio(portfolio_id:UUID,request:PortfolioWrite,x_user_id:st
 
 @app.delete("/portfolios/{portfolio_id}")
 async def delete_portfolio(portfolio_id:UUID,x_user_id:str=Header(default="local")):
-    removed=await service.db.fetchval("DELETE FROM portfolios WHERE id=$1 AND owner_id=$2 RETURNING id",portfolio_id,x_user_id)
-    if not removed:raise HTTPException(404,"Portfolio not found")
+    rows=await service.db.fetch("""SELECT symbol FROM trading_configs WHERE coalesce(config->>'portfolioId',config->>'portfolio_id')=$1
+      AND status='ACTIVE' AND (owner_id=$2 OR owner_id IS NULL)""",str(portfolio_id),x_user_id)
+    async with service.db.acquire() as connection:
+      async with connection.transaction():
+        removed=await connection.fetchval("DELETE FROM portfolios WHERE id=$1 AND owner_id=$2 RETURNING id",portfolio_id,x_user_id)
+        if not removed:raise HTTPException(404,"Portfolio not found")
+        await connection.execute("""UPDATE trading_configs SET status='INACTIVE',updated_at=now()
+          WHERE coalesce(config->>'portfolioId',config->>'portfolio_id')=$1 AND (owner_id=$2 OR owner_id IS NULL)""",
+          str(portfolio_id),x_user_id)
+    for row in rows:
+        await service.publish_channel("trading.config","trading.config.deleted",{"symbol":row["symbol"]})
     return {"deleted":True,"id":str(removed)}
 
 @app.post("/portfolios/{portfolio_id}/live")
 async def portfolio_to_live(portfolio_id:UUID,request:PortfolioLiveRequest,x_user_id:str=Header(default="local")):
     mode=request.mode.strip().upper()
     if mode not in {"PAPER","DEMO","PRODUCTION"}:raise HTTPException(422,"mode must be PAPER, DEMO or PRODUCTION")
+    if any(item.status in {"PENDING","OPEN","SUBMITTING","PARTIALLY_FILLED","CANCEL_REQUESTED","UNKNOWN"} for item in service.orders.values()) or any(item.status!="CLOSED" for item in service.positions.values()):
+        raise HTTPException(409,"Finish active trades before switching the live portfolio")
     row=await service.db.fetchrow("SELECT assets FROM portfolios WHERE id=$1 AND owner_id=$2",portfolio_id,x_user_id)
     if not row:raise HTTPException(404,"Portfolio not found")
     assets=decode_json(row["assets"])
     if sum(float(item["allocation_percent"]) for item in assets)>100.000001:
         raise HTTPException(422,"Live portfolio allocation must not exceed 100%")
     symbols=[item["symbol"].strip().upper() for item in assets]
+    conflicts=await service.db.fetch("""SELECT symbol FROM trading_configs WHERE symbol=ANY($1::text[])
+      AND owner_id IS NOT NULL AND owner_id<>$2""",symbols,x_user_id)
+    if conflicts:raise HTTPException(409,"Trading asset belongs to another user")
     try:await service.prepare_portfolio_assets(symbols)
     except ValueError as exc:raise HTTPException(409,str(exc)) from exc
     registered=await service.db.fetch(
@@ -220,25 +264,30 @@ async def portfolio_to_live(portfolio_id:UUID,request:PortfolioLiveRequest,x_use
         raise HTTPException(409,f"Trading asset metadata is unavailable: {', '.join(unavailable)}")
     try:await service.validate_portfolio_capital(mode,request.capital)
     except ValueError as exc:raise HTTPException(409,str(exc)) from exc
-    live_configs=[]
+    live_configs=[];activation_id=str(uuid4());activated_at=int(time()*1000)
     for item in assets:
         config={**item["config"],"initialCapital":request.capital,"currentCapital":request.capital,
-                "portfolioAllocationPercent":item["allocation_percent"],"portfolioId":str(portfolio_id)}
+                "portfolioAllocationPercent":item["allocation_percent"],"portfolioId":str(portfolio_id),
+                "activationId":activation_id,"activatedAt":activated_at}
         config.pop("initial_capital",None);config.pop("current_capital",None)
         try:
             TradingConfigCreate(symbol=item["symbol"],mode=mode,config=config)
             service.validate_live_config(config,mode)
+            await service.validate_strategy_config(config)
             await service.validate_execution_mode(item["symbol"],mode)
         except (ValueError,TypeError) as exc:raise HTTPException(409,str(exc)) from exc
         live_configs.append((item["symbol"],config))
     async with service.db.acquire() as connection:
       async with connection.transaction():
         await connection.execute("""UPDATE trading_configs SET status='INACTIVE',updated_at=now()
-          WHERE status='ACTIVE' AND NOT (symbol=ANY($1::text[]))""",symbols)
+          WHERE status='ACTIVE' AND NOT (symbol=ANY($1::text[])) AND (owner_id=$2 OR owner_id IS NULL)""",symbols,x_user_id)
         for symbol,config in live_configs:
-          await connection.execute("""INSERT INTO trading_configs(symbol,mode,status,config) VALUES($1,$2,'ACTIVE',$3::jsonb)
-            ON CONFLICT(symbol) DO UPDATE SET mode=excluded.mode,status='ACTIVE',config=excluded.config,updated_at=now()""",
-            symbol,mode,json.dumps(config))
+          result=await connection.execute("""INSERT INTO trading_configs(symbol,mode,status,config,owner_id) VALUES($1,$2,'ACTIVE',$3::jsonb,$4)
+            ON CONFLICT(symbol) DO UPDATE SET mode=excluded.mode,status='ACTIVE',config=excluded.config,
+              owner_id=excluded.owner_id,updated_at=now()
+            WHERE trading_configs.owner_id IS NULL OR trading_configs.owner_id=excluded.owner_id""",
+            symbol,mode,json.dumps(config),x_user_id)
+          if result=="INSERT 0 0":raise HTTPException(409,"Trading asset belongs to another user")
     for symbol,_ in live_configs:
         await service.publish_channel("trading.config","trading.config.saved",{
             "symbol":symbol,"mode":mode,"portfolio_id":str(portfolio_id),
