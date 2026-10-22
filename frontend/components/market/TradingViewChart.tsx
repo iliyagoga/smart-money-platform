@@ -121,7 +121,7 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
     const visibleTrades=historicalTrades.filter((trade) => trade.exit_time >= visibleFrom && trade.entry_time <= visibleTo
       && !(trade.reason === "END_OF_DATA" && trade.exit_time < visibleTo));
     const overlayFingerprint=[visibleFrom,visibleTo,selectedEntryId,showWaves,showInternalWaves,showRetracement,showEntries,showRiskLevels,
-      ...visiblePatterns.map((item) => `${item.id}:${item.state}:${Object.values(item.points).map((point) => `${point.timestamp}:${point.price}`).join(",")}`),
+      ...visiblePatterns.map((item) => `${item.id}:${item.state}:${item.direction}:${item.structure_timeframe}:${Object.values(item.points).map((point) => `${point.timestamp}:${point.price}`).join(",")}:${JSON.stringify(item.strategy_levels ?? null)}`),
       ...visiblePatterns.flatMap((item) => (item.internal_points ?? []).map((point) => `${point.timestamp}:${point.price}`)),
       ...visibleEntries.map((item) => `${item.id}:${item.status}:${item.entry_model ?? item.entry_type ?? ""}:${item.stop_loss_price ?? ""}:${item.take_profit_prices?.join(",") ?? ""}:${entryResult(item,orderedCandles)}`),
       ...visibleTrades.map((item) => `${item.id}:${item.pnl}:${item.initial_stop ?? ""}:${item.take_profit_prices?.join(",") ?? ""}`)].join("|");

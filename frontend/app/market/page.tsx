@@ -67,8 +67,10 @@ export default function MarketPage() {
   const historicalElliott = useApiResource<ElliottHistoryResponse>(`/api/v1/elliott/elliott/history?symbol=${encodeURIComponent(viewed)}`);
   const candles = useMarketCandles(viewed,selectedTf,candleLimit);
   const currentHistory = historicalElliott.data?.symbol === viewed ? historicalElliott.data : undefined;
-  const displayedPatterns = currentHistory?.status === "COMPLETED"
-    ? currentHistory.patterns : (elliottPatterns.data?.symbol === viewed ? elliottPatterns.data.patterns : []);
+  const displayedPatterns = useMemo(() => [...new Map([
+    ...(currentHistory?.status === "COMPLETED" ? currentHistory.patterns : []),
+    ...(elliottPatterns.data?.symbol === viewed ? elliottPatterns.data.patterns : []),
+  ].map((pattern) => [pattern.id, pattern])).values()], [currentHistory, elliottPatterns.data, viewed]);
   const displayedEntries = useMemo(() => [...new Map([
     ...(currentHistory?.entries ?? []),...(liveEntries.data?.symbol === viewed ? liveEntries.data.entries : []),
   ].map((item) => [item.id,item])).values()], [currentHistory?.entries,liveEntries.data,viewed]);
