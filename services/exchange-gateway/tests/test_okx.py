@@ -1,10 +1,32 @@
 from src.okx import auth_headers,book,candle,trade,ws_login
 import httpx
 import pytest
+from unittest.mock import AsyncMock,patch
 from pydantic import ValidationError
 from decimal import Decimal
 from src.service import ExchangeGateway,attached_exit_orders,incremental_start,instrument_spec,okx_ack,okx_error_details,price_to_tick
 from src.settings import Settings
+
+@pytest.mark.parametrize(("raw_enabled","expected_streams"),[(False,["business"]),(True,["public","business"])])
+def test_raw_market_subscription_does_not_control_candle_stream(raw_enabled,expected_streams):
+    import asyncio
+
+    async def check():
+        gateway=ExchangeGateway(Settings(_env_file=None,market_data_enabled=True,raw_market_data_enabled=raw_enabled))
+        gateway.refresh_symbols=AsyncMock()
+        streams=[]
+        def record(coroutine):
+            if coroutine.cr_code.co_name=="loop":streams.append(coroutine.cr_frame.f_locals["name"])
+            coroutine.close()
+        gateway.add_task=record
+        pool=AsyncMock();pool.fetch.return_value=[]
+        with patch("src.service.asyncpg.create_pool",new=AsyncMock(return_value=pool)), \
+             patch("src.service.Redis.from_url",return_value=AsyncMock()):
+            await gateway.start()
+        await gateway.client.aclose()
+        assert streams==expected_streams
+    asyncio.run(check())
+
 def test_signature_matches_known_hmac():
     h=auth_headers("k","s","p","GET","/api/v5/account/balance",stamp="2020-01-01T00:00:00.000Z");assert h["OK-ACCESS-SIGN"]=="3+YzNZYq3N3si/o/YkbHvC4RpV8WeOY5ZpO7abfFcYA=";assert h["x-simulated-trading"]=="1"
 def test_private_websocket_login_signature():

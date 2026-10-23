@@ -156,7 +156,8 @@ class ExchangeGateway:
         for row in await self.db.fetch("SELECT id FROM exchange_history_jobs WHERE status='QUEUED'"):
             self.schedule_history(row["id"])
         if self.s.market_data_enabled:
-            self.add_task(self.loop("public",self.s.okx_public_ws_url));self.add_task(self.loop("business",self.s.okx_business_ws_url))
+            if self.s.raw_market_data_enabled:self.add_task(self.loop("public",self.s.okx_public_ws_url))
+            self.add_task(self.loop("business",self.s.okx_business_ws_url))
             self.add_task(self.watch_trading_configs())
             self.add_task(self.sync_active_history())
         if self.s.trading_enabled:

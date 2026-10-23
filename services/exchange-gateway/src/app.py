@@ -36,7 +36,7 @@ async def health():
     ready=not settings.trading_enabled or (service.trading_ready
                                            and (not settings.market_data_enabled or not service.symbols or service.market_data_ready))
     if not ready:raise HTTPException(503,"OKX private channel or exchange reconciliation is unavailable")
-    return {"status":"UP","market_data_enabled":settings.market_data_enabled,"trading_enabled":settings.trading_enabled,"connections":service.connected,"symbols":service.symbols,"demo":settings.okx_demo,"last_error":service.last_error}
+    return {"status":"UP","market_data_enabled":settings.market_data_enabled,"raw_market_data_enabled":settings.raw_market_data_enabled,"trading_enabled":settings.trading_enabled,"connections":service.connected,"symbols":service.symbols,"demo":settings.okx_demo,"last_error":service.last_error}
 @app.post("/exchange/reload-symbols")
 async def reload_symbols():return {"symbols":await service.refresh_symbols()}
 @app.post("/exchange/instruments/prepare")

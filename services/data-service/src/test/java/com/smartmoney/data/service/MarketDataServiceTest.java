@@ -27,7 +27,13 @@ class MarketDataServiceTest {
         Candle first=new Candle("BTC-USDT-SWAP",Timeframe.M1,1000,bd("10"),bd("12"),bd("9"),bd("11"),bd("3"),null,null,true);
         Candle second=new Candle("BTC-USDT-SWAP",Timeframe.M1,61000,bd("11"),bd("13"),bd("10"),bd("12"),bd("4"),null,null,true);
         service.ingestBatch(List.of(first,second));
-        verify(repository).save(first);verify(repository).save(second);verifyNoInteractions(publisher);
+        verify(repository).saveBatch(List.of(first,second));verifyNoInteractions(publisher);
+    }
+    @Test void rejectsWholeHistoricalBatchWhenOneCandleIsInvalid() {
+        Candle first=new Candle("BTC-USDT-SWAP",Timeframe.M1,1000,bd("10"),bd("12"),bd("9"),bd("11"),bd("3"),null,null,true);
+        Candle invalid=new Candle("BTC-USDT-SWAP",Timeframe.M1,61000,bd("14"),bd("13"),bd("10"),bd("12"),bd("4"),null,null,true);
+        assertThrows(IllegalArgumentException.class,()->service.ingestBatch(List.of(first,invalid)));
+        verifyNoInteractions(repository,publisher);
     }
     @Test void rejectsReversedTimeRange() {
         assertThrows(IllegalArgumentException.class,()->service.ticks("BTC-USDT-SWAP",20L,10L,50));

@@ -18,7 +18,7 @@ public class MarketDataService {
     }
     @Transactional public void ingestBatch(List<Candle> values) {
         values.forEach(this::validate);
-        values.forEach(repository::save);
+        repository.saveBatch(values);
     }
     @Transactional public void ingest(MarketTick value, String correlationId) {
         repository.save(value); events.publish("trade.executed", value, correlationId);

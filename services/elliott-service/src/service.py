@@ -96,9 +96,12 @@ class ElliottService:
           SELECT symbol,timeframe,(extract(epoch FROM ts)*1000)::bigint AS timestamp,
                  open::float8,high::float8,low::float8,close::float8,volume::float8,
                  quote_volume::float8,trades_count,is_closed
-          FROM (SELECT *,row_number() OVER(PARTITION BY symbol,timeframe ORDER BY ts DESC) AS rn
-                FROM candles WHERE symbol=$1 AND timeframe=ANY($2::text[]) AND is_closed) recent
-          WHERE rn<=$3 ORDER BY ts,timeframe
+          FROM (SELECT DISTINCT timeframe FROM unnest($2::text[]) AS requested(timeframe)) requested
+          CROSS JOIN LATERAL (
+            SELECT * FROM candles c WHERE c.symbol=$1 AND c.timeframe=requested.timeframe AND c.is_closed
+            ORDER BY c.ts DESC LIMIT $3
+          ) recent
+          ORDER BY recent.ts,recent.timeframe
         """,symbol,[str(item) for item in timeframes],limit)
         before=len(self.scenarios)
         for row in rows:await self.process(Candle.model_validate(dict(row)),"history-rebuild")

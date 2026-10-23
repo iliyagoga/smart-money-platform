@@ -3,28 +3,51 @@ package com.smartmoney.data.repository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smartmoney.data.model.*;
+import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.jdbc.core.namedparam.SqlParameterSource;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
-import java.math.BigDecimal;
+import java.sql.Types;
 import java.util.List;
 
 @Repository
 public class MarketRepository {
-    private final JdbcClient db;
-    private final ObjectMapper json;
-    public MarketRepository(JdbcClient db, ObjectMapper json) { this.db = db; this.json = json; }
-
-    public void save(Candle c) {
-        db.sql("""
+    private static final String CANDLE_UPSERT = """
           INSERT INTO candles(symbol,timeframe,ts,open,high,low,close,volume,quote_volume,trades_count,is_closed)
           VALUES (:symbol,:tf,to_timestamp(:ts/1000.0),:open,:high,:low,:close,:volume,:qv,:count,:closed)
           ON CONFLICT(symbol,timeframe,ts) DO UPDATE SET open=excluded.open,high=excluded.high,low=excluded.low,
           close=excluded.close,volume=excluded.volume,quote_volume=excluded.quote_volume,
           trades_count=excluded.trades_count,is_closed=excluded.is_closed
-          """).param("symbol", c.symbol()).param("tf", c.timeframe().name()).param("ts", c.timestamp())
+          WHERE (candles.open,candles.high,candles.low,candles.close,candles.volume,candles.quote_volume,
+                 candles.trades_count,candles.is_closed)
+                IS DISTINCT FROM
+                (excluded.open,excluded.high,excluded.low,excluded.close,excluded.volume,excluded.quote_volume,
+                 excluded.trades_count,excluded.is_closed)
+          """;
+    private final JdbcClient db;
+    private final NamedParameterJdbcTemplate batchDb;
+    private final ObjectMapper json;
+    public MarketRepository(JdbcClient db, NamedParameterJdbcTemplate batchDb, ObjectMapper json) {
+        this.db = db; this.batchDb = batchDb; this.json = json;
+    }
+
+    public void save(Candle c) {
+        db.sql(CANDLE_UPSERT).param("symbol", c.symbol()).param("tf", c.timeframe().name()).param("ts", c.timestamp())
           .param("open", c.open()).param("high", c.high()).param("low", c.low()).param("close", c.close())
           .param("volume", c.volume()).param("qv", c.quoteVolume()).param("count", c.tradesCount())
           .param("closed", c.isClosed()).update();
+    }
+
+    public void saveBatch(List<Candle> candles) {
+        if (candles.isEmpty()) return;
+        SqlParameterSource[] params = candles.stream().map(c -> new MapSqlParameterSource()
+            .addValue("symbol", c.symbol()).addValue("tf", c.timeframe().name()).addValue("ts", c.timestamp())
+            .addValue("open", c.open()).addValue("high", c.high()).addValue("low", c.low()).addValue("close", c.close())
+            .addValue("volume", c.volume()).addValue("qv", c.quoteVolume(), Types.NUMERIC)
+            .addValue("count", c.tradesCount(), Types.BIGINT)
+            .addValue("closed", c.isClosed())).toArray(SqlParameterSource[]::new);
+        batchDb.batchUpdate(CANDLE_UPSERT, params);
     }
 
     public void save(MarketTick t) {
