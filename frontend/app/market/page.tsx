@@ -8,13 +8,14 @@ import { TradingViewChart, type LiveElliottPattern, type LiveEntryScenario } fro
 import { useTradingAssets } from "../../hooks/useTradingAssets";
 import { useApiResource } from "../../hooks/useApiResource";
 import { api } from "../../lib/api";
+import { marketTimeframes, prepareMarketHistory, type MarketHistoryJob } from "../../lib/marketHistory";
 import { EventSocket } from "../../lib/socket";
 import { defaultBacktestSettings } from "../../lib/backtest/defaultSettings";
 import type { BacktestSettings } from "../../lib/backtest/types";
 import { mergeSettingsConfig } from "../../lib/backtest/configClipboard";
 import type { Candle, CandlesResponse } from "../../lib/types";
 
-const allTimeframes = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
+const allTimeframes = ["M1", ...marketTimeframes];
 type TradingMode = "PAPER" | "DEMO" | "PRODUCTION";
 type TradingConfig = { symbol: string; mode: TradingMode; status: string; config?: BacktestSettings | string };
 type TradingConfigsResponse = { configs: TradingConfig[] };
@@ -26,8 +27,7 @@ type ElliottHistoryResponse = {
   patterns: LiveElliottPattern[]; entries: LiveEntryScenario[]; trades: HistoricalPaperTrade[];
 };
 type HistoryStatus = "QUEUED" | "RUNNING" | "PAUSED" | "CANCELLED" | "COMPLETED" | "FAILED";
-type HistoryJob = { id:string;symbol:string;status:HistoryStatus;progress:number;ingested:number;
-  timeframe_status:Record<string,{ status:HistoryStatus;progress?:number;ingested:number;requests:number;error?:string }> };
+type HistoryJob = MarketHistoryJob;
 type CalculationProgress = { symbol:string;status:ElliottHistoryResponse["status"];progress:number;phase?:string;error?:string;missing_timeframes?:string[] };
 type HistoricalPaperTrade = {
   id: string; direction: "LONG" | "SHORT"; entry_time: number; entry_price: number;
@@ -95,10 +95,25 @@ export default function MarketPage() {
     let active=true;setHistoryJob(undefined);setHistoryJobReadyFor("");
     if (!viewed)return () => { active=false; };
     void api<{jobs:HistoryJob[]}>("/api/v1/exchange/exchange/history?limit=50")
-      .then(({jobs}) => { if (active)setHistoryJob(jobs.find((item)=>item.symbol===viewed)); })
-      .catch(()=>undefined).finally(() => { if (active)setHistoryJobReadyFor(viewed); });
+      .then(async ({jobs}) => {
+        if (!active)return;
+        const existing=jobs.find((item)=>item.symbol===viewed);
+        if (existing)setHistoryJob(existing);
+        const job=await prepareMarketHistory(viewed,jobs);
+        if (active)setHistoryJob(job);
+      })
+      .catch((reason:unknown) => { if (active)setMessage(reason instanceof Error ? reason.message : String(reason)); })
+      .finally(() => { if (active)setHistoryJobReadyFor(viewed); });
     return () => { active=false; };
   },[viewed]);
+  useEffect(() => {
+    if (!viewed)return;
+    let active=true;
+    void api(`/api/v1/elliott/internal/history/rebuild?symbol=${encodeURIComponent(viewed)}`, { method:"POST" })
+      .then(() => { if (active)reloadHistory(); })
+      .catch((reason:unknown) => { if (active)setMessage(reason instanceof Error ? reason.message : String(reason)); });
+    return () => { active=false; };
+  },[viewed,reloadHistory]);
   useEffect(() => {
     if (!currentHistory)return;
     const missing=historyMissingTimeframes(currentHistory);
@@ -123,7 +138,11 @@ export default function MarketPage() {
     const historySocket=new EventSocket(["history.*"],[viewed]);
     const unsubscribe=historySocket.subscribe((event) => {
       if (event.payload?.symbol!==viewed)return;
-      if (event.event_type==="history.loading_progress")setHistoryJob(event.payload as unknown as HistoryJob);
+      if (event.event_type==="history.loading_progress") {
+        const job=event.payload as unknown as HistoryJob;
+        setHistoryJob(job);
+        if (job.status==="COMPLETED") { reloadHistory();reloadPatterns();reloadScenarios();reloadCandles(); }
+      }
       if (event.event_type==="history.calculation_progress") {
         const progress=event.payload as unknown as CalculationProgress;setCalculationProgress(progress);
         if (["COMPLETED","FAILED","WAITING_FOR_DATA"].includes(progress.status))reloadHistory();
@@ -131,7 +150,7 @@ export default function MarketPage() {
     });
     void historySocket.connect();
     return () => { unsubscribe();historySocket.close(); };
-  },[viewed,reloadHistory]);
+  },[viewed,reloadHistory,reloadPatterns,reloadScenarios,reloadCandles]);
   useEffect(() => {
     if (!viewed)return;
     const marketSocket=new EventSocket(["candle.*","scenario.*"],[viewed]);

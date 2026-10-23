@@ -458,6 +458,6 @@ def test_backend_schedules_missing_entry_timeframe_history():
         gateway.create_history=AsyncMock()
         await gateway.ensure_active_history()
         args=gateway.create_history.await_args.args
-        assert set(args[2])=={"M1","M30","H1","H4"}
+        assert set(args[2])=={"M30","H1","H4"}
         assert gateway.create_history.await_args.kwargs=={"auto":True}
     asyncio.run(check())

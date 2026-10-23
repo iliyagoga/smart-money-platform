@@ -105,7 +105,7 @@ class ElliottService:
         """,symbol,[str(item) for item in timeframes],limit)
         before=len(self.scenarios)
         for row in rows:await self.process(Candle.model_validate(dict(row)),"history-rebuild")
-        await self.rebuild_history_snapshot(symbol)
+        self.schedule_history_snapshot(symbol)
         return {"symbol":symbol,"candles":len(rows),"scenarios_created":len(self.scenarios)-before}
 
     def schedule_history_snapshot(self,symbol:str):

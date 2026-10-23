@@ -62,11 +62,12 @@ async def elliott_entries(symbol:str):
 @app.get("/elliott/history")
 async def elliott_history(symbol:str):return await service.history_snapshot(symbol)
 
-@app.post("/internal/history/rebuild")
+@app.post("/internal/history/rebuild",status_code=202)
 async def rebuild_elliott_history(symbol:str):
-    result=await service.rebuild_history_snapshot(symbol)
-    if result is None:raise HTTPException(404,"Active trading config not found or replay failed")
-    return await service.history_snapshot(symbol)
+    symbol=symbol.strip().upper()
+    if not await service.trading_config(symbol):raise HTTPException(404,"Active trading config not found")
+    service.schedule_history_snapshot(symbol)
+    return {"symbol":symbol,"status":"BUILDING"}
 
 @app.get("/scenarios")
 async def scenarios(symbol:str|None=None,status:str|None=None,limit:int=Query(100,ge=1,le=1000)):

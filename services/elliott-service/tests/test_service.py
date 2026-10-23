@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 
-from src.app import app
+from src.app import app, rebuild_elliott_history
 from src.models import Candle, Scenario, Timeframe
 from src.service import ElliottService
 
@@ -77,6 +77,30 @@ def test_only_elliott_analysis_routes_remain():
     assert "/elliott/patterns" in routes
     assert "/elliott/history" in routes
     assert not any("smart-money" in path or "scenario-templates" in path for path in routes)
+
+
+def test_history_rebuild_endpoint_starts_a_background_calculation(monkeypatch):
+    async def check():
+        from src.app import service
+        config=AsyncMock(return_value={"strategy":"ELLIOTT"})
+        schedule=Mock()
+        monkeypatch.setattr(service,"trading_config",config)
+        monkeypatch.setattr(service,"schedule_history_snapshot",schedule)
+        result=await rebuild_elliott_history("btc-usdt-swap")
+        assert result=={"symbol":"BTC-USDT-SWAP","status":"BUILDING"}
+        config.assert_awaited_once_with("BTC-USDT-SWAP")
+        schedule.assert_called_once_with("BTC-USDT-SWAP")
+    asyncio.run(check())
+
+
+def test_candle_rebuild_restarts_historical_calculation():
+    async def check():
+        service=ElliottService(SimpleNamespace(db=SimpleNamespace(fetch=AsyncMock(return_value=[]))))
+        service.schedule_history_snapshot=Mock()
+        result=await service.rebuild("btc-usdt-swap",[Timeframe.M15,Timeframe.H1])
+        assert result["symbol"]=="BTC-USDT-SWAP"
+        service.schedule_history_snapshot.assert_called_once_with("BTC-USDT-SWAP")
+    asyncio.run(check())
 
 
 def test_historical_paper_replay_is_persisted_outside_live_trade_tables(monkeypatch):

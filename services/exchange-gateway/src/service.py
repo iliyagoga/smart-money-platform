@@ -264,7 +264,7 @@ class ExchangeGateway:
             symbol=row["symbol"]
             config=row["config"] if isinstance(row["config"],dict) else json.loads(row["config"])
             elliott=config.get("elliott") or {}
-            required={"M1"}
+            required=set()
             for key in ("entryTimeframe","structureTimeframe","macroTimeframe"):
                 required.add(elliott.get(key) or {"entryTimeframe":"M15","structureTimeframe":"H1","macroTimeframe":"H4"}[key])
             if not required <= TIMEFRAMES.keys():
