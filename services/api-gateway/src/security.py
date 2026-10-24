@@ -16,6 +16,8 @@ class Principal:
 
 
 class TokenVerifier:
+    JWKS_TTL_SECONDS = 300
+
     def __init__(self, issuer: str, jwks_url: str, client_id: str):
         self.issuer = issuer.rstrip("/")
         self.jwks_url = jwks_url
@@ -47,11 +49,11 @@ class TokenVerifier:
 
     async def _key(self, kid: str) -> object:
         key = self._keys.get(kid)
-        if key is not None:
+        if key is not None and monotonic() - self._loaded_at < self.JWKS_TTL_SECONDS:
             return key
         async with self._refresh_lock:
             key = self._keys.get(kid)
-            if key is not None:
+            if key is not None and monotonic() - self._loaded_at < self.JWKS_TTL_SECONDS:
                 return key
             now = monotonic()
             if now - self._refresh_attempted_at < 10:

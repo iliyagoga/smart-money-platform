@@ -4,6 +4,7 @@ import { Box, Button, Chip, CircularProgress, FormControlLabel, Paper, Stack, Sw
 import { BaselineSeries, CandlestickSeries, ColorType, LineSeries, createChart, createSeriesMarkers, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePagination } from "../../hooks/usePagination";
+import { riskLevelLabel, type ExecutionChartTrade } from "../../lib/marketTrades";
 import type { Candle } from "../../lib/types";
 
 export interface LiveElliottPoint { timestamp: number; confirmed_at: number; price: number; kind: "HIGH" | "LOW" }
@@ -37,10 +38,14 @@ export interface HistoricalPaperTrade {
 
 type ChartSeries = ReturnType<ReturnType<typeof createChart>["addSeries"]>;
 
-export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios = [], historicalTrades = [], isLoading = false }: {
+export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios = [], historicalTrades = [],
+  liveTrades = [], liveStart, candleDurationMs = 60_000, isLoading = false }: {
   candles: Candle[]; elliottPatterns?: LiveElliottPattern[]; entryScenarios?: LiveEntryScenario[];
-  historicalTrades?: HistoricalPaperTrade[]; isLoading?: boolean;
+  historicalTrades?: HistoricalPaperTrade[]; liveTrades?: ExecutionChartTrade[]; liveStart?: number; candleDurationMs?: number; isLoading?: boolean;
 }) {
+  const measurementRef = useRef<{ start?: { time: Time; price: number }; end?: { time: Time; price: number } }>({});
+  const overlayRef = useRef<HTMLCanvasElement>(null);
+  const [ruler, setRuler] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const fullscreenRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
@@ -81,6 +86,77 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
     return () => { observer.disconnect(); chart.remove(); };
   }, []);
   useEffect(() => {
+    const chart = chartRef.current; const series = seriesRef.current;
+    const canvas = overlayRef.current; const container = ref.current;
+    if (!chart || !series || !canvas || !container) return;
+    if (!ruler) measurementRef.current = {};
+    const draw = () => {
+      const width = container.clientWidth; const height = container.clientHeight;
+      const ratio = window.devicePixelRatio || 1;
+      canvas.width = width * ratio; canvas.height = height * ratio;
+      const ctx = canvas.getContext("2d"); if (!ctx) return;
+      ctx.scale(ratio, ratio);
+      const plotWidth = chart.timeScale().width();
+      const plotHeight = chart.paneSize().height;
+      if (liveStart != null && chartCandles.length) {
+        const first = chartCandles[0].timestamp; const last = chartCandles.at(-1)!.timestamp;
+        const coordinate = liveStart >= last + candleDurationMs ? plotWidth : liveStart < first ? 0
+          : chart.timeScale().timeToCoordinate(chartTime(containingCandleTimestamp(chartCandles, liveStart)));
+        if (coordinate != null) {
+          const x = Math.max(0, Math.min(plotWidth, coordinate));
+          ctx.fillStyle = "rgba(0,0,0,.22)"; ctx.fillRect(0, 0, x, plotHeight);
+          if (x > 0 && x < plotWidth) {
+            ctx.strokeStyle = "#697586"; ctx.setLineDash([4,4]);
+            ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,plotHeight); ctx.stroke(); ctx.setLineDash([]);
+            ctx.fillStyle = "#aab4c2"; ctx.font = "11px sans-serif";
+            ctx.fillText("История paper | Live", Math.max(4, Math.min(x + 6, plotWidth - 150)), 18);
+          }
+        }
+      }
+      const { start, end } = measurementRef.current;
+      if (start && end) {
+        const x1 = chart.timeScale().timeToCoordinate(start.time); const x2 = chart.timeScale().timeToCoordinate(end.time);
+        const y1 = series.priceToCoordinate(start.price); const y2 = series.priceToCoordinate(end.price);
+        if (x1 == null || x2 == null || y1 == null || y2 == null) return;
+        ctx.fillStyle = "rgba(100,181,246,.12)"; ctx.fillRect(x1,y1,x2-x1,y2-y1);
+        ctx.strokeStyle = "#90caf9"; ctx.strokeRect(x1,y1,x2-x1,y2-y1);
+        ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+        const change = (end.price-start.price)/start.price*100;
+        const minutes = Math.abs(Number(end.time)-Number(start.time))/60;
+        const label = `${(end.price-start.price).toFixed(4)} (${change.toFixed(2)}%) · ${minutes.toFixed(0)} мин`;
+        ctx.font = "12px sans-serif";
+        const labelWidth = ctx.measureText(label).width + 12;
+        const x = Math.max(0, Math.min(x2, plotWidth-labelWidth)); const y = Math.max(20,y2);
+        ctx.fillStyle = "#192535"; ctx.fillRect(x,y-18,labelWidth,22);
+        ctx.fillStyle = "#dbe5f1"; ctx.fillText(label,x+6,y-3);
+      }
+    };
+    const click = (event: MouseEvent) => {
+      if (!ruler) return;
+      const bounds = canvas.getBoundingClientRect();
+      const x = event.clientX-bounds.left; const y = event.clientY-bounds.top;
+      if (x > chart.timeScale().width() || y > chart.paneSize().height) return;
+      const time = chart.timeScale().coordinateToTime(x);
+      const price = series.coordinateToPrice(y);
+      if (time == null || price == null || price <= 0) return;
+      const measurement = measurementRef.current;
+      if (!measurement.start || measurement.end) measurementRef.current = { start:{ time,price } };
+      else measurement.end = { time,price };
+      draw();
+    };
+    let frame = 0;
+    const scheduleDraw = () => { window.cancelAnimationFrame(frame); frame = window.requestAnimationFrame(draw); };
+    canvas.addEventListener("click",click);
+    chart.timeScale().subscribeVisibleLogicalRangeChange(scheduleDraw);
+    chart.subscribeCrosshairMove(scheduleDraw);
+    const observer = new ResizeObserver(scheduleDraw); observer.observe(container); scheduleDraw();
+    return () => {
+      window.cancelAnimationFrame(frame); canvas.removeEventListener("click",click);
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(scheduleDraw);
+      chart.unsubscribeCrosshairMove(scheduleDraw); observer.disconnect();
+    };
+  }, [liveStart, chartCandles, candleDurationMs, ruler]);
+  useEffect(() => {
     const update = () => setIsFullscreen(document.fullscreenElement === fullscreenRef.current);
     document.addEventListener("fullscreenchange", update);
     return () => document.removeEventListener("fullscreenchange", update);
@@ -120,7 +196,8 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
       && scenario.expires_at >= visibleFrom && scenario.created_at <= visibleTo);
     const visibleTrades=historicalTrades.filter((trade) => trade.exit_time >= visibleFrom && trade.entry_time <= visibleTo
       && !(trade.reason === "END_OF_DATA" && trade.exit_time < visibleTo));
-    const overlayFingerprint=[visibleFrom,visibleTo,selectedEntryId,showWaves,showInternalWaves,showRetracement,showEntries,showRiskLevels,
+    const overlayFingerprint=[visibleFrom,visibleTo,selectedEntryId,JSON.stringify(liveTrades),candleDurationMs,
+      showWaves,showInternalWaves,showRetracement,showEntries,showRiskLevels,
       ...visiblePatterns.map((item) => `${item.id}:${item.state}:${item.direction}:${item.structure_timeframe}:${Object.values(item.points).map((point) => `${point.timestamp}:${point.price}`).join(",")}:${JSON.stringify(item.strategy_levels ?? null)}`),
       ...visiblePatterns.flatMap((item) => (item.internal_points ?? []).map((point) => `${point.timestamp}:${point.price}`)),
       ...visibleEntries.map((item) => `${item.id}:${item.status}:${item.entry_model ?? item.entry_type ?? ""}:${item.stop_loss_price ?? ""}:${item.take_profit_prices?.join(",") ?? ""}:${entryResult(item,orderedCandles)}`),
@@ -190,9 +267,9 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
         addLevel(chart,waveSeriesRef.current,start,end,scenario.entry_zone_high,color,"Entry zone high",3);
       }
       if (showRiskLevels && scenario.stop_loss_price != null) {
-        addLevel(chart,waveSeriesRef.current,start,end,scenario.stop_loss_price,"#ef5350","SL",2,2);
+        addLevel(chart,waveSeriesRef.current,start,end,scenario.stop_loss_price,"#ef5350",riskLevelLabel("SL",entry,scenario.stop_loss_price,scenario.direction),2,2);
         (scenario.take_profit_prices ?? []).forEach((target,index) =>
-          addLevel(chart,waveSeriesRef.current,start,end,target,"#26a69a",`TP${index+1}`,2,2));
+          addLevel(chart,waveSeriesRef.current,start,end,target,"#26a69a",riskLevelLabel(`TP${index+1}`,entry,target,scenario.direction),2,2));
       }
       if (!historicalTradeIds.has(scenario.trade_id ?? scenario.id)) {
         markers.push({ time: chartTime(start), position: scenario.direction === "LONG" ? "belowBar" : "aboveBar",
@@ -216,9 +293,9 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
       if (showRiskLevels && !hasScenarioLevels) {
         const riskEnd=levelEndTimestamp(orderedCandles,entryTime,exitTime);
         if (trade.initial_stop != null) addLevel(chart,waveSeriesRef.current,entryTime,riskEnd,
-          trade.initial_stop,"#ef5350","SL · сделка",2,2);
+          trade.initial_stop,"#ef5350",riskLevelLabel("SL · история",trade.entry_price,trade.initial_stop,trade.direction),2,2);
         (trade.take_profit_prices ?? []).forEach((target,index) => addLevel(chart,waveSeriesRef.current,
-          entryTime,riskEnd,target,"#26a69a",`TP${index+1} · сделка`,2,2));
+          entryTime,riskEnd,target,"#26a69a",riskLevelLabel(`TP${index+1} · история`,trade.entry_price,target,trade.direction),2,2));
       }
       markers.push({ time:chartTime(entryTime),position:trade.direction === "LONG" ? "belowBar" : "aboveBar",
         color:trade.direction === "LONG" ? "#2e7d32" : "#c62828",
@@ -228,10 +305,31 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
         position:trade.pnl >= 0 ? "aboveBar" : "belowBar",color:trade.pnl >= 0 ? "#26a69a" : "#ef5350",
         shape:"square",text:`Выход · ${trade.pnl >= 0 ? "+" : ""}${trade.pnl.toFixed(2)} · ${trade.reason}` });
     });
+    liveTrades.forEach((trade) => {
+      const endTime = trade.exit_time ?? visibleTo;
+      if (trade.entry_time >= visibleTo + candleDurationMs || endTime < visibleFrom) return;
+      const start = containingCandleTimestamp(orderedCandles, trade.entry_time);
+      const end = levelEndTimestamp(orderedCandles,start,containingCandleTimestamp(orderedCandles,endTime));
+      const label = `${trade.mode} · ${trade.pending ? "Заявка" : trade.direction}`;
+      if (trade.entry_time >= visibleFrom) markers.push({ time:chartTime(start),
+        position:trade.direction === "LONG" ? "belowBar" : "aboveBar", color:"#29b6f6",
+        shape:trade.pending ? "circle" : trade.direction === "LONG" ? "arrowUp" : "arrowDown", text:`${label} · ${trade.pending ? "ожидает исполнения" : "вход"} ${trade.entry_price}` });
+      addLevel(chart,waveSeriesRef.current,start,end,trade.entry_price,"#29b6f6",label,0,2);
+      if (showRiskLevels) {
+        if (trade.stop != null) addLevel(chart,waveSeriesRef.current,start,end,trade.stop,"#ef5350",
+          riskLevelLabel("SL",trade.entry_price,trade.stop,trade.direction),2,2);
+        (trade.targets ?? []).forEach((target,index) => addLevel(chart,waveSeriesRef.current,start,end,target,"#26a69a",
+          riskLevelLabel(`TP${index+1}`,trade.entry_price,target,trade.direction),2,2));
+      }
+      if (trade.exit_time != null && trade.exit_time < visibleTo + candleDurationMs) markers.push({
+        time:chartTime(containingCandleTimestamp(orderedCandles,trade.exit_time)),position:"aboveBar",
+        color:(trade.pnl ?? 0) >= 0 ? "#26a69a" : "#ef5350",shape:"square",
+        text:`${trade.mode} · выход ${trade.exit_price} · ${trade.reason ?? ""} · PnL ${trade.pnl?.toFixed(2) ?? "—"}` });
+    });
     const sortedMarkers = markers.sort((left, right) => Number(left.time) - Number(right.time));
     if (!markersRef.current) markersRef.current = createSeriesMarkers(candleSeries, sortedMarkers, { autoScale: false });
     else markersRef.current.setMarkers(sortedMarkers);
-  }, [chartCandles, elliottPatterns, entryScenarios, historicalTrades, selectedEntryId,
+  }, [chartCandles, elliottPatterns, entryScenarios, historicalTrades, liveTrades, candleDurationMs, selectedEntryId,
     showEntries,showInternalWaves,showRetracement,showRiskLevels,showWaves]);
   useEffect(() => {
     const chart = chartRef.current;
@@ -262,12 +360,15 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
       </Stack>
     </Stack>
     <Stack direction="row" useFlexGap sx={{ px:1,pb:1,gap:.25,alignItems:"center",flexWrap:"wrap" }}>
+      <Button size="small" variant={ruler ? "contained" : "outlined"} onClick={() => setRuler(!ruler)}>Линейка</Button>
+      {ruler && <Typography variant="caption">Выберите две точки · повторный клик начнёт новое измерение</Typography>}
       <FormControlLabel control={<Switch size="small" checked={showWaves} onChange={(_,value) => setShowWaves(value)} />} label="Волны" />
       <FormControlLabel control={<Switch size="small" checked={showInternalWaves} onChange={(_,value) => setShowInternalWaves(value)} />} label="Внутренние" />
       <FormControlLabel control={<Switch size="small" checked={showRetracement} onChange={(_,value) => setShowRetracement(value)} />} label="Retracement W2" />
       <FormControlLabel control={<Switch size="small" checked={showEntries} onChange={(_,value) => setShowEntries(value)} />} label="Входы" />
       <FormControlLabel control={<Switch size="small" checked={showRiskLevels} onChange={(_,value) => setShowRiskLevels(value)} />} label="SL / TP" />
       <Stack direction="row" useFlexGap sx={{ ml:{ sm:"auto" },gap:.5,flexWrap:"wrap" }}>
+        <Chip size="small" variant="outlined" label={`Исполнения: ${liveTrades.filter((trade) => !trade.pending).length} · заявки: ${liveTrades.filter((trade) => trade.pending).length}`} />
         <Chip size="small" sx={{ color:"#42a5f5",borderColor:"#42a5f5" }} variant="outlined" label="Elliott" />
         <Chip size="small" sx={{ color:"#ffb74d",borderColor:"#ffb74d" }} variant="outlined" label="Entry" />
         <Chip size="small" color="error" variant="outlined" label="SL" />
@@ -276,6 +377,7 @@ export function TradingViewChart({ candles, elliottPatterns = [], entryScenarios
     </Stack>
     <Box sx={{ position: "relative", width: "100%", height: isFullscreen ? "calc(100vh - 54px)" : 560, flex: isFullscreen ? 1 : "none" }}>
       <Box ref={ref} sx={{ width: "100%", height: "100%" }} />
+      <canvas ref={overlayRef} style={{ position:"absolute",inset:0,width:"100%",height:"100%",zIndex:2,pointerEvents:ruler ? "auto" : "none" }} />
       {isLoading && <Stack role="status" aria-live="polite" direction="row" spacing={1}
         sx={{ position:"absolute",top:10,left:10,zIndex:4,alignItems:"center",px:1.25,py:.75,
           borderRadius:1,bgcolor:"rgba(16,23,34,.9)",color:"#dbe5f1",boxShadow:"0 2px 8px rgba(0,0,0,.3)" }}>

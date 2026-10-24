@@ -1,7 +1,9 @@
 import asyncio
+import json
 from time import time
 
 import pytest
+from fastapi import WebSocketDisconnect
 from src.security import Principal
 from src.websocket import matches,parse_subscription,websocket_token
 def test_subscription_and_symbol_filter():
@@ -27,6 +29,69 @@ def test_websocket_tokens_in_query_strings_are_rejected():
     class Socket:
         headers={};query_params={"access_token":"leaked-token"}
     assert websocket_token(Socket()) is None
+
+
+@pytest.mark.parametrize("field",["events","symbols"])
+@pytest.mark.parametrize("value",[None,1,"candle.*",{},[None],[{}]])
+def test_subscription_rejects_malformed_filters_without_mutation(field,value):
+    events={"candle.*"};symbols={"BTC-USDT-SWAP"}
+    with pytest.raises(ValueError,match="lists of strings"):
+        parse_subscription({"op":"subscribe",field:value},events,symbols)
+    assert events=={"candle.*"} and symbols=={"BTC-USDT-SWAP"}
+
+
+def test_subscription_limit_applies_across_messages_and_unsubscribe_frees_capacity():
+    events=set();symbols=set()
+    parse_subscription({"op":"subscribe","symbols":[f"S{i}" for i in range(50)]},events,symbols)
+    parse_subscription({"op":"subscribe","symbols":["S0"]},events,symbols)
+    with pytest.raises(ValueError,match="too large"):
+        parse_subscription({"op":"subscribe","events":["candle.*"],"symbols":["NEW"]},events,symbols)
+    assert len(symbols)==50 and "NEW" not in symbols and not events
+    parse_subscription({"op":"unsubscribe","symbols":["S0"]},events,symbols)
+    parse_subscription({"op":"subscribe","symbols":["NEW"]},events,symbols)
+    assert len(symbols)==50 and "NEW" in symbols
+
+
+@pytest.mark.parametrize("event",[
+    {"event_type":[],"payload":{}},
+    {"event_type":"candle.update","payload":[1]},
+    {"event_type":"candle.update","payload":{"symbol":[]}},
+])
+def test_malformed_published_events_do_not_break_filtering(event):
+    assert not matches(event,{"candle.*"},{"BTC-USDT-SWAP"})
+
+
+def test_websocket_recovers_from_bad_messages_and_cleans_up():
+    class Verifier:
+        async def verify(self,token):
+            return Principal("id","user",frozenset({"viewer"}),{"exp":time()+60})
+    class PubSub:
+        closed=False
+        async def subscribe(self,*channels):pass
+        async def aclose(self):self.closed=True
+        async def listen(self):
+            while True:
+                await asyncio.sleep(3600)
+                yield {}
+    pubsub=PubSub()
+    class Redis:
+        def pubsub(self):return pubsub
+    class Socket:
+        headers={"sec-websocket-protocol":"access_token, token"}
+        messages=[]
+        incoming=iter(["invalid",{"op":[]},{"op":{}},{"op":"subscribe","symbols":None},{"op":"ping"}])
+        async def accept(self,subprotocol):pass
+        async def send_json(self,message):self.messages.append(message)
+        async def receive_json(self):
+            value=next(self.incoming,None)
+            if value is None:raise WebSocketDisconnect()
+            if isinstance(value,str):return json.loads(value)
+            return value
+    from src.websocket import WebSocketBridge
+    bridge=WebSocketBridge(Redis(),Verifier());socket=Socket()
+    asyncio.run(bridge.serve(socket))
+    assert [message["op"] for message in socket.messages]==["ready","error","error","error","error","pong"]
+    assert pubsub.closed and bridge.connections==0 and not bridge.user_connections
 
 
 def test_websocket_closes_when_access_token_expires():

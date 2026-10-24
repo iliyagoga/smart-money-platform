@@ -11,6 +11,11 @@ export interface Position {
   direction: "LONG" | "SHORT";
   entry_price: number;
   current_price?: number;
+  opened_at?: number;
+  execution_mode?: string;
+  order_id?: string;
+  stop_loss_price?: number;
+  take_profit_prices?: number[];
   quantity: number;
   status: string;
 }
@@ -62,6 +67,7 @@ export interface OrderDraft {
 }
 
 export interface TradingOrder extends OrderDraft {
+  execution_mode?: string;
   id: string;
   status: string;
   exchange_order_id?: string;
@@ -88,6 +94,8 @@ export interface ClosedTrade {
   max_unrealized_pnl?: number;
   reason: string;
   closed_at: number;
+  opened_at?: number;
+  execution_mode?: string;
 }
 
 export interface TradesResponse {

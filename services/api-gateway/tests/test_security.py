@@ -121,3 +121,46 @@ def test_unknown_signing_key_does_not_trigger_unbounded_jwks_refreshes():
             asyncio.run(verifier.verify(token))
         assert error.value.status_code == 401
     verifier._refresh.assert_awaited_once()
+
+
+def test_expired_jwks_cache_stops_trusting_removed_keys():
+    async def check():
+        verifier=TokenVerifier("issuer","unused","client")
+        verifier._keys={"old":object()}
+        verifier._loaded_at=monotonic()-verifier.JWKS_TTL_SECONDS-1
+        async def refresh():
+            verifier._keys={"new":object()}
+            verifier._loaded_at=monotonic()
+        verifier._refresh=AsyncMock(side_effect=refresh)
+        with pytest.raises(jwt.InvalidTokenError):await verifier._key("old")
+        assert await verifier._key("new") is verifier._keys["new"]
+        verifier._refresh.assert_awaited_once()
+    asyncio.run(check())
+
+
+def test_jwks_refresh_replaces_same_key_id_once_for_concurrent_requests():
+    async def check():
+        verifier=TokenVerifier("issuer","unused","client")
+        old_key=object();new_key=object()
+        verifier._keys={"key":old_key}
+        verifier._loaded_at=monotonic()-verifier.JWKS_TTL_SECONDS-1
+        async def refresh():
+            await asyncio.sleep(0)
+            verifier._keys={"key":new_key}
+            verifier._loaded_at=monotonic()
+        verifier._refresh=AsyncMock(side_effect=refresh)
+        assert await asyncio.gather(verifier._key("key"),verifier._key("key"))==[new_key,new_key]
+        verifier._refresh.assert_awaited_once()
+    asyncio.run(check())
+
+
+def test_expired_jwks_cache_fails_closed_and_limits_failed_refreshes():
+    async def check():
+        verifier=TokenVerifier("issuer","unused","client")
+        verifier._keys={"key":object()}
+        verifier._loaded_at=monotonic()-verifier.JWKS_TTL_SECONDS-1
+        verifier._refresh=AsyncMock(side_effect=jwt.InvalidTokenError("JWKS unavailable"))
+        for _ in range(2):
+            with pytest.raises(jwt.InvalidTokenError):await verifier._key("key")
+        verifier._refresh.assert_awaited_once()
+    asyncio.run(check())

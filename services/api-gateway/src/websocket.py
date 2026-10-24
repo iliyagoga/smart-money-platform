@@ -10,15 +10,26 @@ def websocket_token(ws:WebSocket)->str|None:
     if len(protocols)>=2 and protocols[0]=="access_token":return protocols[1]
     return None
 def matches(event:dict,event_types:set[str],symbols:set[str])->bool:
-    event_type=event.get("event_type","");payload=event.get("payload") or {};symbol=payload.get("symbol")
+    event_type=event.get("event_type","");payload=event.get("payload")
+    if not isinstance(event_type,str) or payload is not None and not isinstance(payload,dict):return False
+    symbol=(payload or {}).get("symbol")
+    if symbol is not None and not isinstance(symbol,str):return False
     type_ok="*" in event_types or event_type in event_types or any(x.endswith(".*") and event_type.startswith(x[:-1]) for x in event_types)
     return type_ok and (not symbols or symbol is None or symbol in symbols)
 def parse_subscription(message:dict,event_types:set[str],symbols:set[str]):
-    operation=message.get("op");types={str(x) for x in message.get("events",[])};requested_symbols={str(x).upper() for x in message.get("symbols",[])}
+    operation=message.get("op")
+    raw_types=message.get("events",[]);raw_symbols=message.get("symbols",[])
+    if (not isinstance(raw_types,list) or not isinstance(raw_symbols,list)
+            or any(not isinstance(x,str) for x in raw_types+raw_symbols)):
+        raise ValueError("Events and symbols must be lists of strings")
+    types=set(raw_types);requested_symbols={x.upper() for x in raw_symbols}
     if len(types)>20 or len(requested_symbols)>50:raise ValueError("Subscription is too large")
     if types-SUBSCRIPTION_EVENTS:raise ValueError("Unsupported event subscription")
     if any(not symbol or len(symbol)>80 for symbol in requested_symbols):raise ValueError("Invalid symbol subscription")
-    if operation=="subscribe":event_types.update(types);symbols.update(requested_symbols)
+    if operation=="subscribe":
+        if len(event_types|types)>20 or len(symbols|requested_symbols)>50:
+            raise ValueError("Subscription is too large")
+        event_types.update(types);symbols.update(requested_symbols)
     elif operation=="unsubscribe":event_types.difference_update(types);symbols.difference_update(requested_symbols)
     return {"op":"subscribed","events":sorted(event_types),"symbols":sorted(symbols)}
 
@@ -51,10 +62,12 @@ class WebSocketBridge:
             await ws.send_json({"op":"ready","user":principal.username,"roles":sorted(principal.roles)})
             async def receive():
                 while True:
-                    message=await ws.receive_json()
+                    try:message=await ws.receive_json()
+                    except json.JSONDecodeError:
+                        await ws.send_json({"op":"error","message":"Invalid JSON message"});continue
                     if not isinstance(message,dict):await ws.send_json({"op":"error","message":"Invalid message"});continue
                     if message.get("op")=="ping":await ws.send_json({"op":"pong"})
-                    elif message.get("op") in {"subscribe","unsubscribe"}:
+                    elif message.get("op") in ("subscribe","unsubscribe"):
                         try:response=parse_subscription(message,event_types,symbols)
                         except ValueError as exc:await ws.send_json({"op":"error","message":str(exc)});continue
                         await ws.send_json(response)
@@ -75,6 +88,7 @@ class WebSocketBridge:
             except (WebSocketDisconnect,RuntimeError):pass
             finally:
                 for task in tasks:task.cancel()
+                await asyncio.gather(*tasks,return_exceptions=True)
                 await pubsub.aclose()
         except (WebSocketDisconnect,RuntimeError):pass
         finally:

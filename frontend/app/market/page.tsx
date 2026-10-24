@@ -13,7 +13,8 @@ import { EventSocket } from "../../lib/socket";
 import { defaultBacktestSettings } from "../../lib/backtest/defaultSettings";
 import type { BacktestSettings } from "../../lib/backtest/types";
 import { mergeSettingsConfig } from "../../lib/backtest/configClipboard";
-import type { Candle, CandlesResponse } from "../../lib/types";
+import { executionChartTrades, marketLiveStart } from "../../lib/marketTrades";
+import type { Position, PositionsResponse, TradesResponse, OrdersResponse, Candle, CandlesResponse } from "../../lib/types";
 
 const allTimeframes = ["M1", ...marketTimeframes];
 type TradingMode = "PAPER" | "DEMO" | "PRODUCTION";
@@ -66,14 +67,34 @@ export default function MarketPage() {
   const liveEntries = useApiResource<LiveEntriesResponse>(`/api/v1/elliott/elliott/entries?symbol=${encodeURIComponent(viewed)}`);
   const historicalElliott = useApiResource<ElliottHistoryResponse>(`/api/v1/elliott/elliott/history?symbol=${encodeURIComponent(viewed)}`);
   const candles = useMarketCandles(viewed,selectedTf,candleLimit);
+  const positions = useApiResource<PositionsResponse | Position[]>("/api/v1/execution/positions");
+  const executedTrades = useApiResource<TradesResponse>(`/api/v1/execution/trades/history?symbol=${encodeURIComponent(viewed)}&limit=1000`);
+  const orders = useApiResource<OrdersResponse>(`/api/v1/execution/orders?symbol=${encodeURIComponent(viewed)}&limit=1000`);
+  const liveTrades = useMemo(() => executionChartTrades(viewed,
+    Array.isArray(positions.data) ? positions.data : positions.data?.positions ?? [], executedTrades.data?.trades ?? [], orders.data?.orders ?? []),
+    [viewed, positions.data, executedTrades.data, orders.data]);
+  const liveStart = marketLiveStart(selectedConfig?.config, liveTrades, selectedConfig?.mode);
+  const reloadOrders = orders.reload;
+  const reloadPositions = positions.reload;
+  const reloadExecutedTrades = executedTrades.reload;
+  useEffect(() => {
+    const reload = () => { reloadPositions(); reloadExecutedTrades(); reloadOrders(); };
+    const socket = new EventSocket(["position.*", "order.*"], viewed ? [viewed] : []);
+    const unsubscribe = socket.subscribe(reload);
+    void socket.connect();
+    const timer = window.setInterval(reload, 10_000);
+    return () => { unsubscribe(); socket.close(); window.clearInterval(timer); };
+  }, [viewed, reloadPositions, reloadExecutedTrades, reloadOrders]);
   const currentHistory = historicalElliott.data?.symbol === viewed ? historicalElliott.data : undefined;
   const displayedPatterns = useMemo(() => [...new Map([
     ...(currentHistory?.status === "COMPLETED" ? currentHistory.patterns : []),
     ...(elliottPatterns.data?.symbol === viewed ? elliottPatterns.data.patterns : []),
   ].map((pattern) => [pattern.id, pattern])).values()], [currentHistory, elliottPatterns.data, viewed]);
   const displayedEntries = useMemo(() => [...new Map([
-    ...(currentHistory?.entries ?? []),...(liveEntries.data?.symbol === viewed ? liveEntries.data.entries : []),
-  ].map((item) => [item.id,item])).values()], [currentHistory?.entries,liveEntries.data,viewed]);
+    ...(currentHistory?.entries ?? []),
+    ...(liveEntries.data?.symbol === viewed ? liveEntries.data.entries : []),
+  ].filter((item) => item.origin === "LIVE" || liveStart == null || item.created_at < liveStart)
+    .map((item) => [item.id,item])).values()], [currentHistory?.entries,liveEntries.data,viewed,liveStart]);
   const reloadCandles = candles.reload;
   const applyLiveCandle = candles.applyLiveCandle;
   useEffect(() => {
@@ -241,7 +262,8 @@ export default function MarketPage() {
         chartTimeframe={selectedTf} chartLoading={candles.loading} />
       {currentHistory?.status === "WAITING_FOR_DATA" && <Alert severity="warning">Исторический расчёт ждёт TF: {historyMissingTimeframes(currentHistory).join(", ") || "нет данных"}. Догрузка запускается автоматически.</Alert>}
       {currentHistory?.status === "FAILED" && <Alert severity="error">Не удалось рассчитать историю: {currentHistory.error}</Alert>}
-      <TradingViewChart key={`${viewed}:${selectedTf}`} candles={candles.data?.candles ?? []} isLoading={candles.loading} elliottPatterns={displayedPatterns} entryScenarios={displayedEntries} historicalTrades={currentHistory?.trades ?? []} /></> : <EmptyState text="Нет активных активов для просмотра. Зарегистрируйте актив в настройках ниже." />}</Stack></Paper>
+      {(positions.error || executedTrades.error || orders.error) && <Alert severity="error">Не удалось загрузить исполнения: {positions.error || executedTrades.error || orders.error}</Alert>}
+      <TradingViewChart key={`${viewed}:${selectedTf}`} candles={candles.data?.candles ?? []} isLoading={candles.loading} elliottPatterns={displayedPatterns} entryScenarios={displayedEntries} historicalTrades={(currentHistory?.trades ?? []).filter((trade) => liveStart == null || trade.exit_time < liveStart)} liveTrades={liveTrades} liveStart={liveStart} candleDurationMs={( { M1:1,M5:5,M15:15,M30:30,H1:60,H4:240,D1:1440 }[selectedTf] ?? 15)*60_000} /></> : <EmptyState text="Нет активных активов для просмотра. Зарегистрируйте актив в настройках ниже." />}</Stack></Paper>
     <Accordion id="asset-settings" expanded={settingsExpanded} onChange={(_,expanded) => setSettingsExpanded(expanded)}
       disableGutters sx={{ width: "100%", border: 1, borderColor: "divider", scrollMarginTop: 90, "&:before": { display: "none" } }}>
       <AccordionSummary expandIcon={<Typography component="span" sx={{ fontSize: 22 }}>⌄</Typography>}><Typography variant="h6">Настройка торгового актива</Typography></AccordionSummary>
