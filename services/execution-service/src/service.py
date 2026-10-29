@@ -621,7 +621,7 @@ class ExecutionService:
               (price*cumulative-(order.filled_price or price)*order.filled_quantity)/delta)
             if incremental_price<=0:raise ValueError("Filled order has an invalid cumulative average price")
             await self.fill(order,incremental_price,order.exchange_order_id,
-              cumulative_quantity=cumulative,final=status=="FILLED",exec_type=payload.get("exec_type"))
+              cumulative_quantity=cumulative,cumulative_price=price,final=status=="FILLED",exec_type=payload.get("exec_type"))
             if payload.get("unprotected_partial"):
                 position=next((item for item in self.positions.values() if item.order_id==order.id and item.status!="CLOSED"),None)
                 if position:

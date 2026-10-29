@@ -291,7 +291,7 @@ def test_exchange_partial_fills_use_cumulative_quantity_and_incremental_price():
           "filled_price":103,"filled_quantity":10})
         assert service.fill.await_args_list[0].args[1]==100
         assert service.fill.await_args_list[1].args[1]==pytest.approx(105)
-        assert service.fill.await_args_list[1].kwargs=={"cumulative_quantity":10,"final":True,"exec_type":None}
+        assert service.fill.await_args_list[1].kwargs=={"cumulative_quantity":10,"cumulative_price":103,"final":True,"exec_type":None}
     asyncio.run(check())
 
 def test_each_live_take_profit_and_stop_tracks_its_own_cumulative_fill():
@@ -370,3 +370,21 @@ def test_live_move_to_break_even_removes_first_target_only_after_exchange_confir
 def test_manual_close_payload_cannot_spoof_exit_price_or_reason():
     with pytest.raises(ValidationError):CloseRequest(price=1)
     with pytest.raises(ValidationError):CloseRequest(reason="FIXED_RR_TARGET")
+
+@pytest.mark.parametrize('direction,side,expected',[('LONG','SELL',60),('SHORT','BUY',-60)])
+def test_reduce_only_partial_fills_preserve_exchange_average_after_restart(direction,side,expected):
+    async def check():
+        service=ExecutionService('unused','unused')
+        service.save_order=AsyncMock();service.save_position=AsyncMock();service.publish=AsyncMock()
+        p=position(quantity=20,initial_quantity=20,direction=direction,execution_mode='PRODUCTION',break_even_rule='OFF')
+        o=Order(symbol=p.symbol,side=side,type='MARKET',quantity=10,reduce_only=True,position_id=p.id,execution_mode='PRODUCTION')
+        service.orders[o.id]=o;service.positions[p.id]=p
+        for qty,average in [(4,100),(7,103),(10,106)]:
+            payload={'order_id':o.id,'status':'FILLED' if qty==10 else 'PARTIALLY_FILLED','filled_quantity':qty,'filled_price':average}
+            await service.on_exchange_order(payload)
+            await service.on_exchange_order(payload) # duplicate outbox delivery
+            o=Order.model_validate_json(o.model_dump_json());p=Position.model_validate_json(p.model_dump_json())
+            service.orders[o.id]=o;service.positions[p.id]=p
+        assert o.filled_price==106 and o.filled_quantity==10
+        assert p.quantity==10 and p.realized_pnl==pytest.approx(expected)
+    asyncio.run(check())
