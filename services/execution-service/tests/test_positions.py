@@ -142,6 +142,8 @@ def test_approved_portfolio_signal_propagates_production_scope_to_order():
     async def check():
         service=ExecutionService("postgresql://unused","redis://unused")
         service.db=AsyncMock();service.create_order=AsyncMock()
+        response=Mock();response.json=Mock(return_value={"account_uid":"test-uid"})
+        service.http=AsyncMock();service.http.get.return_value=response
         service.db.fetchrow.return_value={
           "data":{"symbol":"BTC-USDT-SWAP","direction":"LONG","entry_type":"MARKET",
                   "entry_price":100,"stop_loss_price":99,"take_profit_prices":[102],

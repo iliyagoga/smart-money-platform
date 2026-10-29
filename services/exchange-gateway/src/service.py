@@ -141,6 +141,12 @@ class ExchangeGateway:
           status text NOT NULL,data jsonb NOT NULL,opened_at timestamptz NOT NULL,updated_at timestamptz NOT NULL DEFAULT now())""")
         await self.db.execute("ALTER TABLE exchange_orders ADD COLUMN IF NOT EXISTS exit_algo_cl_ord_id text")
         await self.db.execute("ALTER TABLE exchange_orders ADD COLUMN IF NOT EXISTS exit_algos jsonb NOT NULL DEFAULT '{}'")
+        await self.db.execute("ALTER TABLE exchange_orders ADD COLUMN IF NOT EXISTS exit_order_ids jsonb NOT NULL DEFAULT '{}'")
+        await self.db.execute("ALTER TABLE exchange_orders ADD COLUMN IF NOT EXISTS contract_value double precision")
+        await self.db.execute("ALTER TABLE exchange_orders ADD COLUMN IF NOT EXISTS position_id uuid")
+        await self.db.execute("ALTER TABLE exchange_orders ADD COLUMN IF NOT EXISTS reduce_only boolean NOT NULL DEFAULT false")
+        await self.db.execute("""CREATE TABLE IF NOT EXISTS exchange_bill_cursors(
+          account_scope text PRIMARY KEY,last_ts bigint NOT NULL)""")
         await self.db.execute("CREATE UNIQUE INDEX IF NOT EXISTS exchange_orders_exit_algo_idx ON exchange_orders(exit_algo_cl_ord_id) WHERE exit_algo_cl_ord_id IS NOT NULL")
         await self.db.execute("""CREATE TABLE IF NOT EXISTS exchange_event_outbox(
           id bigserial PRIMARY KEY,event_key text UNIQUE NOT NULL,payload jsonb NOT NULL,
@@ -461,6 +467,7 @@ class ExchangeGateway:
                 "order_id":str(row["local_order_id"]),"exchange_order_id":item.get("ordId"),"status":status,
                 "filled_price":float(item.get("avgPx") or 0),
                 "filled_quantity":float(item.get("accFillSz") or 0)*float(contract or 1),"reconciled":True,
+                "executed_at":int(item.get("fillTime") or item.get("uTime") or 0) or None,
                 "unprotected_partial":status=="PARTIALLY_FILLED" or (status=="CANCELLED" and Decimal(str(item.get("accFillSz") or 0))>0)}}
             async with self.db.acquire() as connection:
                 async with connection.transaction():
@@ -475,6 +482,7 @@ class ExchangeGateway:
                 raise ValueError(f"Partial entry {row['cl_ord_id']} requires a forced exit")
         if await self.recover_protective_fills():
             raise ValueError("Recovered OKX protective fills; waiting for local position update")
+        await self.sync_account_bills()
         positions=await self.private("GET","/api/v5/account/positions?instType=SWAP")
         local_positions=await self.db.fetch("""SELECT symbol,
           sum(CASE WHEN data->>'direction'='SHORT' THEN -(data->>'quantity')::numeric ELSE (data->>'quantity')::numeric END) AS quantity
@@ -520,7 +528,7 @@ class ExchangeGateway:
           "payload":{"position_id":str(position_id),"symbol":symbol,"reason":reason}})},maxlen=100000,approximate=True)
     async def recover_protective_fills(self):
         rows=await self.db.fetch("""SELECT p.data,eo.local_order_id,eo.symbol,eo.exit_algos,
-          coalesce(ta.contract_value,1) AS contract_value
+          coalesce(eo.contract_value,ta.contract_value,1) AS contract_value
           FROM positions p JOIN exchange_orders eo ON eo.local_order_id=(p.data->>'order_id')::uuid
           LEFT JOIN trading_assets ta ON ta.symbol=eo.symbol
           WHERE p.status!='CLOSED' AND p.data->>'execution_mode'=$1""",
@@ -545,17 +553,65 @@ class ExchangeGateway:
                 if price<=0:raise ValueError(f"Triggered OKX order {order_id} has no fill price")
                 event={"event_type":"exchange.order_updated","payload":{
                   "order_id":str(row["local_order_id"]),"exchange_order_id":order_id,
+                  "executed_at":int(item.get("fillTime") or item.get("uTime") or 0) or None,
                   "status":"FILLED" if item.get("state")=="filled" else "PARTIALLY_FILLED",
                   "filled_price":price,"filled_quantity":cumulative,"position_exit":True,
                   "protective_id":algo_id,"protective_kind":metadata.get("kind"),
                   "target_price":metadata.get("target_price"),"reconciled":True}}
                 async with self.db.acquire() as connection:
                     async with connection.transaction():
+                        await connection.execute("UPDATE exchange_orders SET exit_order_ids=jsonb_set(exit_order_ids,ARRAY[$2]::text[],to_jsonb($3::text),true) WHERE local_order_id=$1::uuid",
+                          row["local_order_id"],algo_id,order_id)
                         await self.enqueue_exchange_event(connection,event,
                           f"protective:{row['local_order_id']}:{algo_id}:{cumulative}")
                 await self.flush_exchange_event_outbox()
                 recovered=True
         return recovered
+
+    async def sync_account_bills(self):
+        """Queue actual USDT SWAP fees/funding from the connected account ledger."""
+        config=await self.require_safe_account_config()
+        uid=str(config.get("uid") or "").strip()
+        if not uid:raise ValueError("OKX account UID is unavailable for bill attribution")
+        mode="DEMO" if self.s.okx_demo else "PRODUCTION"
+        scope=f"{mode}:{uid}"
+        row=await self.db.fetchrow("SELECT last_ts FROM exchange_bill_cursors WHERE account_scope=$1",scope)
+        end=int(time()*1000);archive_start=end-89*86_400_000
+        if row and int(row["last_ts"])<archive_start:
+            raise ValueError("OKX bill archive retention exceeded; historical accounting remains unresolved")
+        begin=max(archive_start,(int(row["last_ts"])-3_600_000) if row else archive_start)
+        after=None;newest=int(row["last_ts"]) if row else archive_start
+        while True:
+            params={"instType":"SWAP","ccy":"USDT","begin":str(begin),"end":str(end),"limit":"100"}
+            if after:params["after"]=after
+            bills=await self.private("GET","/api/v5/account/bills-archive?"+urlencode(params))
+            for bill in bills:
+                stamp=int(bill.get("ts") or 0);newest=max(newest,stamp)
+                if bill.get("type")!="2" and bill.get("subType") not in {"173","174"}:continue
+                local_order_id=None;is_exit_order=False
+                if bill.get("ordId"):
+                    mapped=await self.db.fetchrow("""SELECT local_order_id::text,contract_value,
+                      (reduce_only OR EXISTS(SELECT 1 FROM jsonb_each_text(exit_order_ids) child WHERE child.value=$1)) AS is_exit
+                      FROM exchange_orders WHERE exchange_order_id=$1 OR EXISTS
+                        (SELECT 1 FROM jsonb_each_text(exit_order_ids) child WHERE child.value=$1) LIMIT 1""",bill["ordId"])
+                    if mapped:local_order_id=mapped["local_order_id"];is_exit_order=bool(mapped["is_exit"])
+                contract_value=(mapped["contract_value"] if bill.get("ordId") and mapped else None)
+                event={"event_type":"exchange.account_bill","payload":{"account_scope":scope,"execution_mode":mode,
+                  "local_order_id":local_order_id,"is_exit_order":is_exit_order,
+                  "contract_value":float(contract_value) if contract_value is not None else None,"bill":bill}}
+                async with self.db.acquire() as connection:
+                    async with connection.transaction():
+                        event_key=f"bill:{scope}:{bill['billId']}"+(f":order:{local_order_id}" if local_order_id else "")
+                        await self.enqueue_exchange_event(connection,event,event_key)
+            await self.flush_exchange_event_outbox()
+            if len(bills)<100:break
+            next_after=str(bills[-1].get("billId") or "")
+            if not next_after or next_after==after:raise ValueError("OKX bill pagination did not advance")
+            after=next_after
+            await asyncio.sleep(.45)
+        newest=max(newest,end)
+        await self.db.execute("""INSERT INTO exchange_bill_cursors(account_scope,last_ts) VALUES($1,$2)
+          ON CONFLICT(account_scope) DO UPDATE SET last_ts=greatest(exchange_bill_cursors.last_ts,excluded.last_ts)""",scope,newest)
     async def enqueue_exchange_event(self,connection,event,event_key):
         await connection.execute("""INSERT INTO exchange_event_outbox(event_key,payload)
           VALUES($1,$2::jsonb) ON CONFLICT(event_key) DO NOTHING""",event_key,json.dumps(event))
@@ -588,7 +644,7 @@ class ExchangeGateway:
             algo_cl_ord_id=item.get("algoClOrdId","")
             if item.get("tag")!="SMPELLIOTT" and not (cl_ord_id.startswith("SMP") or algo_cl_ord_id.startswith("SMA")):continue
             row=await self.db.fetchrow("""SELECT eo.local_order_id,o.data->>'execution_mode' AS execution_mode,
-                coalesce(ta.contract_value,1)::float8 AS contract_value,
+                coalesce(eo.contract_value,ta.contract_value,1)::float8 AS contract_value,
                 (eo.exit_algo_cl_ord_id=$2 OR coalesce(eo.exit_algos,'{}'::jsonb) ? $2) AS position_exit,
                 coalesce(eo.exit_algos,'{}'::jsonb)->$2 AS exit_metadata
               FROM exchange_orders eo LEFT JOIN orders o ON o.id=eo.local_order_id
@@ -600,10 +656,14 @@ class ExchangeGateway:
             exit_metadata=(json.loads(row["exit_metadata"]) if isinstance(row["exit_metadata"],str)
                            else row["exit_metadata"] or {})
             event={"event_type":"exchange.order_updated","payload":{"order_id":str(row["local_order_id"]),"exchange_order_id":item.get("ordId"),"status":status,"filled_price":float(item.get("avgPx") or item.get("fillPx") or 0),"filled_quantity":float(item.get("accFillSz") or 0)*float(row["contract_value"]),"exec_type":item.get("execType"),"raw_state":state,"position_exit":bool(row["position_exit"]),"protective_id":algo_cl_ord_id or None,"protective_kind":exit_metadata.get("kind"),"target_price":exit_metadata.get("target_price"),"unprotected_partial":not row["position_exit"] and (status=="PARTIALLY_FILLED" or status=="CANCELLED" and float(item.get("accFillSz") or 0)>0),"reason":"EXCHANGE_PROTECTIVE_EXIT" if row["position_exit"] else None}}
+            event["payload"]["executed_at"]=int(item.get("fillTime") or item.get("uTime") or 0) or None
             async with self.db.acquire() as connection:
                 async with connection.transaction():
                     if not row["position_exit"]:
                         await connection.execute("UPDATE exchange_orders SET exchange_order_id=$2,status=$3,payload=$4::jsonb,updated_at=now() WHERE cl_ord_id=$1",cl_ord_id,item.get("ordId"),status,json.dumps(item))
+                    elif algo_cl_ord_id and item.get("ordId"):
+                        await connection.execute("UPDATE exchange_orders SET exit_order_ids=jsonb_set(exit_order_ids,ARRAY[$2]::text[],to_jsonb($3::text),true) WHERE local_order_id=$1::uuid",
+                                                 row["local_order_id"],algo_cl_ord_id,item["ordId"])
                     await self.enqueue_exchange_event(connection,event,
                       f"private:{row['local_order_id']}:{algo_cl_ord_id or item.get('ordId')}:{status}:{item.get('accFillSz','0')}:{item.get('uTime',item.get('fillTime',''))}")
             await self.flush_exchange_event_outbox()
@@ -711,13 +771,14 @@ class ExchangeGateway:
         requested=requested_mode.upper();gateway_mode="DEMO" if self.s.okx_demo else "PRODUCTION"
         if requested!=gateway_mode:raise ValueError(f"Portfolio mode {requested} does not match OKX gateway mode {gateway_mode}")
         if not self.s.trading_enabled:raise ValueError("OKX trading is disabled")
-        await self.require_safe_account_config()
+        account_config=await self.require_safe_account_config()
         balances=await self.private("GET","/api/v5/account/balance?ccy=USDT")
         details=(balances[0].get("details",[]) if balances else []) or []
         usdt=next((item for item in details if item.get("ccy")=="USDT"),None)
         if not usdt:raise ValueError("USDT balance is unavailable on OKX account")
         equity=Decimal(str(usdt.get("eq") or 0));available=Decimal(str(usdt.get("availEq") or usdt.get("availBal") or 0))
-        return {"mode":requested,"currency":"USDT","equity":float(equity),"available":float(available)}
+        return {"mode":requested,"currency":"USDT","equity":float(equity),"available":float(available),
+                "account_uid":str(account_config.get("uid") or "")}
     async def instrument_availability(self,symbol,requested_mode):
         requested=requested_mode.upper();gateway_mode="DEMO" if self.s.okx_demo else "PRODUCTION"
         if requested=="PAPER":return {"symbol":symbol,"mode":requested,"available":True,"reason":None}
@@ -770,8 +831,12 @@ class ExchangeGateway:
                 raise ValueError("Trading portfolio changed before order submission")
             if config.get("activationId",config.get("activation_id")) and config.get("activationId",config.get("activation_id"))!=payload.get("activation_id"):
                 raise ValueError("Trading activation changed before order submission")
-        try:await self.require_safe_account_config()
+        try:account_config=await self.require_safe_account_config()
         except ExchangeAmbiguousError as exc:raise TradingNotReadyError(f"OKX account preflight unavailable: {exc}") from exc
+        if payload.get("account_scope") is not None:
+            expected_scope=f"{requested_mode}:{str(account_config.get('uid') or '').strip()}"
+            if expected_scope.endswith(":") or payload["account_scope"]!=expected_scope:
+                raise ValueError("OKX account changed after execution approval")
         # A removed asset can still have an open position on OKX. Its exit must
         # remain possible after trading_assets.enabled becomes false.
         if not payload.get("reduce_only"):
@@ -806,10 +871,10 @@ class ExchangeGateway:
                 raise ValueError("Trading portfolio changed before submission")
             if current_config.get("activationId",current_config.get("activation_id")) and current_config.get("activationId",current_config.get("activation_id"))!=payload.get("activation_id"):
                 raise ValueError("Trading activation changed before submission")
-        claimed=await self.db.fetchrow("""INSERT INTO exchange_orders(local_order_id,cl_ord_id,symbol,status,payload,exit_algo_cl_ord_id,exit_algos)
-          VALUES($1::uuid,$2,$3,'SUBMITTING',$4::jsonb,$5,$6::jsonb)
+        claimed=await self.db.fetchrow("""INSERT INTO exchange_orders(local_order_id,cl_ord_id,symbol,status,payload,exit_algo_cl_ord_id,exit_algos,contract_value,position_id,reduce_only)
+          VALUES($1::uuid,$2,$3,'SUBMITTING',$4::jsonb,$5,$6::jsonb,$7,$8::uuid,$9)
           ON CONFLICT(local_order_id) DO NOTHING RETURNING local_order_id""",
-          local_id,cl_ord_id,payload["symbol"],json.dumps(args),exit_algo_cl_ord_id,json.dumps(exit_algos))
+          local_id,cl_ord_id,payload["symbol"],json.dumps(args),exit_algo_cl_ord_id,json.dumps(exit_algos),float(contract),payload.get("position_id"),bool(payload.get("reduce_only")))
         if not claimed:
             prior=await self.db.fetchrow("SELECT status,exchange_order_id FROM exchange_orders WHERE local_order_id=$1::uuid",local_id)
             if not prior:raise TradingNotReadyError("Order claim is unresolved")

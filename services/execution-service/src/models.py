@@ -12,6 +12,7 @@ class OrderCreate(BaseModel):
     deduplication_key:str|None=None
     leverage:int=Field(default=1,ge=1,le=125);margin_mode:str="cross"
     execution_mode:str="PAPER";portfolio_id:str|None=None;activation_id:str|None=None;expires_at:int|None=None
+    account_scope:str|None=None
     slippage_percent:float=Field(default=0,ge=0,le=10);tick_size:float=Field(default=.01,gt=0)
     lot_size:float=Field(default=.000001,gt=0);minimum_order_size:float=Field(default=.000001,gt=0)
     volume_participation_percent:float=Field(default=5,gt=0,le=100)
@@ -42,6 +43,7 @@ class Position(BaseModel):
     symbol:str;direction:str;entry_price:float;current_price:float;quantity:float;initial_quantity:float;leverage:int=1
     execution_mode:str="PAPER";margin_mode:str="cross"
     portfolio_id:str|None=None
+    activation_id:str|None=None;account_scope:str|None=None
     portfolio_capital_mode:Literal["ALLOCATED","SEQUENTIAL"]="SEQUENTIAL"
     stop_loss_price:float|None=None;take_profit_prices:list[float]=[];status:str="OPENED";opened_at:int=Field(default_factory=now_ms);closed_at:int|None=None
     initial_stop_loss_price:float|None=None
@@ -58,6 +60,7 @@ class Position(BaseModel):
     exit_filled_quantities:dict[str,float]={}
     funding_percent_per_day:float=0;funding_interval_hours:int=8;maintenance_margin_percent:float=.5;liquidation_fee_percent:float=.5
     fees:float=0;funding:float=0;last_funding_at:int|None=None
+    actual_fee_adjustment:float=0;actual_funding_adjustment:float=0
     realized_pnl:float=0;max_unrealized_pnl:float=0;max_unrealized_loss:float=0;partial_takes:list[dict]=[];protected:bool=False
     def unrealized(self,price:float|None=None):
         gross=((price or self.current_price)-self.entry_price)*self.quantity*(1 if self.direction=="LONG" else -1)

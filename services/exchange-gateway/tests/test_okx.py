@@ -146,7 +146,7 @@ def test_production_order_converts_base_quantity_to_okx_contracts_with_protectio
         service.private_ready.set();service.reconciled=True
         service.db.fetchrow.side_effect=[None,{"mode":"PRODUCTION","config":{}},{"mode":"PRODUCTION","config":{}},
                                          {"local_order_id":"00000000-0000-0000-0000-000000000001"}]
-        service.require_safe_account_config=AsyncMock(return_value={"posMode":"net_mode"})
+        service.require_safe_account_config=AsyncMock(return_value={"posMode":"net_mode","uid":"uid-1"})
         service.instrument_order_spec=AsyncMock(return_value={"validation_status":"ACTIVE"})
         service.trading_instrument_spec=AsyncMock(return_value={
           "contract_value":.01,"lot_size":.0001,"minimum_order_size":.0001,"tick_size":.1,
@@ -182,7 +182,7 @@ def test_reduce_only_exit_remains_available_after_asset_is_disabled():
         service.db=AsyncMock();service.redis=AsyncMock();service.record_trading_log=AsyncMock()
         service.private_subscribed=True
         service.db.fetchrow.side_effect=[None,{"local_order_id":"00000000-0000-0000-0000-000000000002"}]
-        service.require_safe_account_config=AsyncMock(return_value={"posMode":"net_mode"})
+        service.require_safe_account_config=AsyncMock(return_value={"posMode":"net_mode","uid":"uid-1"})
         service.instrument_order_spec=AsyncMock(side_effect=AssertionError("disabled asset rejected exit"))
         service.trading_instrument_spec=AsyncMock(return_value={
           "contract_value":.01,"lot_size":.0001,"minimum_order_size":.0001,"tick_size":.1,
@@ -196,6 +196,27 @@ def test_reduce_only_exit_remains_available_after_asset_is_disabled():
         service.instrument_order_spec.assert_not_awaited()
         request=service.private.await_args.args[2]
         assert request["reduceOnly"] is True
+    asyncio.run(check())
+
+def test_order_with_stale_account_scope_is_rejected_before_exchange_submission():
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    async def check():
+        service=ExchangeGateway(SimpleNamespace(history_concurrency=1,okx_demo=False,margin_mode="cross"))
+        service.db=AsyncMock();service.db.fetchrow.return_value=None
+        service.private_subscribed=True
+        service.require_safe_account_config=AsyncMock(return_value={"posMode":"net_mode","uid":"new-uid"})
+        service.trading_instrument_spec=AsyncMock(side_effect=AssertionError("stale scope reached instrument/order path"))
+        service.private=AsyncMock()
+        payload={"id":"00000000-0000-0000-0000-000000000019","symbol":"BTC-USDT-SWAP",
+          "execution_mode":"PRODUCTION","account_scope":"PRODUCTION:old-uid","side":"SELL",
+          "type":"MARKET","quantity":.1,"reduce_only":True}
+        with pytest.raises(ValueError,match="account changed"):
+            await service.place_order(payload)
+        service.trading_instrument_spec.assert_not_awaited()
+        service.private.assert_not_awaited()
     asyncio.run(check())
 
 def test_live_account_requires_net_mode_trade_only_key_and_ip_binding():
@@ -224,12 +245,12 @@ def test_production_account_capacity_returns_usdt_equity_for_portfolio_preflight
 
     async def check():
         service=ExchangeGateway(SimpleNamespace(history_concurrency=1,okx_demo=False,trading_enabled=True))
-        service.require_safe_account_config=AsyncMock(return_value={"posMode":"net_mode"})
+        service.require_safe_account_config=AsyncMock(return_value={"posMode":"net_mode","uid":"uid-1"})
         service.private=AsyncMock(return_value=[{"details":[{
           "ccy":"USDT","eq":"140","availEq":"139.5","availBal":"139.4",
         }]}])
         result=await service.account_capacity("PRODUCTION")
-        assert result=={"mode":"PRODUCTION","currency":"USDT","equity":140.0,"available":139.5}
+        assert result=={"mode":"PRODUCTION","currency":"USDT","equity":140.0,"available":139.5,"account_uid":"uid-1"}
         service.private.assert_awaited_once_with("GET","/api/v5/account/balance?ccy=USDT")
     asyncio.run(check())
 
@@ -413,6 +434,7 @@ def test_reconciliation_blocks_unmanaged_exchange_exposure():
         gateway=ExchangeGateway(SimpleNamespace(history_concurrency=1))
         gateway.db=AsyncMock();gateway.db.fetch.return_value=[]
         gateway.db.fetchval.side_effect=[True,1,False]
+        gateway.sync_account_bills=AsyncMock()
         gateway.private=AsyncMock(return_value=[{"instId":"BTC-USDT-SWAP","pos":"1"}])
         with pytest.raises(ValueError,match="Unmanaged OKX position"):
             await gateway.reconcile_orders()
@@ -562,6 +584,7 @@ def test_reconciliation_isolates_connected_account_mode(demo,mode):
     async def check():
         gateway=ExchangeGateway(SimpleNamespace(history_concurrency=1,okx_demo=demo))
         gateway.db=AsyncMock();gateway.redis=AsyncMock();gateway.private=AsyncMock(return_value=[])
+        gateway.sync_account_bills=AsyncMock()
         gateway.db.fetchval.return_value=True
         async def fetch(query,*args):
             if 'exchange_event_outbox' in query:return []

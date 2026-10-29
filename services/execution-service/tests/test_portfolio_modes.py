@@ -1,6 +1,6 @@
 import asyncio
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock,Mock
 
 import pytest
 
@@ -21,6 +21,8 @@ def position(symbol="AVAX-USDT-SWAP",capital_mode="ALLOCATED"):
 def service():
     item=ExecutionService("unused","unused")
     item.save_order=AsyncMock();item.stream=AsyncMock()
+    response=Mock();response.json=Mock(return_value={"account_uid":"test-uid"})
+    item.http=AsyncMock();item.http.get.return_value=response
     return item
 
 
