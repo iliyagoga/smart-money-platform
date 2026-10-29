@@ -554,3 +554,21 @@ def test_backend_schedules_missing_entry_timeframe_history():
         assert set(args[2])=={"M30","H1","H4"}
         assert gateway.create_history.await_args.kwargs=={"auto":True}
     asyncio.run(check())
+
+@pytest.mark.parametrize('demo,mode',[(False,'PRODUCTION'),(True,'DEMO')])
+def test_reconciliation_isolates_connected_account_mode(demo,mode):
+    import asyncio
+    from types import SimpleNamespace
+    async def check():
+        gateway=ExchangeGateway(SimpleNamespace(history_concurrency=1,okx_demo=demo))
+        gateway.db=AsyncMock();gateway.redis=AsyncMock();gateway.private=AsyncMock(return_value=[])
+        gateway.db.fetchval.return_value=True
+        async def fetch(query,*args):
+            if 'exchange_event_outbox' in query:return []
+            assert args==(mode,)
+            assert "execution_mode'=$1" in query
+            return []
+        gateway.db.fetch.side_effect=fetch
+        await gateway.reconcile_orders()
+        assert gateway.reconciled
+    asyncio.run(check())

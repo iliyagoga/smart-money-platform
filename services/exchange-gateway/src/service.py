@@ -441,8 +441,10 @@ class ExchangeGateway:
         """Recover owned orders after a private-channel gap before accepting entries."""
         self.private_ready.clear();self.reconciled=False
         await self.flush_exchange_event_outbox()
+        mode="DEMO" if getattr(self.s,"okx_demo",False) else "PRODUCTION"
         rows=await self.db.fetch("""SELECT local_order_id,cl_ord_id,symbol FROM exchange_orders
-          WHERE status IN ('SUBMITTING','UNKNOWN','ACCEPTED','OPEN','PARTIALLY_FILLED','CANCEL_REQUESTED')""")
+          WHERE status IN ('SUBMITTING','UNKNOWN','ACCEPTED','OPEN','PARTIALLY_FILLED','CANCEL_REQUESTED')
+          AND local_order_id IN (SELECT id FROM orders WHERE data->>'execution_mode'=$1)""",mode)
         mapping={"LIVE":"OPEN","PARTIALLY_FILLED":"PARTIALLY_FILLED","FILLED":"FILLED",
                  "CANCELED":"CANCELLED","MMP_CANCELED":"CANCELLED"}
         for row in rows:
@@ -476,15 +478,16 @@ class ExchangeGateway:
         positions=await self.private("GET","/api/v5/account/positions?instType=SWAP")
         local_positions=await self.db.fetch("""SELECT symbol,
           sum(CASE WHEN data->>'direction'='SHORT' THEN -(data->>'quantity')::numeric ELSE (data->>'quantity')::numeric END) AS quantity
-          FROM positions WHERE status!='CLOSED' GROUP BY symbol""") if await self.db.fetchval("SELECT to_regclass('public.positions') IS NOT NULL") else []
+          FROM positions WHERE status!='CLOSED' AND data->>'execution_mode'=$1 GROUP BY symbol""",mode) if await self.db.fetchval("SELECT to_regclass('public.positions') IS NOT NULL") else []
         local_quantities={row["symbol"]:Decimal(str(row["quantity"] or 0)) for row in local_positions}
         exchange_quantities={}
         for item in positions:
             if Decimal(str(item.get("pos") or 0))==0:continue
             contract=await self.db.fetchval("SELECT coalesce(contract_value,1) FROM trading_assets WHERE symbol=$1",item.get("instId"))
             exchange_quantities[item.get("instId")]=exchange_quantities.get(item.get("instId"),Decimal(0))+Decimal(str(item["pos"]))*Decimal(str(contract or 1))
-            owned=await self.db.fetchval("""SELECT EXISTS(SELECT 1 FROM positions WHERE symbol=$1 AND status!='CLOSED'
-              UNION ALL SELECT 1 FROM exchange_orders WHERE symbol=$1 AND status IN ('SUBMITTING','UNKNOWN','ACCEPTED','OPEN','PARTIALLY_FILLED','FILLED'))""",item.get("instId"))
+            owned=await self.db.fetchval("""SELECT EXISTS(SELECT 1 FROM positions WHERE symbol=$1 AND status!='CLOSED' AND data->>'execution_mode'=$2
+              UNION ALL SELECT 1 FROM exchange_orders WHERE symbol=$1 AND status IN ('SUBMITTING','UNKNOWN','ACCEPTED','OPEN','PARTIALLY_FILLED','FILLED')
+              AND local_order_id IN (SELECT id FROM orders WHERE data->>'execution_mode'=$2))""",item.get("instId"),mode)
             if not owned:raise ValueError(f"Unmanaged OKX position on {item.get('instId')}; new entries are blocked")
         for symbol in set(local_quantities) | set(exchange_quantities):
             local=local_quantities.get(symbol,Decimal(0));actual=exchange_quantities.get(symbol,Decimal(0))
@@ -492,7 +495,8 @@ class ExchangeGateway:
                 raise ValueError(f"OKX position mismatch on {symbol}: local={local}, exchange={actual}")
         protected=await self.db.fetch("""SELECT p.id,p.symbol,p.data,eo.exit_algos
           FROM positions p LEFT JOIN exchange_orders eo ON eo.local_order_id=(p.data->>'order_id')::uuid
-          WHERE p.status!='CLOSED' AND p.data->>'execution_mode' IN ('DEMO','PRODUCTION')""")
+          WHERE p.status!='CLOSED' AND p.data->>'execution_mode'=$1""",
+          "DEMO" if getattr(self.s,"okx_demo",False) else "PRODUCTION")
         for row in protected:
             position=row["data"] if isinstance(row["data"],dict) else json.loads(row["data"])
             if position.get("force_exit"):continue
@@ -519,7 +523,8 @@ class ExchangeGateway:
           coalesce(ta.contract_value,1) AS contract_value
           FROM positions p JOIN exchange_orders eo ON eo.local_order_id=(p.data->>'order_id')::uuid
           LEFT JOIN trading_assets ta ON ta.symbol=eo.symbol
-          WHERE p.status!='CLOSED' AND p.data->>'execution_mode' IN ('DEMO','PRODUCTION')""")
+          WHERE p.status!='CLOSED' AND p.data->>'execution_mode'=$1""",
+          "DEMO" if getattr(self.s,"okx_demo",False) else "PRODUCTION")
         recovered=False
         for row in rows:
             position=row["data"] if isinstance(row["data"],dict) else json.loads(row["data"])
