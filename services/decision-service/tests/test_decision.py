@@ -165,7 +165,7 @@ def test_production_portfolio_sizing_uses_140_shared_capital_and_asset_allocatio
         streamed=service.stream.await_args.args[2]
         assert streamed["position_size"]==.84 and streamed["risk_amount"]==.84
         history_call=next(call for call in service.db.fetch.await_args_list if "FROM closed_trades" in call.args[0])
-        assert history_call.args[1:]==("PRODUCTION","portfolio-1",None)
+        assert history_call.args[1:]==("PRODUCTION","portfolio-1")
     asyncio.run(check())
 
 

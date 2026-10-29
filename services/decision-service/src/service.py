@@ -213,8 +213,7 @@ class DecisionService:
             return decision
         recent=await self.db.fetch("""SELECT pnl::float8,extract(epoch from closed_at)*1000 AS closed_at_ms
           FROM closed_trades WHERE data->>'execution_mode'=$1
-          AND ($2::text IS NULL OR data->>'portfolio_id'=$2)
-          AND ($3::text IS NULL OR symbol=$3) ORDER BY closed_at DESC""",mode,portfolio_id,signal.symbol if allocated else None)
+          AND ($2::text IS NULL OR data->>'portfolio_id'=$2) ORDER BY closed_at DESC""",mode,portfolio_id)
         today_start=int(datetime.now(timezone.utc).replace(hour=0,minute=0,second=0,microsecond=0).timestamp()*1000)
         daily=sum(float(row["pnl"]) for row in recent if int(row["closed_at_ms"])>=today_start)
         elliott=config_value(strategy,"elliott","elliott",{}) or {}
@@ -227,6 +226,21 @@ class DecisionService:
         reinvest=bool(config_value(elliott,"reinvestProfits","reinvest_profits",True))
         configured_capital=configured_current if reinvest else min(configured_current,configured_initial)
         capital=(min(float(capital),configured_capital) if allocated else float(capital)) if capital is not None else configured_capital
+        loss_limit_capital=None
+        if allocated and portfolio_id:
+            # Sizing uses the asset's budget; daily losses and losing streaks
+            # retain the existing portfolio-wide scope, including idle cash.
+            initial=float(config_value(strategy,"portfolioInitialCapital","portfolio_initial_capital",configured_initial))
+            pnl=await self.db.fetchval("""SELECT coalesce(sum(
+              coalesce(config->>'currentCapital',config->>'current_capital')::float8-
+              coalesce(config->>'initialCapital',config->>'initial_capital')::float8),0)
+              FROM trading_configs WHERE coalesce(config->>'portfolioId',config->>'portfolio_id')=$1
+              AND coalesce(config->>'portfolioActivationId',config->>'portfolio_activation_id',
+                           config->>'activationId',config->>'activation_id') IS NOT DISTINCT FROM $2::text""",
+              portfolio_id,config_value(strategy,"portfolioActivationId","portfolio_activation_id",
+                                        config_value(strategy,"activationId","activation_id")))
+            current=max(0,initial+float(pnl or 0))
+            loss_limit_capital=current if reinvest else min(current,initial)
         capital_ceiling=None
         if mode in {"DEMO","PRODUCTION"}:
             try:
@@ -261,7 +275,7 @@ class DecisionService:
               lot_size=float(strategy_row["lot_size"]) if strategy_row and strategy_row["lot_size"] else None,
               minimum_order_size=(float(strategy_row["minimum_order_size"])
                                   if strategy_row and strategy_row["minimum_order_size"] else None),
-              capital_ceiling=capital_ceiling)
+              capital_ceiling=capital_ceiling,loss_limit_capital=loss_limit_capital)
             await self.db.execute("INSERT INTO risk_decisions(signal_id,approved,data) VALUES($1::uuid,$2,$3::jsonb)",signal.signal_id,decision.approved,json.dumps(decision.model_dump(mode="json")))
             if decision.approved:
                 self.reserved_signals[signal.signal_id]=(signal.symbol,capital_mode)

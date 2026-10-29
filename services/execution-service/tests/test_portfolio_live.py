@@ -83,6 +83,8 @@ def test_portfolio_live_applies_capital_mode_and_publishes_each_asset(monkeypatc
         assert [item["initialCapital"] for item in configs]==capitals
         assert [item["currentCapital"] for item in configs]==capitals
         assert all(item["portfolioCapitalMode"]==capital_mode for item in configs)
+        assert all(item["portfolioInitialCapital"]==140 for item in configs)
+        assert configs[0]["portfolioActivationId"]==configs[1]["portfolioActivationId"]==configs[0]["activationId"]
         assert all(item["portfolioId"]==str(PORTFOLIO_ID) for item in configs)
     asyncio.run(check())
 
@@ -118,11 +120,13 @@ def test_live_capital_mode_is_validated_and_legacy_requests_remain_sequential():
 @pytest.mark.parametrize("patch",[
     {"initialCapital":140},{"currentCapital":140},{"portfolioAllocationPercent":100},
     {"portfolioCapitalMode":"SEQUENTIAL"},{"portfolioId":"other"},
+    {"portfolioActivationId":"other"},{"portfolioInitialCapital":10000},
 ])
 def test_editing_an_asset_cannot_bypass_its_allocated_portfolio_budget(monkeypatch,patch):
     async def check():
         config={**strategy_config(),"initialCapital":84,"currentCapital":84,
-          "portfolioCapitalMode":"ALLOCATED","portfolioId":str(PORTFOLIO_ID),"portfolioAllocationPercent":60}
+          "portfolioCapitalMode":"ALLOCATED","portfolioId":str(PORTFOLIO_ID),"portfolioAllocationPercent":60,
+          "portfolioInitialCapital":140,"portfolioActivationId":"portfolio-start","activationId":"asset-start"}
         db=AsyncMock();db.fetchval.return_value="user-1"
         db.fetchrow.return_value={"mode":"PRODUCTION","config":config}
         monkeypatch.setattr(execution_app.service,"db",db)
@@ -138,7 +142,8 @@ def test_editing_an_asset_cannot_bypass_its_allocated_portfolio_budget(monkeypat
 def test_allocated_strategy_can_be_edited_without_changing_budget_or_mode(monkeypatch):
     async def check():
         config={**strategy_config(),"initialCapital":84,"currentCapital":84,
-          "portfolioCapitalMode":"ALLOCATED","portfolioId":str(PORTFOLIO_ID),"portfolioAllocationPercent":60}
+          "portfolioCapitalMode":"ALLOCATED","portfolioId":str(PORTFOLIO_ID),"portfolioAllocationPercent":60,
+          "portfolioInitialCapital":140,"portfolioActivationId":"portfolio-start","activationId":"asset-start"}
         db=AsyncMock();db.fetchval.return_value="user-1"
         db.fetchrow.side_effect=[{"mode":"PRODUCTION","config":config},{"symbol":"AVAX-USDT-SWAP","config":config}]
         monkeypatch.setattr(execution_app.service,"db",db)
@@ -150,6 +155,7 @@ def test_allocated_strategy_can_be_edited_without_changing_budget_or_mode(monkey
         saved=json.loads(db.fetchrow.await_args.args[3])
         assert saved["currentCapital"]==84 and saved["riskPerTradePercent"]==.5
         assert saved["portfolioCapitalMode"]=="ALLOCATED"
+        assert saved["portfolioActivationId"]=="portfolio-start" and saved["activationId"]!="asset-start"
     asyncio.run(check())
 
 

@@ -21,10 +21,10 @@ def service(capital_mode="ALLOCATED",active=(),execution_mode="PRODUCTION",recen
     item=DecisionService("unused","unused")
     item.config=AsyncMock(return_value=RiskConfig())
     item.redis=AsyncMock();item.redis.scard.return_value=99
-    item.db=AsyncMock();item.stream=AsyncMock()
+    item.db=AsyncMock();item.db.fetchval.return_value=0;item.stream=AsyncMock()
     item.db.fetchrow.return_value={"config":{
       "initialCapital":1000,"currentCapital":1000,"riskPerTradePercent":1,
-      "portfolioAllocationPercent":50,"portfolioId":"portfolio","portfolioCapitalMode":capital_mode,
+      "portfolioAllocationPercent":50,"portfolioId":"portfolio","portfolioCapitalMode":capital_mode,"portfolioInitialCapital":2000,
       "elliott":{"useMargin":False,"reinvestProfits":True},
     },"mode":execution_mode,"lot_size":.01,"minimum_order_size":.01}
     async def fetch(query,*args):
@@ -47,7 +47,7 @@ def test_parallel_avax_position_allows_another_asset_with_its_full_allocated_bud
         assert item.stream.await_args.args[2]["portfolio_capital_mode"]=="ALLOCATED"
         # The budget has already been split at activation; it must not be halved again.
         history=next(call for call in item.db.fetch.await_args_list if "FROM closed_trades" in call.args[0])
-        assert history.args[1:]==(mode,"portfolio","ETH-USDT-SWAP")
+        assert history.args[1:]==(mode,"portfolio")
     asyncio.run(check())
 
 
@@ -159,7 +159,7 @@ def test_first_install_can_start_before_execution_tables_exist():
 def test_allocated_budget_still_obeys_daily_loss_and_cooldown_limits():
     async def check():
         from src.models import now_ms
-        item=service(recent=[{"pnl":-60,"closed_at_ms":now_ms()}])
+        item=service(recent=[{"pnl":-120,"closed_at_ms":now_ms()}])
         decision=await item.assess(signal())
         assert not decision.approved and decision.rejection_reason=="Daily loss limit exceeded"
         item=service(recent=[{"pnl":-1,"closed_at_ms":now_ms()}]*2)
@@ -178,6 +178,61 @@ def test_risk_api_override_cannot_increase_an_allocated_budget(reinvest,expected
     asyncio.run(check())
 
 
+@pytest.mark.parametrize("losses,reason",[
+    ([-120,10],"Daily loss limit exceeded"),
+    ([-1,-1],"Loss-streak cooldown"),
+])
+def test_parallel_assets_keep_portfolio_wide_loss_guards(losses,reason):
+    async def check():
+        from src.models import now_ms
+        item=service(recent=[{"pnl":pnl,"closed_at_ms":now_ms()} for pnl in losses])
+        item.db.fetchval.return_value=sum(losses)
+        decision=await item.assess(signal())
+        assert not decision.approved and reason in decision.rejection_reason
+        history=next(call for call in item.db.fetch.await_args_list if "FROM closed_trades" in call.args[0])
+        assert history.args[1:]==("PRODUCTION","portfolio") and "symbol=$" not in history.args[0]
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("reinvest,pnl,expected",[(True,500,2500),(False,500,2000),(True,-100,1900),(False,-100,1900)])
+def test_portfolio_loss_denominator_includes_idle_cash_and_uses_its_own_equity(reinvest,pnl,expected):
+    async def check():
+        from unittest.mock import Mock
+        item=service();item.db.fetchval.return_value=pnl
+        item.db.fetchrow.return_value["config"]["elliott"]["reinvestProfits"]=reinvest
+        item.risk.calculate=Mock(wraps=item.risk.calculate)
+        decision=await item.assess(signal())
+        assert decision.approved and decision.position_size==10
+        assert item.risk.calculate.call_args.kwargs["loss_limit_capital"]==expected
+    asyncio.run(check())
+
+
+def test_editing_one_assets_strategy_keeps_the_same_portfolio_risk_equity_for_both_assets():
+    async def check():
+        from unittest.mock import Mock
+        equities=[]
+        for asset_activation in ("portfolio-start","edited-asset"):
+            item=service();item.db.fetchval.return_value=-100+50
+            item.db.fetchrow.return_value["config"].update({
+              "activationId":asset_activation,"portfolioActivationId":"portfolio-start"})
+            item.risk.calculate=Mock(wraps=item.risk.calculate)
+            assert (await item.assess(signal())).approved
+            assert item.db.fetchval.await_args.args[1:]==("portfolio","portfolio-start")
+            assert "config->>'portfolioActivationId'" in item.db.fetchval.await_args.args[0]
+            equities.append(item.risk.calculate.call_args.kwargs["loss_limit_capital"])
+        assert equities==[1950,1950]
+    asyncio.run(check())
+
+
+def test_parallel_sizing_is_capped_by_available_balance_without_reapplying_the_allocation():
+    async def check():
+        item=service();item.http.get.return_value=httpx.Response(200,json={"available":400},
+          request=httpx.Request("GET","http://exchange/account/capacity"))
+        decision=await item.assess(signal())
+        assert decision.approved and decision.position_size==4 and decision.position_value==400
+    asyncio.run(check())
+
+
 def test_exhausted_first_asset_does_not_block_a_funded_asset():
     async def check():
         from src.models import now_ms
@@ -187,9 +242,9 @@ def test_exhausted_first_asset_does_not_block_a_funded_asset():
         async def strategy(query,symbol):return exhausted if symbol=="AVAX-USDT-SWAP" else funded
         item.db.fetchrow.side_effect=strategy
         busy=signal("AVAX-USDT-SWAP",1000);free=signal(created_at=2000)
-        # Only the exhausted asset has losses; the second asset has its own history.
+        # A past loss can exhaust one asset without triggering today's loss limit.
         async def fetch(query,*args):
-            return [{"pnl":-1000,"closed_at_ms":now_ms()}] if "closed_trades" in query and args[-1]==busy.symbol else []
+            return [{"pnl":-1000,"closed_at_ms":now_ms()-86_400_000}] if "closed_trades" in query else []
         item.db.fetch.side_effect=fetch
         item.signals={busy.signal_id:busy,free.signal_id:free};item.waiting=set(item.signals)
         await item.retry_waiting()

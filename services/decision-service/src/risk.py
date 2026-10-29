@@ -9,11 +9,13 @@ class RiskManager:
                   ignore_loss_limits:bool=False,risk_percent_override:float|None=None,
                   allocation_percent:float=100,use_margin:bool=True,leverage_override:int|None=None,
                   lot_size:float|None=None,minimum_order_size:float|None=None,
-                  capital_ceiling:float|None=None)->RiskDecision:
+                  capital_ceiling:float|None=None,loss_limit_capital:float|None=None)->RiskDecision:
         timestamp=now if now is not None else now_ms()
         decision_meta={"consecutive_losses":consecutive_losses}
         if not isfinite(capital) or capital<=0:return RiskDecision(signal_id=signal.signal_id,approved=False,rejection_reason="Trading capital must be positive")
-        if not ignore_loss_limits and daily_pnl<0 and abs(daily_pnl)/capital*100>=config.max_daily_loss_percent:return RiskDecision(signal_id=signal.signal_id,approved=False,rejection_reason="Daily loss limit exceeded")
+        loss_capital=capital if loss_limit_capital is None else loss_limit_capital
+        if not isfinite(loss_capital) or loss_capital<=0:return RiskDecision(signal_id=signal.signal_id,approved=False,rejection_reason="Trading capital must be positive")
+        if not ignore_loss_limits and daily_pnl<0 and abs(daily_pnl)/loss_capital*100>=config.max_daily_loss_percent:return RiskDecision(signal_id=signal.signal_id,approved=False,rejection_reason="Daily loss limit exceeded")
         # The caller scopes occupancy to the asset for allocated portfolios and
         # to the whole trading loop for sequential portfolios.
         if open_positions+active_orders>=min(config.max_positions,1):return RiskDecision(signal_id=signal.signal_id,approved=False,rejection_reason="Another trade is still active",**decision_meta)

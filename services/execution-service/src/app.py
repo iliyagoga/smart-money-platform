@@ -156,6 +156,8 @@ async def save_trading_config(request: TradingConfigCreate,x_user_id:str=Header(
     allocated=value(previous,"portfolioCapitalMode","portfolio_capital_mode")=="ALLOCATED"
     if allocated or value(request.config,"portfolioCapitalMode","portfolio_capital_mode")=="ALLOCATED":
         protected=(("portfolioCapitalMode","portfolio_capital_mode"),("portfolioId","portfolio_id"),
+                   ("portfolioInitialCapital","portfolio_initial_capital"),
+                   ("portfolioActivationId","portfolio_activation_id"),
                    ("portfolioAllocationPercent","portfolio_allocation_percent"),
                    ("initialCapital","initial_capital"),("currentCapital","current_capital"))
         if (not allocated or mode!=existing["mode"] or
@@ -285,6 +287,8 @@ async def portfolio_to_live(portfolio_id:UUID,request:PortfolioLiveRequest,x_use
         config={**item["config"],"initialCapital":asset_capital,"currentCapital":asset_capital,
                 "portfolioAllocationPercent":item["allocation_percent"],"portfolioId":str(portfolio_id),
                 "portfolioCapitalMode":request.capital_mode,
+                "portfolioInitialCapital":request.capital,
+                "portfolioActivationId":activation_id,
                 "activationId":activation_id,"activatedAt":activated_at}
         config.pop("initial_capital",None);config.pop("current_capital",None)
         try:
