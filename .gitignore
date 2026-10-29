@@ -59,3 +59,7 @@ secrets/
 target/
 playwright-report/
 test-results/
+
+/.codex
+AGENTS.md
+README_SETUP.md

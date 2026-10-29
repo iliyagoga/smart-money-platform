@@ -28,7 +28,7 @@ class DecisionService:
         self.exchange_service_url=exchange_service_url.rstrip("/");self.http=None
         self.db=None;self.redis=None;self.resolver=ConflictResolver(threshold,min_delta);self.risk=RiskManager()
         self.scenarios:dict[str,Scenario]={};self.signals:dict[str,TradeSignal]={};self.tasks=[];self.pending:dict[str,asyncio.Task]={}
-        self.waiting:set[str]=set();self.reserved_signal_id:str|None=None
+        self.waiting:set[str]=set();self.reserved_signals:dict[str,tuple[str,str]]={}
         self.risk_lock=asyncio.Lock();self.resolve_lock=asyncio.Lock()
     async def start(self):
         self.db=await asyncpg.create_pool(self.database_url,min_size=1,max_size=5);self.redis=Redis.from_url(self.redis_url,decode_responses=True);await self.redis.ping()
@@ -52,6 +52,7 @@ class DecisionService:
                 if signal.expires_at is None or signal.expires_at>now_ms():
                     self.signals[signal.signal_id]=signal;self.waiting.add(signal.signal_id)
             except Exception:log.exception("Could not restore waiting trade signal")
+        await self.restore_reservations()
         self.tasks=[asyncio.create_task(self.listen()),asyncio.create_task(self.recover())]
         for scenario in list(self.scenarios.values()):await self.evaluate(scenario)
     async def stop(self):
@@ -74,14 +75,14 @@ class DecisionService:
                     if event.get("source")=="decision-service":continue
                     if event.get("event_type") in {"scenario.created","scenario.updated"}:await self.evaluate(Scenario.model_validate(event["payload"]))
                     elif event.get("event_type") in {"position.closed","order.cancelled","order.rejected"}:
-                        self.reserved_signal_id=None;await self.retry_waiting()
+                        self.reserved_signals.pop(event.get("payload",{}).get("signal_id"),None)
+                        await self.retry_waiting()
             except asyncio.CancelledError:await pubsub.aclose();raise
             except Exception:log.exception("Scenario listener failed");await pubsub.aclose();await asyncio.sleep(2)
     async def recover(self):
         while True:
             try:
-                active=await self.db.fetchval("SELECT EXISTS(SELECT 1 FROM orders WHERE status IN ('PENDING','OPEN','SUBMITTING','PARTIALLY_FILLED','CANCEL_REQUESTED','UNKNOWN') UNION ALL SELECT 1 FROM positions WHERE status!='CLOSED')")
-                if not active:self.reserved_signal_id=None
+                await self.release_reservations()
                 await self.retry_waiting()
                 rows=await self.db.fetch("""SELECT s.data FROM scenarios s LEFT JOIN trade_signals ts ON ts.scenario_id=s.id
                   WHERE s.status='ACTIVE' AND s.data->>'setup_type'='ELLIOTT_WAVE3' AND ts.id IS NULL""")
@@ -155,17 +156,50 @@ class DecisionService:
           or self.signals[signal_id].expires_at>timestamp)),key=lambda item:item.created_at)
         self.waiting={item.signal_id for item in candidates}
         for signal in candidates:
-            decision=await self.assess(signal)
-            if decision.approved or decision.rejection_reason=="Another trade is still active":break
+            # A busy asset must not prevent another allocated asset from retrying.
+            try:await self.assess(signal)
+            except Exception:log.exception("Could not reassess waiting signal %s for %s",signal.signal_id,signal.symbol)
+    async def restore_reservations(self):
+        try:
+            rows=await self.db.fetch("""SELECT ts.data,tc.config FROM trade_signals ts
+              JOIN trading_configs tc ON tc.symbol=ts.symbol AND tc.status='ACTIVE'
+              WHERE ts.status='APPROVED' AND NOT EXISTS(SELECT 1 FROM orders o WHERE o.signal_id=ts.id)""")
+        except asyncpg.UndefinedTableError:
+            # On first install execution-service creates these tables after this
+            # service becomes healthy. There cannot be earlier approvals then.
+            return
+        for row in rows:
+            signal=TradeSignal.model_validate(decode_json(row["data"]));config=decode_json(row["config"])
+            activated_at=config_value(config,"activatedAt","activated_at",0)
+            if signal.expires_at is not None and signal.expires_at<=now_ms():continue
+            if activated_at and signal.created_at<int(activated_at):continue
+            self.signals[signal.signal_id]=signal
+            self.reserved_signals[signal.signal_id]=(signal.symbol,config_value(config,"portfolioCapitalMode","portfolio_capital_mode","SEQUENTIAL"))
+    async def release_reservations(self):
+        async with self.risk_lock:
+            if not self.reserved_signals:return
+            rows=await self.db.fetch("SELECT signal_id::text AS signal_id FROM orders WHERE signal_id=ANY($1::uuid[])",list(self.reserved_signals))
+            for row in rows:self.reserved_signals.pop(row["signal_id"],None)
+            configs=await self.db.fetch("SELECT symbol,config FROM trading_configs WHERE symbol=ANY($1::text[]) AND status='ACTIVE'",
+                                       list({symbol for symbol,_ in self.reserved_signals.values()}))
+            active={row["symbol"]:decode_json(row["config"]) for row in configs}
+            for signal_id in list(self.reserved_signals):
+                signal=self.signals.get(signal_id)
+                config=active.get(self.reserved_signals[signal_id][0])
+                activated_at=config_value(config or {},"activatedAt","activated_at",0)
+                if (config is None or (signal and signal.expires_at is not None and signal.expires_at<=now_ms())
+                        or (signal and activated_at and signal.created_at<int(activated_at))):
+                    self.reserved_signals.pop(signal_id,None)
     async def assess(self,signal:TradeSignal,capital:float|None=None,ignore_loss_limits:bool=False):
         cfg=await self.config()
-        positions=int(await self.redis.scard("positions:open"))
         strategy_row=await self.db.fetchrow("""SELECT tc.config,tc.mode,ta.lot_size,ta.minimum_order_size
           FROM trading_configs tc LEFT JOIN trading_assets ta ON ta.symbol=tc.symbol
           WHERE tc.symbol=$1 AND tc.status='ACTIVE'""",signal.symbol)
         strategy=decode_json(strategy_row["config"]) if strategy_row else {}
         mode=str(strategy_row["mode"]).upper() if strategy_row else "PAPER"
         portfolio_id=config_value(strategy,"portfolioId","portfolio_id",None)
+        capital_mode=config_value(strategy,"portfolioCapitalMode","portfolio_capital_mode","SEQUENTIAL")
+        allocated=capital_mode=="ALLOCATED"
         if not strategy_row:
             decision=RiskDecision(signal_id=signal.signal_id,approved=False,rejection_reason="Trading asset is inactive")
             self.waiting.discard(signal.signal_id)
@@ -179,18 +213,20 @@ class DecisionService:
             return decision
         recent=await self.db.fetch("""SELECT pnl::float8,extract(epoch from closed_at)*1000 AS closed_at_ms
           FROM closed_trades WHERE data->>'execution_mode'=$1
-          AND ($2::text IS NULL OR data->>'portfolio_id'=$2) ORDER BY closed_at DESC""",mode,portfolio_id)
+          AND ($2::text IS NULL OR data->>'portfolio_id'=$2)
+          AND ($3::text IS NULL OR symbol=$3) ORDER BY closed_at DESC""",mode,portfolio_id,signal.symbol if allocated else None)
         today_start=int(datetime.now(timezone.utc).replace(hour=0,minute=0,second=0,microsecond=0).timestamp()*1000)
         daily=sum(float(row["pnl"]) for row in recent if int(row["closed_at_ms"])>=today_start)
         elliott=config_value(strategy,"elliott","elliott",{}) or {}
         risk_percent=config_value(strategy,"riskPerTradePercent","risk_per_trade_percent",None)
-        allocation=config_value(strategy,"portfolioAllocationPercent","portfolio_allocation_percent",100)
+        allocation=100 if allocated else config_value(strategy,"portfolioAllocationPercent","portfolio_allocation_percent",100)
         use_margin=bool(config_value(elliott,"useMargin","use_margin",False))
         leverage=int(config_value(strategy,"leverage","leverage",1))
         configured_initial=float(config_value(strategy,"initialCapital","initial_capital",self.default_capital))
         configured_current=float(config_value(strategy,"currentCapital","current_capital",configured_initial))
         reinvest=bool(config_value(elliott,"reinvestProfits","reinvest_profits",True))
-        capital=float(capital) if capital is not None else (configured_current if reinvest else min(configured_current,configured_initial))
+        configured_capital=configured_current if reinvest else min(configured_current,configured_initial)
+        capital=(min(float(capital),configured_capital) if allocated else float(capital)) if capital is not None else configured_capital
         capital_ceiling=None
         if mode in {"DEMO","PRODUCTION"}:
             try:
@@ -209,9 +245,17 @@ class DecisionService:
             consecutive_losses+=1
             if last_loss_at is None:last_loss_at=int(row["closed_at_ms"])
         async with self.risk_lock:
-            active_orders=await self.db.fetchval("SELECT count(*) FROM orders WHERE status IN ('PENDING','OPEN','SUBMITTING','PARTIALLY_FILLED','CANCEL_REQUESTED')")
-            reservation=1 if self.reserved_signal_id and self.reserved_signal_id!=signal.signal_id else 0
-            decision=self.risk.calculate(signal,capital,cfg,daily,positions,int(active_orders or 0)+reservation,consecutive_losses,last_loss_at,
+            # PostgreSQL is authoritative; stale Redis position markers must not
+            # hold a slot forever. Unknown exchange outcomes still reserve it.
+            active=await self.db.fetch("""SELECT symbol,data->>'portfolio_capital_mode' AS capital_mode
+              FROM orders WHERE status IN ('PENDING','OPEN','SUBMITTING','PARTIALLY_FILLED','CANCEL_REQUESTED','UNKNOWN')
+              UNION ALL SELECT symbol,data->>'portfolio_capital_mode' AS capital_mode FROM positions WHERE status!='CLOSED'""")
+            def blocks(symbol,other_mode):
+                return not allocated or other_mode!="ALLOCATED" or symbol==signal.symbol
+            occupied=sum(1 for item in active if blocks(item["symbol"],item["capital_mode"]))
+            reservations=sum(1 for signal_id,(symbol,other_mode) in self.reserved_signals.items()
+                             if signal_id!=signal.signal_id and blocks(symbol,other_mode))
+            decision=self.risk.calculate(signal,capital,cfg,daily,0,occupied+reservations,consecutive_losses,last_loss_at,
               ignore_loss_limits=ignore_loss_limits,risk_percent_override=risk_percent,
               allocation_percent=float(allocation),use_margin=use_margin,leverage_override=leverage,
               lot_size=float(strategy_row["lot_size"]) if strategy_row and strategy_row["lot_size"] else None,
@@ -220,12 +264,14 @@ class DecisionService:
               capital_ceiling=capital_ceiling)
             await self.db.execute("INSERT INTO risk_decisions(signal_id,approved,data) VALUES($1::uuid,$2,$3::jsonb)",signal.signal_id,decision.approved,json.dumps(decision.model_dump(mode="json")))
             if decision.approved:
-                self.reserved_signal_id=signal.signal_id;self.waiting.discard(signal.signal_id)
+                self.reserved_signals[signal.signal_id]=(signal.symbol,capital_mode)
+                self.signals[signal.signal_id]=signal;self.waiting.discard(signal.signal_id)
                 await self.db.execute("UPDATE trade_signals SET status='APPROVED' WHERE id=$1::uuid",signal.signal_id)
                 payload=decision.model_dump();payload["approved_at"]=payload.pop("timestamp");payload.pop("approved");payload.pop("rejection_reason")
                 payload["activation_id"]=config_value(strategy,"activationId","activation_id")
                 payload["execution_mode"]=mode
                 payload["portfolio_id"]=portfolio_id
+                payload["portfolio_capital_mode"]=capital_mode
                 await self.stream("trading.command","risk.approved",payload)
             else:
                 waiting=decision.rejection_reason=="Another trade is still active"

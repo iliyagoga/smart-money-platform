@@ -9,7 +9,7 @@ test("portfolio run renders one report with contributions and asset trades", asy
   await page.route("**/api/v1/execution/configuration-library", route => route.fulfill({ json: { configurations: [] } }));
   await page.route("**/api/v1/execution/portfolios/portfolio-test/live", async route => {
     const body = route.request().postDataJSON();
-    expect(body).toEqual({ mode: "PRODUCTION", capital: 140 });
+    expect(body).toEqual({ mode: "PRODUCTION", capital: 140, capital_mode: "ALLOCATED" });
     await route.fulfill({ json: { id: "portfolio-test", mode: "PRODUCTION", capital: 140, activated_symbols: ["AAA", "BBB"] } });
   });
   await page.route("**/api/v1/backtest/portfolio-backtests", async route => {

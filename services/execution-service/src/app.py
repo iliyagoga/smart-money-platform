@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 import json
 import logging
 from math import isfinite
+from typing import Literal
 import asyncpg
 from fastapi import FastAPI,Header,HTTPException,Query
 from .models import *
@@ -55,6 +56,8 @@ class TradingConfigCreate(BaseModel):
         if not isfinite(risk) or risk<0:raise ValueError("risk per trade must be finite and not negative")
         if not 1<=leverage<=125:raise ValueError("leverage must be between 1 and 125")
         if not isfinite(allocation) or not 0<allocation<=100:raise ValueError("portfolio allocation must be finite and between 0 and 100")
+        if value("portfolioCapitalMode","portfolio_capital_mode","SEQUENTIAL") not in {"ALLOCATED","SEQUENTIAL"}:
+            raise ValueError("unsupported portfolio capital mode")
         return self
 
 class StrategyConfigurationWrite(BaseModel):
@@ -75,6 +78,7 @@ class PortfolioWrite(BaseModel):
 class PortfolioLiveRequest(BaseModel):
     mode:str="PAPER"
     capital:float=Field(gt=0)
+    capital_mode:Literal["ALLOCATED","SEQUENTIAL"]="SEQUENTIAL"
 
 def configuration_record(row):
     value=dict(row);value["id"]=str(value["id"])
@@ -146,6 +150,17 @@ async def save_trading_config(request: TradingConfigCreate,x_user_id:str=Header(
         raise HTTPException(409,"Finish the existing trade before changing this asset")
     owner=await service.db.fetchval("SELECT owner_id FROM trading_configs WHERE symbol=$1",symbol)
     if owner is not None and owner!=x_user_id:raise HTTPException(409,"Trading asset belongs to another user")
+    existing=await service.db.fetchrow("SELECT mode,config FROM trading_configs WHERE symbol=$1",symbol)
+    previous=decode_json(existing["config"]) if existing else {}
+    def value(config,camel,snake,default=None):return config.get(camel,config.get(snake,default))
+    allocated=value(previous,"portfolioCapitalMode","portfolio_capital_mode")=="ALLOCATED"
+    if allocated or value(request.config,"portfolioCapitalMode","portfolio_capital_mode")=="ALLOCATED":
+        protected=(("portfolioCapitalMode","portfolio_capital_mode"),("portfolioId","portfolio_id"),
+                   ("portfolioAllocationPercent","portfolio_allocation_percent"),
+                   ("initialCapital","initial_capital"),("currentCapital","current_capital"))
+        if (not allocated or mode!=existing["mode"] or
+                any(value(previous,camel,snake)!=value(request.config,camel,snake) for camel,snake in protected)):
+            raise HTTPException(409,"Change allocated portfolio capital, allocation or mode by reactivating the portfolio")
     try:
         await service.prepare_portfolio_assets([symbol])
         service.validate_live_config(request.config,mode)
@@ -246,7 +261,7 @@ async def portfolio_to_live(portfolio_id:UUID,request:PortfolioLiveRequest,x_use
     row=await service.db.fetchrow("SELECT assets FROM portfolios WHERE id=$1 AND owner_id=$2",portfolio_id,x_user_id)
     if not row:raise HTTPException(404,"Portfolio not found")
     assets=decode_json(row["assets"])
-    if sum(float(item["allocation_percent"]) for item in assets)>100.000001:
+    if request.capital_mode=="ALLOCATED" and sum(float(item["allocation_percent"]) for item in assets)>100.000001:
         raise HTTPException(422,"Live portfolio allocation must not exceed 100%")
     symbols=[item["symbol"].strip().upper() for item in assets]
     conflicts=await service.db.fetch("""SELECT symbol FROM trading_configs WHERE symbol=ANY($1::text[])
@@ -266,8 +281,10 @@ async def portfolio_to_live(portfolio_id:UUID,request:PortfolioLiveRequest,x_use
     except ValueError as exc:raise HTTPException(409,str(exc)) from exc
     live_configs=[];activation_id=str(uuid4());activated_at=int(time()*1000)
     for item in assets:
-        config={**item["config"],"initialCapital":request.capital,"currentCapital":request.capital,
+        asset_capital=request.capital*float(item["allocation_percent"])/100 if request.capital_mode=="ALLOCATED" else request.capital
+        config={**item["config"],"initialCapital":asset_capital,"currentCapital":asset_capital,
                 "portfolioAllocationPercent":item["allocation_percent"],"portfolioId":str(portfolio_id),
+                "portfolioCapitalMode":request.capital_mode,
                 "activationId":activation_id,"activatedAt":activated_at}
         config.pop("initial_capital",None);config.pop("current_capital",None)
         try:
@@ -292,7 +309,7 @@ async def portfolio_to_live(portfolio_id:UUID,request:PortfolioLiveRequest,x_use
         await service.publish_channel("trading.config","trading.config.saved",{
             "symbol":symbol,"mode":mode,"portfolio_id":str(portfolio_id),
         })
-    return {"id":str(portfolio_id),"mode":mode,"capital":request.capital,
+    return {"id":str(portfolio_id),"mode":mode,"capital":request.capital,"capital_mode":request.capital_mode,
             "activated_symbols":[symbol for symbol,_ in live_configs]}
 @app.get("/configuration-library")
 async def configuration_library(x_user_id:str=Header(default="local")):

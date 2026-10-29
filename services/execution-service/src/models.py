@@ -31,6 +31,7 @@ class OrderCreate(BaseModel):
         if self.execution_mode not in {"PAPER","DEMO","PRODUCTION"}:raise ValueError("unsupported execution mode")
         return self
 class Order(OrderCreate):
+    portfolio_capital_mode:Literal["ALLOCATED","SEQUENTIAL"]="SEQUENTIAL"
     id:str=Field(default_factory=lambda:str(uuid4()));status:str="PENDING";exchange_order_id:str|None=None
     rejection_reason:str|None=None
     created_at:int=Field(default_factory=now_ms);filled_at:int|None=None;filled_price:float|None=None
@@ -41,6 +42,7 @@ class Position(BaseModel):
     symbol:str;direction:str;entry_price:float;current_price:float;quantity:float;initial_quantity:float;leverage:int=1
     execution_mode:str="PAPER";margin_mode:str="cross"
     portfolio_id:str|None=None
+    portfolio_capital_mode:Literal["ALLOCATED","SEQUENTIAL"]="SEQUENTIAL"
     stop_loss_price:float|None=None;take_profit_prices:list[float]=[];status:str="OPENED";opened_at:int=Field(default_factory=now_ms);closed_at:int|None=None
     initial_stop_loss_price:float|None=None
     target_allocations:list[float]=[];break_even_rule:str="ONE_R";move_stop_to_break_even_after_target:int|None=1;targets_hit:int=0

@@ -69,7 +69,7 @@ export default function PortfoliosPage() {
   const live=async(portfolio:Portfolio)=>{if(typeof liveCapital!=="number"||!Number.isFinite(liveCapital)||liveCapital<=0)return;
     if(mode==="PRODUCTION"&&!window.confirm(`Активировать реальную торговлю портфелем «${portfolio.name}» с капиталом ${liveCapital} USDT?`))return;
     setBusy(true);setError("");try{const response=await api<{activated_symbols:string[]}>(`/api/v1/execution/portfolios/${portfolio.id}/live`,{
-    method:"POST",body:JSON.stringify({mode,capital:liveCapital})});setMessage(`Портфель добавлен в live (${mode}): ${response.activated_symbols.join(", ")}.`);}
+    method:"POST",body:JSON.stringify({mode,capital:liveCapital,capital_mode:capitalMode})});setMessage(`Портфель добавлен в live (${mode}): ${response.activated_symbols.join(", ")}.`);}
     catch(reason){setError(reason instanceof Error?reason.message:String(reason));}finally{setBusy(false);}};
   const run=async(portfolio:Portfolio)=>{
     setBusy(true);setRunId(portfolio.id);setPortfolioRun(undefined);setError("");setMessage("");
@@ -115,7 +115,7 @@ export default function PortfoliosPage() {
           <MenuItem value="ALLOCATED">Параллельно · фиксированные доли</MenuItem>
           <MenuItem value="SEQUENTIAL">Последовательно · общий капитал</MenuItem>
         </TextField>
-        <Button variant="outlined" disabled={busy || running || !Number.isFinite(initialCapital) || initialCapital <= 0 || !from || !to || from > to || (capitalMode==="ALLOCATED"&&portfolio.assets.reduce((sum,item)=>sum+item.allocation_percent,0)>100)} onClick={()=>void run(portfolio)}>Прогнать датасет</Button><Button variant="contained" color={mode==="PRODUCTION"?"error":"primary"} disabled={busy||typeof liveCapital!=="number"||!Number.isFinite(liveCapital)||liveCapital<=0||portfolio.assets.reduce((sum,item)=>sum+item.allocation_percent,0)>100} onClick={()=>void live(portfolio)}>Добавить в live</Button></Stack>
+        <Button variant="outlined" disabled={busy || running || !Number.isFinite(initialCapital) || initialCapital <= 0 || !from || !to || from > to || (capitalMode==="ALLOCATED"&&portfolio.assets.reduce((sum,item)=>sum+item.allocation_percent,0)>100)} onClick={()=>void run(portfolio)}>Прогнать датасет</Button><Button variant="contained" color={mode==="PRODUCTION"?"error":"primary"} disabled={busy||typeof liveCapital!=="number"||!Number.isFinite(liveCapital)||liveCapital<=0||(capitalMode==="ALLOCATED"&&portfolio.assets.reduce((sum,item)=>sum+item.allocation_percent,0)>100)} onClick={()=>void live(portfolio)}>Добавить в live</Button></Stack>
       {capitalMode==="SEQUENTIAL"&&<Typography variant="body2" color="text.secondary">Одновременно открыта только одна сделка. Для каждой новой сделки доля актива считается от актуального капитала.</Typography>}
       {runId === portfolio.id && portfolioRun && <Stack spacing={1}>
         {running && <LinearProgress variant="determinate" value={portfolioRun.progress}/>}
@@ -129,7 +129,7 @@ export default function PortfoliosPage() {
         <TextField fullWidth select label="Конфигурация" value={item.configuration_id} onChange={event=>setAssets(current=>current.map((value,i)=>i===index?{...value,configuration_id:event.target.value}:value))}>{[...configurationMap.values()].map(config=><MenuItem key={config.id} value={config.id}>{config.name}</MenuItem>)}</TextField>
         <TextField label="Доля, %" type="number" value={item.allocation_percent} onChange={event=>setAssets(current=>current.map((value,i)=>i===index?{...value,allocation_percent:Number(event.target.value)}:value))} slotProps={{htmlInput:{min:0.01,max:100}}} sx={{width:{xs:"100%",md:160},flexShrink:0}}/>
         <Button color="error" disabled={assets.length===1} onClick={()=>setAssets(current=>current.filter((_,i)=>i!==index))}>Убрать</Button></Stack></Paper>)}
-      <Typography color="text.secondary">Сумма долей: {totalAllocation}%. Значение выше 100% доступно для последовательного прогона; параллельный прогон и live требуют не более 100%.</Typography><Button variant="outlined" onClick={()=>setAssets(current=>[...current,initialAsset()])}>Добавить актив</Button>
+      <Typography color="text.secondary">Сумма долей: {totalAllocation}%. В параллельном режиме сумма долей не должна превышать 100%. В последовательном режиме каждый актив использует свою долю общего капитала.</Typography><Button variant="outlined" onClick={()=>setAssets(current=>[...current,initialAsset()])}>Добавить актив</Button>
       <Button variant="contained" disabled={busy||!name.trim()||assets.some(item=>!item.symbol||!item.configuration_id)} onClick={()=>void save()}>Сохранить</Button>
     </Stack></DialogContent></Dialog>
   </SectionPage>;

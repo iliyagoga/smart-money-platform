@@ -164,8 +164,8 @@ def test_production_portfolio_sizing_uses_140_shared_capital_and_asset_allocatio
         assert decision.risk_amount==.84
         streamed=service.stream.await_args.args[2]
         assert streamed["position_size"]==.84 and streamed["risk_amount"]==.84
-        history_call=service.db.fetch.await_args
-        assert history_call.args[1:]==("PRODUCTION","portfolio-1")
+        history_call=next(call for call in service.db.fetch.await_args_list if "FROM closed_trades" in call.args[0])
+        assert history_call.args[1:]==("PRODUCTION","portfolio-1",None)
     asyncio.run(check())
 
 
@@ -177,7 +177,7 @@ def test_asset_overrides_cannot_raise_global_risk_or_leverage_limits():
     assert decision.position_size==10 and decision.leverage==3
 
 
-def test_waiting_signals_retry_sequentially_after_position_closes():
+def test_waiting_signals_retry_each_candidate_in_order():
     import asyncio
     from unittest.mock import AsyncMock
     from src.service import DecisionService
@@ -191,5 +191,5 @@ def test_waiting_signals_retry_sequentially_after_position_closes():
         service.waiting={first.signal_id,second.signal_id}
         service.assess=AsyncMock(return_value=RiskDecision(signal_id=first.signal_id,approved=True))
         await service.retry_waiting()
-        service.assess.assert_awaited_once_with(first)
+        assert [call.args[0] for call in service.assess.await_args_list]==[first,second]
     asyncio.run(check())

@@ -82,5 +82,82 @@ test("configuration workspace and market execution chart work on desktop and mob
   await canvas.click({ position: { x: 160, y: 250 } });
   await expect.poll(async () => (await labels()).some((text) => /%\) · \d+ мин/.test(text))).toBe(true);
   await page.screenshot({ path: testInfo.outputPath("market.png"), fullPage: true });
+
+  // Both live capital modes must reach the API, including on a mobile screen.
+  marketResponses["/api/v1/execution/portfolios"] = { portfolios: [{
+    id: "capital-modes", name: "Режимы капитала", description: "",
+    assets: ["AVAX-USDT-SWAP", "ETH-USDT-SWAP"].map(symbol => ({
+      symbol, configuration_id: "config", allocation_percent: 50, config: {},
+    })),
+  }] };
+  const activations: object[] = [];
+  await page.route("**/api/v1/execution/portfolios/capital-modes/live", async route => {
+    activations.push(route.request().postDataJSON());
+    await route.fulfill({ json: { activated_symbols: ["AVAX-USDT-SWAP", "ETH-USDT-SWAP"] },
+      headers: { "access-control-allow-origin": new URL(baseURL!).origin } });
+  });
+  await page.goto("/portfolios");
+  await page.getByLabel("Live-режим").click();
+  await page.getByRole("option", { name: "OKX Production" }).click();
+  await page.getByLabel("Live-капитал, USDT").fill("140");
+  page.on("dialog", dialog => dialog.accept());
+  await page.getByRole("button", { name: "Добавить в live" }).click();
+  await expect.poll(() => activations).toEqual([
+    { mode: "PRODUCTION", capital: 140, capital_mode: "ALLOCATED" },
+  ]);
+  await page.getByLabel("Режим капитала").click();
+  await page.getByRole("option", { name: "Последовательно · общий капитал" }).click();
+  await page.getByRole("button", { name: "Добавить в live" }).click();
+  await expect.poll(() => activations).toEqual([
+    { mode: "PRODUCTION", capital: 140, capital_mode: "ALLOCATED" },
+    { mode: "PRODUCTION", capital: 140, capital_mode: "SEQUENTIAL" },
+  ]);
   expect(errors).toEqual([]);
+});
+
+test("portfolio live activation sends the chosen capital mode and validates allocations", async ({ page, baseURL }) => {
+  let nonce="";
+  await page.route("http://localhost:8080/**",async route => {
+    const url=new URL(route.request().url());
+    if (url.pathname.endsWith("/auth")) {
+      nonce=url.searchParams.get("nonce") ?? "";
+      const redirect=new URL(url.searchParams.get("redirect_uri")!);
+      redirect.hash=new URLSearchParams({code:"ui-test",state:url.searchParams.get("state")!}).toString();
+      await route.fulfill({status:302,headers:{location:redirect.toString()}});return;
+    }
+    const encode=(data:object)=>Buffer.from(JSON.stringify(data)).toString("base64url");
+    const jwt=`${encode({alg:"none"})}.${encode({sub:"ui-test",nonce,realm_access:{roles:["admin"]},exp:Math.floor(Date.now()/1000)+3600,iat:Math.floor(Date.now()/1000)})}.signature`;
+    await route.fulfill({json:{access_token:jwt,id_token:jwt,refresh_token:jwt,expires_in:3600},
+      headers:{"access-control-allow-origin":new URL(baseURL!).origin,"access-control-allow-credentials":"true"}});
+  });
+  const activations:Array<{mode:string;capital:number;capital_mode:string}>=[];
+  let allocation=50;
+  await page.route("http://localhost:8050/**",async route => {
+    const path=new URL(route.request().url()).pathname;
+    let response:object={configurations:[]};
+    if (path==="/api/v1/execution/portfolios") response={portfolios:[{
+      id:"portfolio-test",name:"Портфель",description:"",updated_at:new Date().toISOString(),
+      assets:["AVAX-USDT-SWAP","ETH-USDT-SWAP"].map(symbol=>({symbol,configuration_id:"config",allocation_percent:allocation,config:{}})),
+    }]};
+    if (path==="/api/v1/execution/portfolios/portfolio-test/live") {
+      activations.push(route.request().postDataJSON());response={activated_symbols:["AVAX-USDT-SWAP","ETH-USDT-SWAP"]};
+    }
+    await route.fulfill({json:response,headers:{"access-control-allow-origin":new URL(baseURL!).origin,"access-control-allow-credentials":"true"}});
+  });
+  await page.goto("/portfolios");
+  await page.getByLabel("Live-капитал, USDT").fill("1000");
+  await page.getByRole("button",{name:"Добавить в live"}).click();
+  await expect.poll(()=>activations).toEqual([{mode:"PAPER",capital:1000,capital_mode:"ALLOCATED"}]);
+  await page.getByLabel("Режим капитала").click();
+  await page.getByRole("option",{name:"Последовательно · общий капитал"}).click();
+  await page.getByRole("button",{name:"Добавить в live"}).click();
+  await expect.poll(()=>activations.length).toBe(2);
+  expect(activations[1]).toEqual({mode:"PAPER",capital:1000,capital_mode:"SEQUENTIAL"});
+  allocation=100;
+  await page.reload();
+  await page.getByLabel("Live-капитал, USDT").fill("1000");
+  await expect(page.getByRole("button",{name:"Добавить в live"})).toBeDisabled();
+  await page.getByLabel("Режим капитала").click();
+  await page.getByRole("option",{name:"Последовательно · общий капитал"}).click();
+  await expect(page.getByRole("button",{name:"Добавить в live"})).toBeEnabled();
 });

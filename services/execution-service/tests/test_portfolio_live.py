@@ -57,7 +57,8 @@ class PortfolioDb:
     def acquire(self):return Acquisition(self.connection)
 
 
-def test_portfolio_live_uses_explicit_shared_capital_and_publishes_each_asset(monkeypatch):
+@pytest.mark.parametrize("capital_mode,capitals",[("SEQUENTIAL",[140,140]),("ALLOCATED",[84,56])])
+def test_portfolio_live_applies_capital_mode_and_publishes_each_asset(monkeypatch,capital_mode,capitals):
     async def check():
         db=PortfolioDb();monkeypatch.setattr(execution_app.service,"db",db)
         prepare=AsyncMock();validate=AsyncMock();validate_capital=AsyncMock();publish=AsyncMock()
@@ -67,9 +68,10 @@ def test_portfolio_live_uses_explicit_shared_capital_and_publishes_each_asset(mo
         monkeypatch.setattr(execution_app.service,"validate_portfolio_capital",validate_capital)
         monkeypatch.setattr(execution_app.service,"publish_channel",publish)
         result=await execution_app.portfolio_to_live(
-            PORTFOLIO_ID,execution_app.PortfolioLiveRequest(mode="PRODUCTION",capital=140),"user-1",
+            PORTFOLIO_ID,execution_app.PortfolioLiveRequest(mode="PRODUCTION",capital=140,capital_mode=capital_mode),"user-1",
         )
         assert result["capital"]==140
+        assert result["capital_mode"]==capital_mode
         assert result["activated_symbols"]==["BTC-USDT-SWAP","ETH-USDT-SWAP"]
         prepare.assert_awaited_once_with(["BTC-USDT-SWAP","ETH-USDT-SWAP"])
         validate_capital.assert_awaited_once_with("PRODUCTION",140)
@@ -78,8 +80,76 @@ def test_portfolio_live_uses_explicit_shared_capital_and_publishes_each_asset(mo
         assert "status='INACTIVE'" in db.connection.execute.await_args_list[0].args[0]
         configs=[json.loads(call.args[3]) for call in db.connection.execute.await_args_list[1:]]
         assert [item["portfolioAllocationPercent"] for item in configs]==[60,40]
-        assert all(item["initialCapital"]==140 and item["currentCapital"]==140 for item in configs)
+        assert [item["initialCapital"] for item in configs]==capitals
+        assert [item["currentCapital"] for item in configs]==capitals
+        assert all(item["portfolioCapitalMode"]==capital_mode for item in configs)
         assert all(item["portfolioId"]==str(PORTFOLIO_ID) for item in configs)
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("capital_mode",["ALLOCATED","SEQUENTIAL"])
+def test_live_allocation_sum_is_limited_only_in_parallel_mode(monkeypatch,capital_mode):
+    async def check():
+        db=PortfolioDb()
+        for asset in db.assets:asset["allocation_percent"]=100
+        monkeypatch.setattr(execution_app.service,"db",db)
+        for name in ("prepare_portfolio_assets","validate_execution_mode","validate_strategy_config",
+                     "validate_portfolio_capital","publish_channel"):
+            monkeypatch.setattr(execution_app.service,name,AsyncMock())
+        request=execution_app.PortfolioLiveRequest(capital=140,capital_mode=capital_mode)
+        if capital_mode=="ALLOCATED":
+            with pytest.raises(HTTPException,match="must not exceed 100%"):
+                await execution_app.portfolio_to_live(PORTFOLIO_ID,request,"user-1")
+            db.connection.execute.assert_not_awaited()
+        else:
+            await execution_app.portfolio_to_live(PORTFOLIO_ID,request,"user-1")
+            configs=[json.loads(call.args[3]) for call in db.connection.execute.await_args_list[1:]]
+            assert [item["currentCapital"] for item in configs]==[140,140]
+    asyncio.run(check())
+
+
+def test_live_capital_mode_is_validated_and_legacy_requests_remain_sequential():
+    from pydantic import ValidationError
+    assert execution_app.PortfolioLiveRequest(capital=140).capital_mode=="SEQUENTIAL"
+    with pytest.raises(ValidationError):
+        execution_app.PortfolioLiveRequest(capital=140,capital_mode="PARALLELL")
+
+
+@pytest.mark.parametrize("patch",[
+    {"initialCapital":140},{"currentCapital":140},{"portfolioAllocationPercent":100},
+    {"portfolioCapitalMode":"SEQUENTIAL"},{"portfolioId":"other"},
+])
+def test_editing_an_asset_cannot_bypass_its_allocated_portfolio_budget(monkeypatch,patch):
+    async def check():
+        config={**strategy_config(),"initialCapital":84,"currentCapital":84,
+          "portfolioCapitalMode":"ALLOCATED","portfolioId":str(PORTFOLIO_ID),"portfolioAllocationPercent":60}
+        db=AsyncMock();db.fetchval.return_value="user-1"
+        db.fetchrow.return_value={"mode":"PRODUCTION","config":config}
+        monkeypatch.setattr(execution_app.service,"db",db)
+        prepare=AsyncMock();monkeypatch.setattr(execution_app.service,"prepare_portfolio_assets",prepare)
+        request=execution_app.TradingConfigCreate(symbol="AVAX-USDT-SWAP",mode="PRODUCTION",config={**config,**patch})
+        with pytest.raises(HTTPException,match="reactivating the portfolio"):
+            await execution_app.save_trading_config(request,"user-1")
+        prepare.assert_not_awaited()
+        assert db.fetchrow.await_count==1
+    asyncio.run(check())
+
+
+def test_allocated_strategy_can_be_edited_without_changing_budget_or_mode(monkeypatch):
+    async def check():
+        config={**strategy_config(),"initialCapital":84,"currentCapital":84,
+          "portfolioCapitalMode":"ALLOCATED","portfolioId":str(PORTFOLIO_ID),"portfolioAllocationPercent":60}
+        db=AsyncMock();db.fetchval.return_value="user-1"
+        db.fetchrow.side_effect=[{"mode":"PRODUCTION","config":config},{"symbol":"AVAX-USDT-SWAP","config":config}]
+        monkeypatch.setattr(execution_app.service,"db",db)
+        for name in ("prepare_portfolio_assets","validate_execution_mode","validate_strategy_config",
+                     "validate_portfolio_capital","publish_channel"):
+            monkeypatch.setattr(execution_app.service,name,AsyncMock())
+        request=execution_app.TradingConfigCreate(symbol="AVAX-USDT-SWAP",mode="PRODUCTION",config={**config,"riskPerTradePercent":.5})
+        await execution_app.save_trading_config(request,"user-1")
+        saved=json.loads(db.fetchrow.await_args.args[3])
+        assert saved["currentCapital"]==84 and saved["riskPerTradePercent"]==.5
+        assert saved["portfolioCapitalMode"]=="ALLOCATED"
     asyncio.run(check())
 
 

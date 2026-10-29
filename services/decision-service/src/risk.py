@@ -1,4 +1,4 @@
-from math import floor
+from math import floor,isfinite
 
 from .models import *
 
@@ -12,9 +12,10 @@ class RiskManager:
                   capital_ceiling:float|None=None)->RiskDecision:
         timestamp=now if now is not None else now_ms()
         decision_meta={"consecutive_losses":consecutive_losses}
+        if not isfinite(capital) or capital<=0:return RiskDecision(signal_id=signal.signal_id,approved=False,rejection_reason="Trading capital must be positive")
         if not ignore_loss_limits and daily_pnl<0 and abs(daily_pnl)/capital*100>=config.max_daily_loss_percent:return RiskDecision(signal_id=signal.signal_id,approved=False,rejection_reason="Daily loss limit exceeded")
-        # The strategy is deliberately sequential: a pending order or an open
-        # position reserves the only trading slot.
+        # The caller scopes occupancy to the asset for allocated portfolios and
+        # to the whole trading loop for sequential portfolios.
         if open_positions+active_orders>=min(config.max_positions,1):return RiskDecision(signal_id=signal.signal_id,approved=False,rejection_reason="Another trade is still active",**decision_meta)
         cooldown_hours=0
         if consecutive_losses>=config.loss_streak_daily_stop:cooldown_hours=config.daily_stop_hours

@@ -235,19 +235,25 @@ class ExecutionService:
         if activation_id and payload.get("activation_id")!=activation_id:return
         if payload.get("execution_mode") is not None and payload["execution_mode"]!=row["mode"]:return
         if payload.get("portfolio_id") is not None and payload["portfolio_id"]!=config.get("portfolioId",config.get("portfolio_id")):return
+        capital_mode=config.get("portfolioCapitalMode",config.get("portfolio_capital_mode","SEQUENTIAL"))
+        if payload.get("portfolio_capital_mode") is not None and payload["portfolio_capital_mode"]!=capital_mode:return
         leverage=int(payload.get("leverage",1)) if use_margin else 1
         maker=-float(row["maker_fee_rate"])*100 if row["maker_fee_rate"] is not None else float(config.get("makerFeePercent",config.get("maker_fee_percent",config.get("feePercent",config.get("fee_percent",0)))))
         taker=-float(row["taker_fee_rate"])*100 if row["taker_fee_rate"] is not None else float(config.get("takerFeePercent",config.get("taker_fee_percent",config.get("feePercent",config.get("fee_percent",0)))))
         funding=float(row["funding_rate"])*300 if row["funding_rate"] is not None else float(config.get("fundingPercentPerDay",config.get("funding_percent_per_day",0)))
         order=Order(symbol=s["symbol"],side="BUY" if s["direction"]=="LONG" else "SELL",type=s["entry_type"],price=s["entry_price"],quantity=payload["position_size"],stop_loss_price=s["stop_loss_price"],take_profit_prices=s["take_profit_prices"],signal_id=signal_id,target_allocations=s.get("target_allocations",[]),target_rrs=s.get("target_rrs",[]),break_even_rule=s.get("break_even_rule","ONE_R"),move_stop_to_break_even_after_target=s.get("move_stop_to_break_even_after_target",1),deduplication_key=s.get("deduplication_key"),leverage=leverage,margin_mode=config.get("marginMode",config.get("margin_mode","cross")),execution_mode=row["mode"],portfolio_id=config.get("portfolioId",config.get("portfolio_id")),activation_id=config.get("activationId",config.get("activation_id")),expires_at=s.get("expires_at"),slippage_percent=float(config.get("slippagePercent",config.get("slippage_percent",0))),tick_size=float(row["tick_size"] or config.get("tickSize",config.get("tick_size",.01))),lot_size=float(row["lot_size"] or config.get("lotSize",config.get("lot_size",.000001))),minimum_order_size=float(row["minimum_order_size"] or config.get("minimumOrderSize",config.get("minimum_order_size",.000001))),volume_participation_percent=float(config.get("volumeParticipationPercent",config.get("volume_participation_percent",5))),maker_fee_percent=maker,taker_fee_percent=taker,funding_percent_per_day=funding,funding_interval_hours=int(config.get("fundingIntervalHours",config.get("funding_interval_hours",8))),maintenance_margin_percent=float(config.get("maintenanceMarginPercent",config.get("maintenance_margin_percent",.5))),liquidation_fee_percent=float(config.get("liquidationFeePercent",config.get("liquidation_fee_percent",.5))))
+        order.portfolio_capital_mode=capital_mode
         await self.create_order(order)
     async def create_order(self,order:Order):
         existing=next((x for x in self.orders.values() if order.signal_id and x.signal_id==order.signal_id),None)
         if existing:return existing
         if order.expires_at is not None and order.expires_at<=int(time()*1000):
             raise ValueError("Approved signal has expired")
-        active_order=any(x.status in ACTIVE_ORDER_STATUSES | {"UNKNOWN"} for x in self.orders.values())
-        active_position=any(x.status!="CLOSED" for x in self.positions.values())
+        def blocks(item):
+            return (order.portfolio_capital_mode!="ALLOCATED" or item.portfolio_capital_mode!="ALLOCATED"
+                    or item.symbol==order.symbol)
+        active_order=any(x.status in ACTIVE_ORDER_STATUSES | {"UNKNOWN"} and blocks(x) for x in self.orders.values())
+        active_position=any(x.status!="CLOSED" and blocks(x) for x in self.positions.values())
         if active_order or active_position:raise ValueError("Another trade is still active")
         self.orders[order.id]=order;await self.save_order(order)
         if order.execution_mode=="PAPER":
@@ -265,7 +271,8 @@ class ExecutionService:
           and item.position_id==p.id and item.status in ACTIVE_ORDER_STATUSES),None)
         if existing:return existing
         order=Order(symbol=p.symbol,side="SELL" if p.direction=="LONG" else "BUY",type="MARKET",
-          price=p.current_price,quantity=quantity,execution_mode=p.execution_mode,portfolio_id=p.portfolio_id,margin_mode=p.margin_mode,
+          price=p.current_price,quantity=quantity,execution_mode=p.execution_mode,portfolio_id=p.portfolio_id,
+          portfolio_capital_mode=p.portfolio_capital_mode,margin_mode=p.margin_mode,
           leverage=p.leverage,tick_size=p.tick_size,lot_size=p.lot_size,
           minimum_order_size=p.minimum_order_size,maker_fee_percent=p.maker_fee_percent,
           taker_fee_percent=p.taker_fee_percent,reduce_only=True,position_id=p.id,close_reason=reason)
@@ -285,7 +292,7 @@ class ExecutionService:
         updated_capital=max(0,current+float(pnl))
         portfolio_id=portfolio_id or config.get("portfolioId",config.get("portfolio_id"))
         configs=[{"symbol":symbol,"config":config}]
-        if portfolio_id:
+        if portfolio_id and config.get("portfolioCapitalMode",config.get("portfolio_capital_mode","SEQUENTIAL"))!="ALLOCATED":
             configs=await db.fetch("""SELECT symbol,config FROM trading_configs
               WHERE coalesce(config->>'portfolioId',config->>'portfolio_id')=$1""",str(portfolio_id))
         events=[]
@@ -360,7 +367,8 @@ class ExecutionService:
               strategy="ELLIOTT",setup_type="ELLIOTT_WAVE3",symbol=o.symbol,
               direction="LONG" if o.side=="BUY" else "SHORT",entry_price=price,current_price=price,
               quantity=delta,initial_quantity=delta,leverage=o.leverage,
-              execution_mode=o.execution_mode,portfolio_id=o.portfolio_id,margin_mode=o.margin_mode,
+              execution_mode=o.execution_mode,portfolio_id=o.portfolio_id,
+              portfolio_capital_mode=o.portfolio_capital_mode,margin_mode=o.margin_mode,
               stop_loss_price=o.stop_loss_price,initial_stop_loss_price=o.stop_loss_price,
               take_profit_prices=list(o.take_profit_prices),target_allocations=list(o.target_allocations),
               break_even_rule=o.break_even_rule,
