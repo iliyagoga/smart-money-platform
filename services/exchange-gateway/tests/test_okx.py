@@ -427,19 +427,112 @@ def test_reconciliation_replays_missed_protective_fill_from_okx():
     async def check():
         gateway=ExchangeGateway(SimpleNamespace(history_concurrency=1))
         gateway.db=AsyncMock();gateway.redis=AsyncMock()
-        gateway.db.fetch.return_value=[{"data":{"order_id":"00000000-0000-0000-0000-000000000001",
+        class Connection:
+            async def __aenter__(self):return self
+            async def __aexit__(self,*_):return False
+            def transaction(self):return self
+            async def execute(self,*_):pass
+        gateway.db.acquire=lambda:Connection()
+        gateway.enqueue_exchange_event=AsyncMock();gateway.flush_exchange_event_outbox=AsyncMock()
+        protective=[{"data":{"order_id":"00000000-0000-0000-0000-000000000001",
           "protective_filled_quantities":{}},"local_order_id":"00000000-0000-0000-0000-000000000001",
           "symbol":"BTC-USDT-SWAP","contract_value":.01,
           "exit_algos":{"stop-1":{"kind":"STOP_LOSS"}}}]
+        async def fetch(query,*_):return [] if "exchange_event_outbox" in query else protective
+        gateway.db.fetch.side_effect=fetch
         gateway.private=AsyncMock(side_effect=[
           [{"state":"effective","ordId":"okx-exit-1"}],
           [{"state":"filled","accFillSz":"10","avgPx":"95"}],
         ])
         assert await gateway.recover_protective_fills()
-        event=json.loads(gateway.redis.xadd.await_args.args[1]["data"])
+        event=gateway.enqueue_exchange_event.await_args.args[1]
         assert event["payload"]["position_exit"] is True
         assert event["payload"]["filled_quantity"]==.1
         assert event["payload"]["protective_kind"]=="STOP_LOSS"
+    asyncio.run(check())
+
+def test_exchange_event_outbox_retries_after_redis_failure_and_restart():
+    import asyncio,json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    async def check():
+        payload={"event_type":"exchange.order_updated","payload":{"status":"FILLED","order_id":"order-1"}}
+        pending=[{"id":1,"payload":payload}]
+        db=AsyncMock()
+        async def fetch(*_):return list(pending)
+        async def execute(query,event_id):
+            if "published_at=now()" in query:pending.clear()
+        db.fetch.side_effect=fetch;db.execute.side_effect=execute
+        redis=AsyncMock();redis.xadd.side_effect=[ConnectionError("Redis unavailable"),"1-0"]
+        gateway=ExchangeGateway(SimpleNamespace(history_concurrency=1));gateway.db=db;gateway.redis=redis
+        try:await gateway.flush_exchange_event_outbox()
+        except ConnectionError:pass
+        else:raise AssertionError("Redis failure must leave the durable event pending")
+        assert pending==[{"id":1,"payload":payload}]
+        restarted=ExchangeGateway(SimpleNamespace(history_concurrency=1));restarted.db=db;restarted.redis=redis
+        await restarted.flush_exchange_event_outbox()
+        assert not pending
+        event=json.loads(redis.xadd.await_args_list[-1].args[1]["data"])
+        assert event==payload
+        assert db.execute.await_count==1
+    asyncio.run(check())
+
+def test_exchange_event_outbox_serializes_concurrent_flushes_in_row_order():
+    import asyncio,json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    async def check():
+        rows=[{"id":1,"payload":{"event_type":"one"}},{"id":2,"payload":{"event_type":"two"}}]
+        db=AsyncMock();db.fetch.return_value=rows
+        redis=AsyncMock();delivered=[]
+        async def xadd(_,fields,**__):
+            await asyncio.sleep(0)
+            delivered.append(json.loads(fields["data"])["event_type"])
+            return str(len(delivered))
+        redis.xadd.side_effect=xadd
+        gateway=ExchangeGateway(SimpleNamespace(history_concurrency=1));gateway.db=db;gateway.redis=redis
+        await asyncio.gather(gateway.flush_exchange_event_outbox(),gateway.flush_exchange_event_outbox())
+        assert delivered==["one","two","one","two"]
+    asyncio.run(check())
+
+def test_private_final_fill_commits_order_status_with_outbox_before_redis_publish():
+    import asyncio,json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    async def check():
+        statements=[];events=[]
+        class Transaction:
+            async def __aenter__(self):return self
+            async def __aexit__(self,*_):return False
+        class Connection:
+            def transaction(self):return Transaction()
+            async def __aenter__(self):return self
+            async def __aexit__(self,*_):return False
+            async def execute(self,query,*args):
+                statements.append(query)
+                if "exchange_event_outbox" in query:events.append({"id":1,"payload":json.loads(args[1])})
+        gateway=ExchangeGateway(SimpleNamespace(history_concurrency=1,okx_demo=False))
+        gateway.db=AsyncMock();gateway.db.acquire=lambda:Connection()
+        async def fetch(query,*_):return events if "exchange_event_outbox" in query else []
+        gateway.db.fetch.side_effect=fetch
+        gateway.db.fetchrow.return_value={"local_order_id":"order-1","execution_mode":"PRODUCTION",
+          "contract_value":1,"position_exit":False,"exit_metadata":None}
+        gateway.redis=AsyncMock();gateway.redis.xadd.side_effect=ConnectionError("Redis unavailable")
+        gateway.record_trading_log=AsyncMock()
+        msg={"arg":{"channel":"orders"},"data":[{"tag":"SMPELLIOTT","clOrdId":"SMP-order",
+          "ordId":"exchange-1","instId":"AVAX-USDT-SWAP","state":"filled",
+          "accFillSz":"1","avgPx":"100","uTime":"123"}]}
+        try:await gateway.handle_private(msg)
+        except ConnectionError:pass
+        else:raise AssertionError("Redis outage should retain outbox delivery for retry")
+        assert len(events)==1 and events[0]["payload"]["payload"]["status"]=="FILLED"
+        assert statements[0].startswith("UPDATE exchange_orders")
+        assert "exchange_event_outbox" in statements[1]
+        gateway.db.execute.assert_not_awaited()
+        gateway.record_trading_log.assert_not_awaited()
     asyncio.run(check())
 
 def test_backend_schedules_missing_entry_timeframe_history():

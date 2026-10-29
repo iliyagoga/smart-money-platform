@@ -98,6 +98,7 @@ class ExchangeGateway:
         self.s=s;self.client=None;self.db=None;self.redis=None;self.tasks=set();self.connected={"public":False,"business":False,"private":False};self.last_error=None
         self.history_semaphore=asyncio.Semaphore(s.history_concurrency);self.running_history=set()
         self.history_request_lock=asyncio.Lock();self.history_request_next=0.0;self.history_request_interval=.12
+        self.exchange_event_outbox_lock=asyncio.Lock()
         self.active_symbols=None;self.websockets={};self.market_page_cache={};self.market_page_locks={};self.private_ready=asyncio.Event();self.pending={}
         self.reconciled=False;self.private_subscribed=False
         self.last_market_message=None;self.last_m1_by_symbol={}
@@ -141,6 +142,9 @@ class ExchangeGateway:
         await self.db.execute("ALTER TABLE exchange_orders ADD COLUMN IF NOT EXISTS exit_algo_cl_ord_id text")
         await self.db.execute("ALTER TABLE exchange_orders ADD COLUMN IF NOT EXISTS exit_algos jsonb NOT NULL DEFAULT '{}'")
         await self.db.execute("CREATE UNIQUE INDEX IF NOT EXISTS exchange_orders_exit_algo_idx ON exchange_orders(exit_algo_cl_ord_id) WHERE exit_algo_cl_ord_id IS NOT NULL")
+        await self.db.execute("""CREATE TABLE IF NOT EXISTS exchange_event_outbox(
+          id bigserial PRIMARY KEY,event_key text UNIQUE NOT NULL,payload jsonb NOT NULL,
+          published_at timestamptz,created_at timestamptz NOT NULL DEFAULT now())""")
         await self.db.execute("""CREATE TABLE IF NOT EXISTS live_trading_logs(
           id bigserial PRIMARY KEY,local_order_id uuid,symbol text NOT NULL,execution_mode text NOT NULL,
           event_type text NOT NULL,status text NOT NULL,details jsonb NOT NULL DEFAULT '{}',
@@ -436,6 +440,7 @@ class ExchangeGateway:
     async def reconcile_orders(self):
         """Recover owned orders after a private-channel gap before accepting entries."""
         self.private_ready.clear();self.reconciled=False
+        await self.flush_exchange_event_outbox()
         rows=await self.db.fetch("""SELECT local_order_id,cl_ord_id,symbol FROM exchange_orders
           WHERE status IN ('SUBMITTING','UNKNOWN','ACCEPTED','OPEN','PARTIALLY_FILLED','CANCEL_REQUESTED')""")
         mapping={"LIVE":"OPEN","PARTIALLY_FILLED":"PARTIALLY_FILLED","FILLED":"FILLED",
@@ -449,14 +454,19 @@ class ExchangeGateway:
             if not items:
                 raise ValueError(f"OKX order {row['cl_ord_id']} has an unresolved exchange state")
             item=items[0];status=mapping.get(str(item.get("state","")).upper(),"UNKNOWN")
-            await self.db.execute("UPDATE exchange_orders SET exchange_order_id=$2,status=$3,updated_at=now() WHERE local_order_id=$1::uuid",
-                                  row["local_order_id"],item.get("ordId"),status)
             contract=await self.db.fetchval("SELECT coalesce(contract_value,1) FROM trading_assets WHERE symbol=$1",row["symbol"])
-            await self.redis.xadd("trading.command",{"data":json.dumps({"event_type":"exchange.order_updated","payload":{
+            event={"event_type":"exchange.order_updated","payload":{
                 "order_id":str(row["local_order_id"]),"exchange_order_id":item.get("ordId"),"status":status,
                 "filled_price":float(item.get("avgPx") or 0),
                 "filled_quantity":float(item.get("accFillSz") or 0)*float(contract or 1),"reconciled":True,
-                "unprotected_partial":status=="PARTIALLY_FILLED" or (status=="CANCELLED" and Decimal(str(item.get("accFillSz") or 0))>0)}})},maxlen=100000,approximate=True)
+                "unprotected_partial":status=="PARTIALLY_FILLED" or (status=="CANCELLED" and Decimal(str(item.get("accFillSz") or 0))>0)}}
+            async with self.db.acquire() as connection:
+                async with connection.transaction():
+                    await connection.execute("UPDATE exchange_orders SET exchange_order_id=$2,status=$3,updated_at=now() WHERE local_order_id=$1::uuid",
+                                             row["local_order_id"],item.get("ordId"),status)
+                    await self.enqueue_exchange_event(connection,event,
+                      f"reconcile:{row['local_order_id']}:{item.get('ordId')}:{status}:{item.get('accFillSz','0')}")
+            await self.flush_exchange_event_outbox()
             if status=="PARTIALLY_FILLED":
                 try:await self.cancel_order(str(row["local_order_id"]))
                 except Exception as exc:self.last_error=f"partial fill cancellation: {exc}"[:500]
@@ -528,14 +538,29 @@ class ExchangeGateway:
                 if cumulative<=processed+1e-12:continue
                 price=float(item.get("avgPx") or 0)
                 if price<=0:raise ValueError(f"Triggered OKX order {order_id} has no fill price")
-                await self.redis.xadd("trading.command",{"data":json.dumps({"event_type":"exchange.order_updated","payload":{
+                event={"event_type":"exchange.order_updated","payload":{
                   "order_id":str(row["local_order_id"]),"exchange_order_id":order_id,
                   "status":"FILLED" if item.get("state")=="filled" else "PARTIALLY_FILLED",
                   "filled_price":price,"filled_quantity":cumulative,"position_exit":True,
                   "protective_id":algo_id,"protective_kind":metadata.get("kind"),
-                  "target_price":metadata.get("target_price"),"reconciled":True}})},maxlen=100000,approximate=True)
+                  "target_price":metadata.get("target_price"),"reconciled":True}}
+                async with self.db.acquire() as connection:
+                    async with connection.transaction():
+                        await self.enqueue_exchange_event(connection,event,
+                          f"protective:{row['local_order_id']}:{algo_id}:{cumulative}")
+                await self.flush_exchange_event_outbox()
                 recovered=True
         return recovered
+    async def enqueue_exchange_event(self,connection,event,event_key):
+        await connection.execute("""INSERT INTO exchange_event_outbox(event_key,payload)
+          VALUES($1,$2::jsonb) ON CONFLICT(event_key) DO NOTHING""",event_key,json.dumps(event))
+    async def flush_exchange_event_outbox(self):
+        async with self.exchange_event_outbox_lock:
+            rows=await self.db.fetch("SELECT id,payload FROM exchange_event_outbox WHERE published_at IS NULL ORDER BY id LIMIT 100")
+            for row in rows:
+                payload=row["payload"] if isinstance(row["payload"],dict) else json.loads(row["payload"])
+                await self.redis.xadd("trading.command",{"data":json.dumps(payload)},maxlen=100000,approximate=True)
+                await self.db.execute("UPDATE exchange_event_outbox SET published_at=now() WHERE id=$1 AND published_at IS NULL",row["id"])
     async def reconcile_loop(self):
         while True:
             await asyncio.sleep(30)
@@ -567,14 +592,19 @@ class ExchangeGateway:
                  OR coalesce(eo.exit_algos,'{}'::jsonb) ? $2""",cl_ord_id,algo_cl_ord_id)
             if not row:continue
             state=item.get("state","").upper();mapping={"LIVE":"OPEN","PARTIALLY_FILLED":"PARTIALLY_FILLED","FILLED":"FILLED","CANCELED":"CANCELLED","MMP_CANCELED":"CANCELLED"};status=mapping.get(state,state)
-            if not row["position_exit"]:
-                await self.db.execute("UPDATE exchange_orders SET exchange_order_id=$2,status=$3,payload=$4::jsonb,updated_at=now() WHERE cl_ord_id=$1",cl_ord_id,item.get("ordId"),status,json.dumps(item))
+            exit_metadata=(json.loads(row["exit_metadata"]) if isinstance(row["exit_metadata"],str)
+                           else row["exit_metadata"] or {})
+            event={"event_type":"exchange.order_updated","payload":{"order_id":str(row["local_order_id"]),"exchange_order_id":item.get("ordId"),"status":status,"filled_price":float(item.get("avgPx") or item.get("fillPx") or 0),"filled_quantity":float(item.get("accFillSz") or 0)*float(row["contract_value"]),"exec_type":item.get("execType"),"raw_state":state,"position_exit":bool(row["position_exit"]),"protective_id":algo_cl_ord_id or None,"protective_kind":exit_metadata.get("kind"),"target_price":exit_metadata.get("target_price"),"unprotected_partial":not row["position_exit"] and (status=="PARTIALLY_FILLED" or status=="CANCELLED" and float(item.get("accFillSz") or 0)>0),"reason":"EXCHANGE_PROTECTIVE_EXIT" if row["position_exit"] else None}}
+            async with self.db.acquire() as connection:
+                async with connection.transaction():
+                    if not row["position_exit"]:
+                        await connection.execute("UPDATE exchange_orders SET exchange_order_id=$2,status=$3,payload=$4::jsonb,updated_at=now() WHERE cl_ord_id=$1",cl_ord_id,item.get("ordId"),status,json.dumps(item))
+                    await self.enqueue_exchange_event(connection,event,
+                      f"private:{row['local_order_id']}:{algo_cl_ord_id or item.get('ordId')}:{status}:{item.get('accFillSz','0')}:{item.get('uTime',item.get('fillTime',''))}")
+            await self.flush_exchange_event_outbox()
             await self.record_trading_log({"id":str(row["local_order_id"]),"symbol":item.get("instId","UNKNOWN"),
               "execution_mode":row["execution_mode"] or ("DEMO" if self.s.okx_demo else "PRODUCTION")},
               "ORDER_UPDATE",status,{"exchange_order_id":item.get("ordId"),"exchange":item})
-            exit_metadata=(json.loads(row["exit_metadata"]) if isinstance(row["exit_metadata"],str)
-                           else row["exit_metadata"] or {})
-            await self.redis.xadd("trading.command",{"data":json.dumps({"event_type":"exchange.order_updated","payload":{"order_id":str(row["local_order_id"]),"exchange_order_id":item.get("ordId"),"status":status,"filled_price":float(item.get("avgPx") or item.get("fillPx") or 0),"filled_quantity":float(item.get("accFillSz") or 0)*float(row["contract_value"]),"exec_type":item.get("execType"),"raw_state":state,"position_exit":bool(row["position_exit"]),"protective_id":algo_cl_ord_id or None,"protective_kind":exit_metadata.get("kind"),"target_price":exit_metadata.get("target_price"),"unprotected_partial":not row["position_exit"] and (status=="PARTIALLY_FILLED" or status=="CANCELLED" and float(item.get("accFillSz") or 0)>0),"reason":"EXCHANGE_PROTECTIVE_EXIT" if row["position_exit"] else None}})},maxlen=100000,approximate=True)
             if status=="PARTIALLY_FILLED" and not row["position_exit"]:
                 self.private_ready.clear();self.reconciled=False
                 try:await self.cancel_order(str(row["local_order_id"]))
