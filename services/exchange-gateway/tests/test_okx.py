@@ -23,7 +23,7 @@ def test_raw_market_subscription_does_not_control_candle_stream(raw_enabled,expe
         with patch("src.service.asyncpg.create_pool",new=AsyncMock(return_value=pool)), \
              patch("src.service.Redis.from_url",return_value=AsyncMock()):
             await gateway.start()
-        await gateway.client.aclose()
+        await gateway.stop()
         assert streams==expected_streams
     asyncio.run(check())
 
@@ -263,11 +263,11 @@ def test_availability_reports_okx_http_failure_instead_of_raising_server_error()
           history_concurrency=1,okx_demo=False,trading_enabled=True,
           okx_api_key="key",okx_secret_key="secret",okx_passphrase="passphrase",
           okx_rest_url="https://www.okx.com"))
-        service.client=httpx.AsyncClient(transport=httpx.MockTransport(
+        service.okx_client=httpx.AsyncClient(transport=httpx.MockTransport(
           lambda request:httpx.Response(503,text="upstream unavailable",request=request)))
         service.private_ready.set();service.reconciled=True
         try:result=await service.instrument_availability("AAVE-USDT-SWAP","PRODUCTION")
-        finally:await service.client.aclose()
+        finally:await service.okx_client.aclose()
         assert result["available"] is False
         assert result["reason"]=="OKX HTTP 503: upstream unavailable"
     asyncio.run(check())
@@ -280,18 +280,18 @@ def test_prepare_instruments_registers_and_reenables_portfolio_symbols():
     async def check():
         service=ExchangeGateway(SimpleNamespace(
           history_concurrency=1,symbols="BTC-USDT-SWAP",okx_rest_url="https://www.okx.com"))
-        service.db=AsyncMock();service.websockets={};service.client=AsyncMock()
+        service.db=AsyncMock();service.websockets={};service.okx_client=AsyncMock()
         response=Mock();response.json.return_value={"code":"0","data":[{
           "instId":"AVAX-USDT-SWAP","uly":"AVAX-USDT","tickSz":"0.01","lotSz":"1","minSz":"1",
           "ctVal":"0.1","state":"live",
         }]}
-        service.client.get.return_value=response
+        service.okx_client.get.return_value=response
         service.db.fetch.return_value=[{"symbol":"AVAX-USDT-SWAP"},{"symbol":"BTC-USDT-SWAP"}]
         result=await service.prepare_instruments(["avax-usdt-swap","AVAX-USDT-SWAP","MISSING-USDT-SWAP"])
         assert result=={"prepared":["AVAX-USDT-SWAP"],"unavailable":["MISSING-USDT-SWAP"]}
         service.db.executemany.assert_awaited_once()
         assert [item[0] for item in service.db.executemany.await_args.args[1]]==["AVAX-USDT-SWAP"]
-        assert service.client.get.await_count==3  # discovery, instrument details, funding metadata
+        assert service.okx_client.get.await_count==3  # discovery, instrument details, funding metadata
         assert service.active_symbols==["AVAX-USDT-SWAP","BTC-USDT-SWAP"]
     asyncio.run(check())
 
@@ -304,13 +304,13 @@ def test_instrument_metadata_remains_usable_when_funding_endpoint_fails():
         service=ExchangeGateway(SimpleNamespace(
           history_concurrency=1,okx_rest_url="https://www.okx.com",
           okx_api_key="",okx_secret_key="",okx_passphrase=""))
-        service.db=AsyncMock();service.client=AsyncMock()
+        service.db=AsyncMock();service.okx_client=AsyncMock()
         instrument=Mock();instrument.json.return_value={"code":"0","data":[{
           "instId":"AVAX-USDT-SWAP","tickSz":"0.01","lotSz":"1","minSz":"1","ctVal":"0.1",
           "state":"live",
         }]}
         funding=Mock();funding.raise_for_status.side_effect=RuntimeError("funding unavailable")
-        service.client.get.side_effect=[instrument,funding]
+        service.okx_client.get.side_effect=[instrument,funding]
         assert await service.refresh_instrument_specs(["AVAX-USDT-SWAP"])==["AVAX-USDT-SWAP"]
         service.db.execute.assert_awaited_once()
         assert service.db.execute.await_args.args[1]=="AVAX-USDT-SWAP"
@@ -323,13 +323,13 @@ def test_history_request_retries_okx_rate_limit_with_shared_throttle():
 
     async def check():
         service=ExchangeGateway(SimpleNamespace(history_concurrency=1,okx_rest_url="https://www.okx.com"))
-        service.client=AsyncMock();service.history_request_interval=0
+        service.okx_client=AsyncMock();service.history_request_interval=0
         limited=Mock();limited.json.return_value={"code":"50011","msg":"Rate limit reached","data":[]}
         success=Mock();success.json.return_value={"code":"0","msg":"","data":[["1","1","1","1","1","0","0","0","1"]]}
-        service.client.get.side_effect=[limited,success]
+        service.okx_client.get.side_effect=[limited,success]
         with patch("src.service.asyncio.sleep",new=AsyncMock()) as sleep:
             result=await service.history_candles_request({"instId":"BTC-USDT-SWAP","bar":"1m","limit":300})
-        assert result["code"]=="0" and service.client.get.await_count==2
+        assert result["code"]=="0" and service.okx_client.get.await_count==2
         sleep.assert_awaited_once_with(.5)
     asyncio.run(check())
 

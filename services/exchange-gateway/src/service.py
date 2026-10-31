@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 from redis.asyncio import Redis
 from redis.exceptions import ResponseError
 from .okx import TIMEFRAMES,REVERSE_TIMEFRAMES,auth_headers,book,candle,trade,ws_login
+from .transport import OKXClient,error_types,okx_ssl_context
 
 log=logging.getLogger(__name__)
 
@@ -102,9 +103,11 @@ class ExchangeGateway:
         self.active_symbols=None;self.websockets={};self.market_page_cache={};self.market_page_locks={};self.private_ready=asyncio.Event();self.pending={}
         self.reconciled=False;self.private_subscribed=False
         self.last_market_message=None;self.last_m1_by_symbol={}
-        self.command_task=None
+        self.command_task=None;self.okx_client=None
+        self.okx_ws_ssl=okx_ssl_context()
     async def start(self):
         self.client=httpx.AsyncClient(timeout=20)
+        self.okx_client=OKXClient()
         self.db=await asyncpg.create_pool(self.s.database_url,min_size=1,max_size=5)
         self.redis=Redis.from_url(self.s.redis_url,decode_responses=True);await self.redis.ping()
         await self.db.execute("""
@@ -180,6 +183,7 @@ class ExchangeGateway:
         for task in self.tasks:task.cancel()
         await asyncio.gather(*self.tasks,return_exceptions=True)
         if self.client:await self.client.aclose()
+        if self.okx_client:await self.okx_client.aclose()
         if self.redis:await self.redis.aclose()
         if self.db:await self.db.close()
     def add_task(self,coroutine):
@@ -201,7 +205,7 @@ class ExchangeGateway:
         delay=1
         while True:
             try:
-                async with websockets.connect(url,ping_interval=20,ping_timeout=10,max_size=2**22) as ws:
+                async with websockets.connect(url,ssl=self.okx_ws_ssl,open_timeout=20,ping_interval=20,ping_timeout=10,max_size=2**22) as ws:
                     self.websockets[name]=ws
                     if name=="business":
                         self.last_market_message=None;self.last_m1_by_symbol.clear()
@@ -214,8 +218,10 @@ class ExchangeGateway:
             except asyncio.CancelledError:raise
             except Exception as exc:
                 self.last_error=f"{name}: {type(exc).__name__}: {exc}"[:500]
+                log.warning("OKX WebSocket failed channel=%s tls=TLSv1.2 error=%s",name,error_types(exc))
                 self.connected[name]=False;await asyncio.sleep(delay+random.random());delay=min(delay*2,60)  # nosec B311
-            finally:self.websockets.pop(name,None)
+            finally:
+                self.connected[name]=False;self.websockets.pop(name,None)
     async def refresh_symbols(self,refresh_metadata=True):
         previous_symbols=self.active_symbols
         previous_timeframes=getattr(self,"active_timeframes",set())
@@ -313,7 +319,7 @@ class ExchangeGateway:
         refreshed=[]
         for symbol in symbols:
             try:
-                response=await self.client.get(
+                response=await self.okx_client.get(
                     self.s.okx_rest_url+"/api/v5/public/instruments",params={"instType":"SWAP","instId":symbol},
                 )
                 response.raise_for_status();body=response.json();items=body.get("data") or []
@@ -321,7 +327,7 @@ class ExchangeGateway:
                 instrument=items[0];spec=instrument_spec(instrument)
                 funding={}
                 try:
-                    funding_response=await self.client.get(self.s.okx_rest_url+"/api/v5/public/funding-rate",params={"instId":symbol})
+                    funding_response=await self.okx_client.get(self.s.okx_rest_url+"/api/v5/public/funding-rate",params={"instId":symbol})
                     funding_response.raise_for_status();funding_body=funding_response.json()
                     if funding_body.get("code")=="0":funding=(funding_body.get("data") or [{}])[0]
                 except Exception as exc:self.last_error=f"funding metadata {symbol}: {type(exc).__name__}: {exc}"[:500]
@@ -349,7 +355,7 @@ class ExchangeGateway:
     async def prepare_instruments(self,symbols):
         symbols=list(dict.fromkeys(symbol.strip().upper() for symbol in symbols))
         try:
-            response=await self.client.get(
+            response=await self.okx_client.get(
                 self.s.okx_rest_url+"/api/v5/public/instruments",params={"instType":"SWAP"})
             response.raise_for_status();body=response.json()
         except (httpx.HTTPError,ValueError) as exc:
@@ -413,32 +419,46 @@ class ExchangeGateway:
                 if timeframe=="M1":self.last_m1_by_symbol[symbol]=self.last_market_message
             elif channel=="trades":await self.ingest("/internal/ingest/ticks",trade(item))
             elif channel=="books5":await self.ingest("/internal/ingest/orderbook",book(item,symbol))
+    async def authenticate_private(self,ws):
+        # Bound both acknowledgements; transport ping/pong doesn't prove authentication.
+        async with asyncio.timeout(20):
+            await ws.send(json.dumps(ws_login(self.s.okx_api_key,self.s.okx_secret_key,self.s.okx_passphrase)))
+            msg=json.loads(await ws.recv())
+            if msg.get("event")!="login" or msg.get("code")!="0":
+                raise ValueError(f"OKX private login rejected: code={msg.get('code')}")
+            await ws.send(json.dumps({"op":"subscribe","args":[{"channel":"orders","instType":"ANY"}]}))
+            msg=json.loads(await ws.recv())
+            if (msg.get("event")!="subscribe" or msg.get("arg",{}).get("channel")!="orders"
+                    or msg.get("code") not in (None,"0")):
+                raise ValueError(f"OKX private orders subscription rejected: code={msg.get('code')}")
     async def private_loop(self):
         delay=1
         while True:
+            phase="connect"
             try:
-                async with websockets.connect(self.s.okx_private_ws_url,ping_interval=20,ping_timeout=10,max_size=2**22) as ws:
+                async with websockets.connect(self.s.okx_private_ws_url,ssl=self.okx_ws_ssl,open_timeout=20,ping_interval=20,ping_timeout=10,max_size=2**22) as ws:
                     self.websockets["private"]=ws;self.connected["private"]=False
-                    await ws.send(json.dumps(ws_login(self.s.okx_api_key,self.s.okx_secret_key,self.s.okx_passphrase)))
+                    phase="login/subscribe"
+                    await self.authenticate_private(ws)
+                    self.private_subscribed=True;self.connected["private"]=True
+                    phase="reconciliation"
+                    try:
+                        await self.reconcile_orders()
+                        self.private_ready.set();delay=1
+                    except Exception as exc:
+                        self.last_error=f"initial reconciliation: {type(exc).__name__}: {exc}"[:500]
+                        log.exception("OKX initial reconciliation failed")
+                    phase="receive"
                     async for raw in ws:
                         msg=json.loads(raw)
-                        if msg.get("event")=="login" and msg.get("code")=="0":
-                            await ws.send(json.dumps({"op":"subscribe","args":[{"channel":"orders","instType":"ANY"}]}));continue
-                        if msg.get("event")=="subscribe" and msg.get("arg",{}).get("channel")=="orders" and msg.get("code") in (None,"0"):
-                            self.private_subscribed=True;self.connected["private"]=True
-                            try:
-                                await self.reconcile_orders()
-                                self.private_ready.set();delay=1
-                            except Exception as exc:
-                                self.last_error=f"initial reconciliation: {type(exc).__name__}: {exc}"[:500]
-                                log.exception("OKX initial reconciliation failed")
-                            continue
                         if msg.get("event") in {"error","login","subscribe"}:
-                            raise ValueError(f"OKX private channel rejected: {msg.get('msg') or msg.get('code')}")
+                            raise ValueError(f"OKX private channel rejected: code={msg.get('code')}")
                         await self.handle_private(msg)
             except asyncio.CancelledError:raise
             except Exception as exc:
-                self.last_error=f"private: {type(exc).__name__}: {exc}"[:500]
+                self.last_error=f"private {phase}: {type(exc).__name__}: {exc}"[:500]
+                detail=str(exc) if phase=="login/subscribe" and isinstance(exc,ValueError) else ""
+                log.warning("OKX private WebSocket failed phase=%s tls=TLSv1.2 error=%s %s",phase,error_types(exc),detail)
             finally:
                 self.private_ready.clear();self.reconciled=False;self.private_subscribed=False
                 self.connected["private"]=False;self.websockets.pop("private",None)
@@ -977,7 +997,7 @@ class ExchangeGateway:
                 if delay>0:await asyncio.sleep(delay)
                 self.history_request_next=monotonic()+self.history_request_interval
             try:
-                response=await self.client.get(self.s.okx_rest_url+"/api/v5/market/history-candles",params=params)
+                response=await self.okx_client.get(self.s.okx_rest_url+"/api/v5/market/history-candles",params=params)
                 response.raise_for_status();body=response.json()
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code!=429 or attempt==5:raise
@@ -1144,7 +1164,7 @@ class ExchangeGateway:
         if not all((self.s.okx_api_key,self.s.okx_secret_key,self.s.okx_passphrase)):raise ValueError("OKX API credentials are not configured")
         body=json.dumps(payload,separators=(",",":")) if payload else "";headers=auth_headers(self.s.okx_api_key,self.s.okx_secret_key,self.s.okx_passphrase,method,path,body,self.s.okx_demo)
         try:
-            r=await self.client.request(method,self.s.okx_rest_url+path,content=body or None,headers=headers)
+            r=await self.okx_client.request(method,self.s.okx_rest_url+path,content=body or None,headers=headers)
             r.raise_for_status()
         except httpx.HTTPStatusError as exc:
             response=exc.response
