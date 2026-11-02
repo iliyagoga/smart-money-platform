@@ -1,5 +1,6 @@
 import asyncio
 from unittest.mock import AsyncMock
+import pytest
 
 from src.metrics import *
 from src.service import AnalyticsService
@@ -33,4 +34,44 @@ def test_live_portfolio_snapshot_uses_its_140_capital_and_scoped_trades():
         assert equity==145 and daily==0
         assert service.db.fetch.await_args.args[1:]==("PRODUCTION","portfolio-1")
         service.redis.set.assert_any_await("portfolio:equity",145)
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("pnl,locked",[(0,0),(0,14),(5,0),(-3,0)])
+def test_allocated_snapshot_uses_full_portfolio_including_idle_cash(pnl,locked):
+    async def check():
+        service=AnalyticsService("database","redis",10000);service.db=AsyncMock();service.redis=AsyncMock()
+        # The latest asset has only 15% of $140. Another 35% is idle cash.
+        config={"portfolioId":"portfolio-1","portfolioCapitalMode":"ALLOCATED",
+          "portfolioInitialCapital":140,"portfolioActivationId":"run-1","activationId":"edited-asset",
+          "initialCapital":21,"currentCapital":21+pnl}
+        service.db.fetchrow.return_value={"mode":"PRODUCTION","config":config}
+        async def fetch(query,*args):
+            if "SELECT config FROM trading_configs" in query:
+                assert args==("PRODUCTION","portfolio-1","run-1")
+                assert "IS NOT DISTINCT FROM" in query and "portfolioActivationId" in query
+                assert "status='ACTIVE'" not in query
+                return [{"config":config},{"config":{"initialCapital":70,"currentCapital":70}}]
+            if "FROM positions" in query:
+                return [{"data":{"entry_price":locked,"current_price":locked,"quantity":1,
+                  "direction":"LONG","leverage":1}}] if locked else []
+            assert args==("PRODUCTION","portfolio-1")
+            return []
+        service.db.fetch.side_effect=fetch
+        snapshot=await service.snapshot()
+        assert snapshot["total_equity"]==140+pnl
+        assert snapshot["available_balance"]==140+pnl-locked
+        assert snapshot["locked_margin"]==locked
+    asyncio.run(check())
+
+
+def test_sequential_portfolio_does_not_sum_shared_capital_across_assets():
+    async def check():
+        service=AnalyticsService("database","redis",10000);service.db=AsyncMock()
+        service.db.fetchrow.return_value={"mode":"PRODUCTION","config":{
+          "portfolioId":"portfolio-1","portfolioCapitalMode":"SEQUENTIAL",
+          "initialCapital":140,"currentCapital":145}}
+        context=await service.active_portfolio_context()
+        assert context["initial"]==140 and context["current"]==145
+        service.db.fetch.assert_not_awaited()
     asyncio.run(check())

@@ -46,6 +46,22 @@ class AnalyticsService:
         if not row:return None
         config=decode(row["config"]);initial=float(config.get("initialCapital",config.get("initial_capital",self.initial)))
         current=float(config.get("currentCapital",config.get("current_capital",initial)))
+        if config.get("portfolioCapitalMode",config.get("portfolio_capital_mode"))=="ALLOCATED":
+            rows=await self.db.fetch("""SELECT config FROM trading_configs WHERE mode=$1
+              AND coalesce(config->>'portfolioId',config->>'portfolio_id')=$2
+              AND coalesce(config->>'portfolioActivationId',config->>'portfolio_activation_id',
+                           config->>'activationId',config->>'activation_id') IS NOT DISTINCT FROM $3::text""",
+              row["mode"],config.get("portfolioId",config.get("portfolio_id")),
+              config.get("portfolioActivationId",config.get("portfolio_activation_id",
+                config.get("activationId",config.get("activation_id")))))
+            # Asset budgets are already split at activation. Include idle cash
+            # and retain PnL from assets deactivated during this portfolio run.
+            budgets=[decode(item["config"]) for item in rows]
+            allocated=sum(float(item.get("initialCapital",item.get("initial_capital",0))) for item in budgets)
+            initial=float(config.get("portfolioInitialCapital",config.get("portfolio_initial_capital",allocated)))
+            current=initial+sum(float(item.get("currentCapital",item.get("current_capital",
+              item.get("initialCapital",item.get("initial_capital",0)))))-
+              float(item.get("initialCapital",item.get("initial_capital",0))) for item in budgets)
         return {"mode":str(row["mode"]).upper(),"portfolio_id":config.get("portfolioId",config.get("portfolio_id")),
                 "initial":initial,"current":current}
     async def sync_portfolio(self):
