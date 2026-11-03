@@ -62,6 +62,13 @@ async def market_candles(symbol:str, timeframe:str="M15", limit:int=Query(defaul
     try: return {"symbol":symbol,"timeframe":timeframe,
                  "candles":await service.market_candles(symbol,timeframe,limit,after)}
     except Exception as exc: raise HTTPException(502,str(exc)) from exc
+@app.get("/exchange/market-price")
+async def market_price(symbol:str):
+    symbol=symbol.strip().upper()
+    if not re.fullmatch(r"[A-Z0-9]{2,15}-[A-Z0-9]{2,10}-SWAP",symbol):
+        raise HTTPException(422,"Invalid OKX swap symbol")
+    try:return await service.market_price(symbol)
+    except Exception as exc:raise HTTPException(502,str(exc)) from exc
 @app.post("/exchange/history",status_code=202)
 async def history(req:HistoryRequest):
     job_id=str(uuid4());return await service.create_history(

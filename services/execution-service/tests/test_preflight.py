@@ -104,16 +104,44 @@ def test_portfolio_capital_checks_available_funds_not_only_equity(available):
     asyncio.run(check())
 
 
-def test_missing_price_blocks_and_reports_all_assets_without_writes():
+@pytest.mark.parametrize("failed",[False,True])
+def test_preflight_requests_exchange_prices_without_local_market_history(failed):
+    import httpx
     async def check():
         service=ExecutionService("unused","unused");service.db=AsyncMock();service.redis=AsyncMock()
-        service.redis.get.return_value=None
-        service.db.fetch.return_value=[{"symbol":"GOOD",**spec()}, {"symbol":"STALE",**spec(price=None)}]
-        result=await service.validate_portfolio_orders([("GOOD",config()),("STALE",config())],
-                                                      "PRODUCTION",{"available":100})
-        assert not result["valid"]
-        assert result["assets"][0]["valid"]
-        assert not result["assets"][1]["valid"] and "свежей цены" in result["assets"][1]["errors"][0]
-        assert "5 minutes" in service.db.fetch.await_args.args[0]
+        service.http=AsyncMock();service.redis.get.return_value=None
+        service.db.fetch.return_value=[{"symbol":"GOOD",**spec(price=None)}, {"symbol":"NEW",**spec(price=None)}]
+        def ticker(url,params):
+            symbol=params["symbol"]
+            return httpx.Response(502 if failed and symbol=="NEW" else 200,
+              json={"symbol":symbol,"price":"12.5"},request=httpx.Request("GET",url))
+        service.http.get.side_effect=ticker
+        for _ in range(2):
+            result=await service.validate_portfolio_orders([("GOOD",config()),("NEW",config())],
+                                                          "PRODUCTION",{"available":100})
+            assert result["valid"] is (not failed)
+            assert result["assets"][0]["price"]==12.5
+            assert result["assets"][0]["required_margin"]==25
+            assert result["assets"][1]["valid"] is (not failed)
+            if failed:assert "актуальную цену NEW" in result["assets"][1]["errors"][0]
+        assert service.http.get.await_count==4
+        assert service.http.get.await_args.args[0].endswith("/exchange/market-price")
+        query=service.db.fetch.await_args.args[0]
+        assert "candles" not in query and "market_ticks" not in query
+        service.db.execute.assert_not_awaited()
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("price",[None,"0","NaN","Infinity","-1"])
+def test_invalid_exchange_price_does_not_pass_validation(price):
+    import httpx
+    async def check():
+        service=ExecutionService("unused","unused");service.db=AsyncMock();service.redis=AsyncMock()
+        service.http=AsyncMock();service.redis.get.return_value=None
+        service.db.fetch.return_value=[{"symbol":"COIN",**spec()}]
+        service.http.get.return_value=httpx.Response(200,json={"symbol":"COIN","price":price},
+          request=httpx.Request("GET","http://exchange/exchange/market-price"))
+        report=await service.validate_portfolio_orders([("COIN",config())],"DEMO",{"available":100})
+        assert not report["valid"]
         service.db.execute.assert_not_awaited()
     asyncio.run(check())

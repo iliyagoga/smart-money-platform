@@ -969,6 +969,23 @@ class ExchangeGateway:
         values=[candle(x,symbol,timeframe) for x in body["data"]]
         for value in reversed(values):await self.ingest("/internal/ingest/candles",value)
         return len(values)
+    async def market_price(self,symbol):
+        # Always request a ticker; preflight must work before local ingestion starts.
+        response=await self.okx_client.get(self.s.okx_rest_url+"/api/v5/market/ticker",
+                                           params={"instId":symbol})
+        response.raise_for_status();body=response.json()
+        items=body.get("data") or []
+        if body.get("code")!="0" or not items:
+            raise ValueError(f"OKX ticker unavailable for {symbol}")
+        item=items[0]
+        if item.get("instId")!=symbol:
+            raise ValueError(f"Unexpected OKX ticker instrument for {symbol}")
+        try:price=Decimal(str(item.get("last")))
+        except ArithmeticError as exc:raise ValueError(f"Invalid OKX ticker price for {symbol}") from exc
+        if not price.is_finite() or price<=0:
+            raise ValueError(f"Invalid OKX ticker price for {symbol}")
+        return {"symbol":symbol,"price":format(price,"f")}
+
     async def market_candles(self,symbol,timeframe,limit=300,after=None):
         key=(symbol,timeframe,after,limit);cached=self.market_page_cache.get(key)
         ttl=10 if after is None else 600

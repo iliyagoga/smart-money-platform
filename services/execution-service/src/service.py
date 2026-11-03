@@ -143,25 +143,22 @@ class ExecutionService:
         raw=await self.redis.get("risk:config")
         risk=decode_json(raw) if raw else {}
         symbols=[symbol for symbol,_ in live_configs]
-        rows=await self.db.fetch("""SELECT ta.symbol,ta.lot_size,ta.minimum_order_size,
-          ta.contract_value,ta.tick_size,p.price FROM trading_assets ta
-          LEFT JOIN LATERAL (
-            SELECT price FROM (
-              (SELECT price,ts FROM market_ticks WHERE symbol=ta.symbol
-                AND ts>=now()-interval '5 minutes' ORDER BY ts DESC LIMIT 1)
-              UNION ALL
-              (SELECT close AS price,ts FROM candles WHERE symbol=ta.symbol AND timeframe='M1'
-                AND is_closed AND ts>=now()-interval '5 minutes' ORDER BY ts DESC LIMIT 1)
-            ) recent ORDER BY ts DESC LIMIT 1
-          ) p ON true WHERE ta.symbol=ANY($1::text[]) AND ta.enabled
-          AND ta.validation_status='ACTIVE'""",symbols)
+        rows=await self.db.fetch("""SELECT symbol,lot_size,minimum_order_size,
+          contract_value,tick_size FROM trading_assets WHERE symbol=ANY($1::text[]) AND enabled
+          AND validation_status='ACTIVE'""",symbols)
         specs={row["symbol"]:row for row in rows};reports=[]
         for symbol,config in live_configs:
             spec=specs.get(symbol)
             try:
-                if not spec or spec["price"] is None:
-                    raise ValueError("Нет свежей цены за последние 5 минут для проверки бюджета")
-                reports.append(asset_preflight(symbol,config,spec,risk,capacity["available"]))
+                if not spec:raise ValueError("Биржевые ограничения инструмента недоступны")
+                try:
+                    response=await self.http.get(f"{self.exchange_service_url}/exchange/market-price",params={"symbol":symbol})
+                    response.raise_for_status();ticker=response.json()
+                    if ticker.get("symbol")!=symbol:raise ValueError("Unexpected ticker instrument")
+                    price=ticker["price"]
+                except (httpx.HTTPError,ValueError,TypeError,KeyError) as exc:
+                    raise ValueError(f"Не удалось получить актуальную цену {symbol} с биржи") from exc
+                reports.append(asset_preflight(symbol,config,{**spec,"price":price},risk,capacity["available"]))
             except (ValueError,TypeError,ArithmeticError,KeyError) as exc:
                 reports.append({"symbol":symbol,"valid":False,"errors":[str(exc)]})
         return {"valid":all(item["valid"] for item in reports),"assets":reports}
