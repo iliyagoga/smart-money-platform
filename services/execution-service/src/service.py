@@ -8,6 +8,7 @@ from redis.asyncio import Redis
 from redis.exceptions import ResponseError
 from .manager import PositionManager,fee_adjusted_break_even
 from .models import *
+from .preflight import asset_preflight
 log=logging.getLogger(__name__)
 ACTIVE_ORDER_STATUSES={"PENDING","OPEN","SUBMITTING","PARTIALLY_FILLED","CANCEL_REQUESTED"}
 def decode_json(value):return json.loads(value) if isinstance(value,str) else value
@@ -121,7 +122,7 @@ class ExecutionService:
         unavailable=result.get("unavailable") or []
         if unavailable:
             raise ValueError(f"OKX instrument metadata is unavailable: {', '.join(unavailable)}")
-    async def validate_portfolio_capital(self,mode:str,capital:float):
+    async def validate_portfolio_capital(self,mode:str,capital:float,require_available:bool=False):
         if mode=="PAPER":return
         try:
             response=await self.http.get(f"{self.exchange_service_url}/exchange/account/capacity",params={"mode":mode})
@@ -131,6 +132,39 @@ class ExecutionService:
         equity=float(capacity.get("equity",0))
         if not isfinite(equity) or equity<=0:raise ValueError("OKX USDT equity is unavailable")
         if capital>equity+1e-8:raise ValueError(f"Live capital {capital:g} USDT exceeds OKX equity {equity:g} USDT")
+        if require_available:
+            available=float(capacity.get("available",0))
+            if not isfinite(available) or available<=0:raise ValueError("OKX available USDT balance is unavailable")
+            if capital>available+1e-8:raise ValueError(f"Live capital {capital:g} USDT exceeds OKX available balance {available:g} USDT")
+        return capacity
+
+    async def validate_portfolio_orders(self,live_configs,mode,capacity):
+        if mode=="PAPER":return {"valid":True,"assets":[]}
+        raw=await self.redis.get("risk:config")
+        risk=decode_json(raw) if raw else {}
+        symbols=[symbol for symbol,_ in live_configs]
+        rows=await self.db.fetch("""SELECT ta.symbol,ta.lot_size,ta.minimum_order_size,
+          ta.contract_value,ta.tick_size,p.price FROM trading_assets ta
+          LEFT JOIN LATERAL (
+            SELECT price FROM (
+              (SELECT price,ts FROM market_ticks WHERE symbol=ta.symbol
+                AND ts>=now()-interval '5 minutes' ORDER BY ts DESC LIMIT 1)
+              UNION ALL
+              (SELECT close AS price,ts FROM candles WHERE symbol=ta.symbol AND timeframe='M1'
+                AND is_closed AND ts>=now()-interval '5 minutes' ORDER BY ts DESC LIMIT 1)
+            ) recent ORDER BY ts DESC LIMIT 1
+          ) p ON true WHERE ta.symbol=ANY($1::text[]) AND ta.enabled
+          AND ta.validation_status='ACTIVE'""",symbols)
+        specs={row["symbol"]:row for row in rows};reports=[]
+        for symbol,config in live_configs:
+            spec=specs.get(symbol)
+            try:
+                if not spec or spec["price"] is None:
+                    raise ValueError("Нет свежей цены за последние 5 минут для проверки бюджета")
+                reports.append(asset_preflight(symbol,config,spec,risk,capacity["available"]))
+            except (ValueError,TypeError,ArithmeticError,KeyError) as exc:
+                reports.append({"symbol":symbol,"valid":False,"errors":[str(exc)]})
+        return {"valid":all(item["valid"] for item in reports),"assets":reports}
     @staticmethod
     def validate_live_config(config:dict,mode:str):
         if mode=="PAPER":return

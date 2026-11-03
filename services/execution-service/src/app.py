@@ -79,6 +79,7 @@ class PortfolioLiveRequest(BaseModel):
     mode:str="PAPER"
     capital:float=Field(gt=0)
     capital_mode:Literal["ALLOCATED","SEQUENTIAL"]="SEQUENTIAL"
+    validate_only:bool=False
 
 def configuration_record(row):
     value=dict(row);value["id"]=str(value["id"])
@@ -279,7 +280,7 @@ async def portfolio_to_live(portfolio_id:UUID,request:PortfolioLiveRequest,x_use
     unavailable=[symbol for symbol in symbols if symbol not in registered_symbols]
     if unavailable:
         raise HTTPException(409,f"Trading asset metadata is unavailable: {', '.join(unavailable)}")
-    try:await service.validate_portfolio_capital(mode,request.capital)
+    try:capacity=await service.validate_portfolio_capital(mode,request.capital,require_available=True)
     except ValueError as exc:raise HTTPException(409,str(exc)) from exc
     live_configs=[];activation_id=str(uuid4());activated_at=int(time()*1000)
     for item in assets:
@@ -298,6 +299,10 @@ async def portfolio_to_live(portfolio_id:UUID,request:PortfolioLiveRequest,x_use
             await service.validate_execution_mode(item["symbol"],mode)
         except (ValueError,TypeError) as exc:raise HTTPException(409,str(exc)) from exc
         live_configs.append((item["symbol"],config))
+    validation=await service.validate_portfolio_orders(live_configs,mode,capacity)
+    if request.validate_only:return validation
+    if not validation["valid"]:
+        raise HTTPException(409,{"message":"Портфель не запущен: проверка бюджета и лотов не пройдена",**validation})
     async with service.db.acquire() as connection:
       async with connection.transaction():
         await connection.execute("""UPDATE trading_configs SET status='INACTIVE',updated_at=now()
@@ -314,7 +319,7 @@ async def portfolio_to_live(portfolio_id:UUID,request:PortfolioLiveRequest,x_use
             "symbol":symbol,"mode":mode,"portfolio_id":str(portfolio_id),
         })
     return {"id":str(portfolio_id),"mode":mode,"capital":request.capital,"capital_mode":request.capital_mode,
-            "activated_symbols":[symbol for symbol,_ in live_configs]}
+            "activated_symbols":[symbol for symbol,_ in live_configs],"validation":validation}
 @app.get("/configuration-library")
 async def configuration_library(x_user_id:str=Header(default="local")):
     rows=await service.db.fetch("SELECT id,name,description,config,created_at,updated_at FROM strategy_configurations WHERE owner_id=$1 ORDER BY updated_at DESC",x_user_id)

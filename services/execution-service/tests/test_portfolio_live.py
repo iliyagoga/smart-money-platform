@@ -13,6 +13,13 @@ from src import app as execution_app
 PORTFOLIO_ID=UUID("00000000-0000-0000-0000-000000000001")
 
 
+@pytest.fixture(autouse=True)
+def portfolio_order_preflight(monkeypatch):
+    check=AsyncMock(return_value={"valid":True,"assets":[]})
+    monkeypatch.setattr(execution_app.service,"validate_portfolio_orders",check)
+    return check
+
+
 def strategy_config():
     return {
         "strategy":"ELLIOTT",
@@ -74,7 +81,7 @@ def test_portfolio_live_applies_capital_mode_and_publishes_each_asset(monkeypatc
         assert result["capital_mode"]==capital_mode
         assert result["activated_symbols"]==["BTC-USDT-SWAP","ETH-USDT-SWAP"]
         prepare.assert_awaited_once_with(["BTC-USDT-SWAP","ETH-USDT-SWAP"])
-        validate_capital.assert_awaited_once_with("PRODUCTION",140)
+        validate_capital.assert_awaited_once_with("PRODUCTION",140,require_available=True)
         assert validate.await_count==2 and publish.await_count==2
         assert db.connection.execute.await_count==3
         assert "status='INACTIVE'" in db.connection.execute.await_args_list[0].args[0]
@@ -86,6 +93,44 @@ def test_portfolio_live_applies_capital_mode_and_publishes_each_asset(monkeypatc
         assert all(item["portfolioInitialCapital"]==140 for item in configs)
         assert configs[0]["portfolioActivationId"]==configs[1]["portfolioActivationId"]==configs[0]["activationId"]
         assert all(item["portfolioId"]==str(PORTFOLIO_ID) for item in configs)
+        preflight_configs=execution_app.service.validate_portfolio_orders.await_args.args[0]
+        assert [config["currentCapital"] for _,config in preflight_configs]==capitals
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("validate_only",[True,False])
+def test_failed_preflight_never_activates_any_asset(monkeypatch,portfolio_order_preflight,validate_only):
+    async def check():
+        db=PortfolioDb();monkeypatch.setattr(execution_app.service,"db",db)
+        for name in ("prepare_portfolio_assets","validate_execution_mode","validate_strategy_config",
+                     "validate_portfolio_capital","publish_channel"):
+            monkeypatch.setattr(execution_app.service,name,AsyncMock())
+        report={"valid":False,"assets":[{"symbol":"ETH-USDT-SWAP","valid":False,
+          "minimum_quantity":2,"take_quantities":[1,1],"errors":["Недостаточно бюджета"]}]}
+        portfolio_order_preflight.return_value=report
+        request=execution_app.PortfolioLiveRequest(mode="PRODUCTION",capital=140,validate_only=validate_only)
+        if validate_only:
+            assert await execution_app.portfolio_to_live(PORTFOLIO_ID,request,"user-1")==report
+        else:
+            with pytest.raises(HTTPException) as error:
+                await execution_app.portfolio_to_live(PORTFOLIO_ID,request,"user-1")
+            assert error.value.status_code==409 and error.value.detail["assets"]==report["assets"]
+        db.connection.execute.assert_not_awaited()
+        execution_app.service.publish_channel.assert_not_awaited()
+    asyncio.run(check())
+
+
+def test_successful_preview_does_not_start_trading(monkeypatch):
+    async def check():
+        db=PortfolioDb();monkeypatch.setattr(execution_app.service,"db",db)
+        for name in ("prepare_portfolio_assets","validate_execution_mode","validate_strategy_config",
+                     "validate_portfolio_capital","publish_channel"):
+            monkeypatch.setattr(execution_app.service,name,AsyncMock())
+        result=await execution_app.portfolio_to_live(PORTFOLIO_ID,
+          execution_app.PortfolioLiveRequest(mode="DEMO",capital=140,validate_only=True),"user-1")
+        assert result["valid"]
+        db.connection.execute.assert_not_awaited()
+        execution_app.service.publish_channel.assert_not_awaited()
     asyncio.run(check())
 
 

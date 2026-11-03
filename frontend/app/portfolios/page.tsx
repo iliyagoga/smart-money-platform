@@ -1,6 +1,6 @@
 "use client";
 
-import { Alert, Box, Button, Chip, Dialog, DialogContent, DialogTitle, LinearProgress, MenuItem, Paper, Stack, TablePagination, TextField, Typography } from "@mui/material";
+import { Alert, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle, LinearProgress, MenuItem, Paper, Stack, TablePagination, TextField, Typography } from "@mui/material";
 import { useEffect, useMemo, useState } from "react";
 import { SectionPage } from "../../components/layout/SectionPage";
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -15,6 +15,14 @@ import { toBackendBacktestConfig } from "../../lib/backtest/backendConfig";
 interface Configuration { id:string;name:string;config:BacktestSettings }
 interface PortfolioAsset { symbol:string;configuration_id:string;allocation_percent:number;config:BacktestSettings }
 interface Portfolio { id:string;name:string;description:string;assets:PortfolioAsset[];updated_at:string }
+interface AssetValidation {
+  symbol:string;valid:boolean;errors:string[];budget?:number;price?:number;lot_size?:number;
+  minimum_quantity?:number;minimum_contracts?:number;take_quantities?:number[];required_margin?:number;
+  risk_percent?:number;risk_budget?:number;max_stop_distance?:number;max_stop_percent?:number;leverage?:number;
+}
+interface LiveValidation { valid:boolean;assets:AssetValidation[] }
+interface LivePreview { portfolio:Portfolio;mode:string;capital:number;capital_mode:"ALLOCATED"|"SEQUENTIAL";validation:LiveValidation }
+const amount=(value?:number)=>value===undefined?"—":value.toLocaleString("ru-RU",{maximumSignificantDigits:10});
 const today=()=>new Date().toISOString().slice(0,10);
 const initialAsset=():Omit<PortfolioAsset,"config">=>({ symbol:"",configuration_id:"",allocation_percent:100 });
 
@@ -31,6 +39,7 @@ export default function PortfoliosPage() {
   const [liveCapital, setLiveCapital] = useState<number | "">("");
   const [capitalMode,setCapitalMode]=useState<"ALLOCATED"|"SEQUENTIAL">("ALLOCATED");
   const [mode,setMode]=useState("PAPER");
+  const [livePreview,setLivePreview]=useState<LivePreview>();
   const running = portfolioRun?.status === "QUEUED" || portfolioRun?.status === "RUNNING";
   const report = useMemo(() => portfolioRun?.result ? mapBacktestResult(portfolioRun.result) : undefined, [portfolioRun?.result]);
   useEffect(() => {
@@ -67,10 +76,16 @@ export default function PortfoliosPage() {
     try{await api(`/api/v1/execution/portfolios/${portfolio.id}`,{method:"DELETE"});resource.reload();setMessage("Портфель удалён.");}
     catch(reason){setError(reason instanceof Error?reason.message:String(reason));}};
   const live=async(portfolio:Portfolio)=>{if(typeof liveCapital!=="number"||!Number.isFinite(liveCapital)||liveCapital<=0)return;
-    if(mode==="PRODUCTION"&&!window.confirm(`Активировать реальную торговлю портфелем «${portfolio.name}» с капиталом ${liveCapital} USDT?`))return;
-    setBusy(true);setError("");try{const response=await api<{activated_symbols:string[]}>(`/api/v1/execution/portfolios/${portfolio.id}/live`,{
-    method:"POST",body:JSON.stringify({mode,capital:liveCapital,capital_mode:capitalMode})});setMessage(`Портфель добавлен в live (${mode}): ${response.activated_symbols.join(", ")}.`);}
+    setBusy(true);setError("");setMessage("");try{const validation=await api<LiveValidation>(`/api/v1/execution/portfolios/${portfolio.id}/live`,{
+    method:"POST",body:JSON.stringify({mode,capital:liveCapital,capital_mode:capitalMode,validate_only:true})});
+    setLivePreview({portfolio,mode,capital:liveCapital,capital_mode:capitalMode,validation});}
     catch(reason){setError(reason instanceof Error?reason.message:String(reason));}finally{setBusy(false);}};
+  const activateLive=async()=>{if(!livePreview?.validation.valid)return;
+    const preview=livePreview;setBusy(true);setError("");try{
+      const response=await api<{activated_symbols:string[]}>(`/api/v1/execution/portfolios/${preview.portfolio.id}/live`,{
+        method:"POST",body:JSON.stringify({mode:preview.mode,capital:preview.capital,capital_mode:preview.capital_mode})});
+      setLivePreview(undefined);setMessage(`Портфель добавлен в live (${preview.mode}): ${response.activated_symbols.join(", ")}.`);
+    }catch(reason){setLivePreview(undefined);setError(reason instanceof Error?reason.message:String(reason));}finally{setBusy(false);}};
   const run=async(portfolio:Portfolio)=>{
     setBusy(true);setRunId(portfolio.id);setPortfolioRun(undefined);setError("");setMessage("");
     try {
@@ -97,6 +112,34 @@ export default function PortfoliosPage() {
     error={error||resource.error||configs.error} isLoading={resource.isLoading||configs.isLoading}
     onReload={()=>{resource.reload();configs.reload();}}>
     {message&&<Alert severity="success" sx={{mb:2}}>{message}</Alert>}
+    <Dialog open={!!livePreview} onClose={()=>{if(!busy)setLivePreview(undefined);}} maxWidth="md" fullWidth>
+      <DialogTitle>Проверка перед запуском · {livePreview?.portfolio.name}</DialogTitle>
+      <DialogContent><Stack spacing={2}>
+        <Typography>Режим: {livePreview?.mode}. Капитал: {amount(livePreview?.capital)} USDT.</Typography>
+        {livePreview?.mode==="PRODUCTION"&&<Alert severity="warning">Подтверждение запуска включает реальную торговлю.</Alert>}
+        <Alert severity={livePreview?.validation.valid?"info":"error"}>
+          {livePreview?.mode==="PAPER"?"Конфигурация PAPER проверена. Биржевой расчёт лотов доступен для DEMO и PRODUCTION.":livePreview?.validation.valid?"Проверка пройдена. Перед запуском данные будут проверены повторно.":"Запуск заблокирован. Исправьте бюджет или конфигурацию проблемных активов."}
+        </Alert>
+        {livePreview?.validation.assets.map(asset=><Paper key={asset.symbol} variant="outlined" sx={{p:2}}>
+          <Stack spacing={.5}><Typography sx={{fontWeight:600}}>{asset.symbol}</Typography>
+            {asset.errors.map(error=><Typography key={error} color="error">{error}</Typography>)}
+            {asset.minimum_quantity!==undefined&&<>
+              <Typography>Бюджет: {amount(asset.budget)} USDT · Цена: {amount(asset.price)} USDT · Плечо: {amount(asset.leverage)}×</Typography>
+              <Typography>Шаг количества: {amount(asset.lot_size)} · Минимальная позиция: {amount(asset.minimum_quantity)} монет{" "}
+                ({amount(asset.minimum_contracts)} контрактов)</Typography>
+              <Typography>Объёмы тейков минимальной позиции: {asset.take_quantities?.map(quantity=>amount(quantity)).join(" + ")} монет</Typography>
+              <Typography>Необходимое обеспечение: {amount(asset.required_margin)} USDT</Typography>
+              <Typography>Риск: {amount(asset.risk_percent)}% бюджета = {amount(asset.risk_budget)} USDT</Typography>
+              <Typography>Максимальное расстояние до стопа для минимальной позиции: {amount(asset.max_stop_distance)} USDT{" "}
+                ({amount(asset.max_stop_percent)}%)</Typography>
+            </>}
+          </Stack></Paper>)}
+        {livePreview?.mode!=="PAPER"&&<Typography variant="body2" color="text.secondary">Расчёт минимальных объёмов выполнен по текущей цене. Фактический объём зависит от входа и стопа будущего сигнала. Комиссии и проскальзывание в оценку обеспечения не включены.</Typography>}
+      </Stack></DialogContent>
+      <DialogActions><Button disabled={busy} onClick={()=>setLivePreview(undefined)}>Закрыть</Button>
+        <Button variant="contained" color={livePreview?.mode==="PRODUCTION"?"error":"primary"} disabled={busy||!livePreview?.validation.valid} onClick={()=>void activateLive()}>Запустить {livePreview?.mode}</Button>
+      </DialogActions>
+    </Dialog>
     <Stack direction={{xs:"column",sm:"row"}} spacing={1} sx={{mb:2,justifyContent:"space-between"}}><TextField select size="small" label="Live-режим" value={mode} onChange={event=>setMode(event.target.value)} sx={{minWidth:210}}>
       <MenuItem value="PAPER">Paper</MenuItem><MenuItem value="DEMO">OKX Demo</MenuItem><MenuItem value="PRODUCTION">OKX Production</MenuItem></TextField>
       <TextField size="small" type="number" label="Live-капитал, USDT" value={liveCapital}

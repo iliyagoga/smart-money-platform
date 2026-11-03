@@ -72,9 +72,7 @@ def test_split_take_profit_rounding_assigns_remainder_to_last_target():
     assert [item["sz"] for item in orders if "tpTriggerPx" in item]==["1","2"]
 
 @pytest.mark.parametrize(("quantity","lot","expected"),[
-    ("1","1",[("2.0215","1")]),
     ("3","1",[("2.0215","1"),("1.9596","2")]),
-    ("0.01","0.01",[("2.0215","0.01")]),
 ])
 def test_small_split_order_preserves_total_quantity_and_stop(quantity,lot,expected):
     orders,metadata=attached_exit_orders("00000000-0000-0000-0000-000000000001",
@@ -91,14 +89,12 @@ def test_small_split_order_preserves_total_quantity_and_stop(quantity,lot,expect
 
 @pytest.mark.parametrize("targets,stop",[([110,120],95),([90,80],105)])
 @pytest.mark.parametrize("allocations",[[.5,.5],[.1,.9],[.9,.1]])
-def test_insufficient_split_uses_full_size_nearest_target(targets,stop,allocations):
-    orders,metadata=attached_exit_orders("00000000-0000-0000-0000-000000000001",
-      Decimal("1"),Decimal("1"),.1,targets,allocations,stop,"OFF")
-    exits=[item for item in orders if "tpTriggerPx" in item]
-    assert len(exits)==1 and exits[0]["sz"]=="1"
-    assert Decimal(exits[0]["tpTriggerPx"])==Decimal(targets[0])
-    assert metadata[exits[0]["attachAlgoClOrdId"]]["target_price"]==targets[0]
-    assert len([item for item in orders if "slTriggerPx" in item])==1
+def test_insufficient_split_rejects_entry_without_changing_targets(targets,stop,allocations):
+    original=list(targets)
+    with pytest.raises(ValueError,match="too small for the configured split"):
+        attached_exit_orders("00000000-0000-0000-0000-000000000001",
+          Decimal("1"),Decimal("1"),.1,targets,allocations,stop,"OFF")
+    assert targets==original
 
 @pytest.mark.parametrize("allocations",[[0,1],[-.5,1.5],[.4,.4],[1]])
 def test_small_split_order_still_requires_valid_allocations(allocations):
@@ -171,7 +167,7 @@ def test_live_trading_events_are_persisted_but_paper_events_are_not():
     asyncio.run(check())
 
 @pytest.mark.parametrize(("quantity","lot_size","expected_sizes"),[
-    (.84,.0001,["42","42"]),(.01,.01,["1"]),(.005,.01,None),
+    (.84,.0001,["42","42"]),(.01,.01,"split"),(.005,.01,None),
 ])
 def test_production_order_converts_base_quantity_to_okx_contracts_with_protection(quantity,lot_size,expected_sizes):
     import asyncio,json
@@ -200,6 +196,12 @@ def test_production_order_converts_base_quantity_to_okx_contracts_with_protectio
             with pytest.raises(ValueError,match="below OKX minSz"):
                 await service.place_order(payload)
             service.private.assert_not_awaited()
+            service.db.execute.assert_not_awaited()
+            return
+        if expected_sizes=="split":
+            with pytest.raises(ValueError,match="too small for the configured split"):
+                await service.place_order(payload)
+            assert not any(call.args[1]=="/api/v5/trade/order" for call in service.private.await_args_list)
             service.db.execute.assert_not_awaited()
             return
         result=await service.place_order(payload)

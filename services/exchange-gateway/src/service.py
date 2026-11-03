@@ -78,17 +78,13 @@ def attached_exit_orders(local_id,contracts,lot_contracts,tick_size,take_profit_
     if any(value<=0 for value in allocations) or abs(sum(allocations)-Decimal("1"))>Decimal("0.000001"):
         raise ValueError("Split take-profit allocations must be positive and sum to one")
     if contracts<=0:raise ValueError("Order quantity must be positive")
-    # Targets are ordered from nearest to furthest by the strategy. If any
-    # split rounds to zero, close the full quantity at the nearest target.
     sizes=[]
     allocated=Decimal("0")
     for index,allocation in enumerate(allocations):
         size=(contracts-allocated if index==len(targets)-1 else
               ((contracts*allocation)//lot_contracts)*lot_contracts)
-        if size<0:raise ValueError("Split take-profit size must be positive")
+        if size<=0:raise ValueError("Order quantity is too small for the configured split take-profits")
         sizes.append(size);allocated+=size
-    if any(size==0 for size in sizes):
-        targets=targets[:1];sizes=[contracts]
     for index,(target,size) in enumerate(zip(targets,sizes)):
         algo_id=root+f"T{index}"
         orders.append({"attachAlgoClOrdId":algo_id,"tpTriggerPx":price_to_tick(target,tick_size),
