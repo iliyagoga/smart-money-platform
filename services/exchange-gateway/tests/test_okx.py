@@ -71,6 +71,41 @@ def test_split_take_profit_rounding_assigns_remainder_to_last_target():
       Decimal("3"),Decimal("1"),.1,[110,120],[.5,.5],95)
     assert [item["sz"] for item in orders if "tpTriggerPx" in item]==["1","2"]
 
+@pytest.mark.parametrize(("quantity","lot","expected"),[
+    ("1","1",[("2.0215","1")]),
+    ("3","1",[("2.0215","1"),("1.9596","2")]),
+    ("0.01","0.01",[("2.0215","0.01")]),
+])
+def test_small_split_order_preserves_total_quantity_and_stop(quantity,lot,expected):
+    orders,metadata=attached_exit_orders("00000000-0000-0000-0000-000000000001",
+      Decimal(quantity),Decimal(lot),.0001,[2.0215,1.9596],[.5,.5],2.2072,"OFF")
+    targets=[item for item in orders if "tpTriggerPx" in item]
+    assert [(item["tpTriggerPx"],item["sz"]) for item in targets]==expected
+    assert sum(Decimal(item["sz"]) for item in targets)==Decimal(quantity)
+    assert all(Decimal(item["sz"])>0 and Decimal(item["sz"])%Decimal(lot)==0 for item in targets)
+    stops=[item for item in orders if "slTriggerPx" in item]
+    assert len(stops)==1 and stops[0]["slTriggerPx"]=="2.2072"
+    for item in targets:
+        assert metadata[item["attachAlgoClOrdId"]]=={
+          "kind":"TAKE_PROFIT","target_price":float(item["tpTriggerPx"])}
+
+@pytest.mark.parametrize("targets,stop",[([110,120],95),([90,80],105)])
+@pytest.mark.parametrize("allocations",[[.5,.5],[.1,.9],[.9,.1]])
+def test_insufficient_split_uses_full_size_nearest_target(targets,stop,allocations):
+    orders,metadata=attached_exit_orders("00000000-0000-0000-0000-000000000001",
+      Decimal("1"),Decimal("1"),.1,targets,allocations,stop,"OFF")
+    exits=[item for item in orders if "tpTriggerPx" in item]
+    assert len(exits)==1 and exits[0]["sz"]=="1"
+    assert Decimal(exits[0]["tpTriggerPx"])==Decimal(targets[0])
+    assert metadata[exits[0]["attachAlgoClOrdId"]]["target_price"]==targets[0]
+    assert len([item for item in orders if "slTriggerPx" in item])==1
+
+@pytest.mark.parametrize("allocations",[[0,1],[-.5,1.5],[.4,.4],[1]])
+def test_small_split_order_still_requires_valid_allocations(allocations):
+    with pytest.raises(ValueError,match="allocations"):
+        attached_exit_orders("00000000-0000-0000-0000-000000000001",
+          Decimal("1"),Decimal("1"),.1,[110,120],allocations,95)
+
 def test_move_to_break_even_keeps_only_full_size_final_target_and_separate_stop():
     orders,metadata=attached_exit_orders("00000000-0000-0000-0000-000000000001",
       Decimal("10"),Decimal("1"),.1,[110,120],[.5,.5],95,"AFTER_TARGET")
@@ -135,7 +170,10 @@ def test_live_trading_events_are_persisted_but_paper_events_are_not():
         assert service.db.execute.await_count==1
     asyncio.run(check())
 
-def test_production_order_converts_base_quantity_to_okx_contracts_with_protection():
+@pytest.mark.parametrize(("quantity","lot_size","expected_sizes"),[
+    (.84,.0001,["42","42"]),(.01,.01,["1"]),(.005,.01,None),
+])
+def test_production_order_converts_base_quantity_to_okx_contracts_with_protection(quantity,lot_size,expected_sizes):
     import asyncio,json
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
@@ -149,15 +187,21 @@ def test_production_order_converts_base_quantity_to_okx_contracts_with_protectio
         service.require_safe_account_config=AsyncMock(return_value={"posMode":"net_mode","uid":"uid-1"})
         service.instrument_order_spec=AsyncMock(return_value={"validation_status":"ACTIVE"})
         service.trading_instrument_spec=AsyncMock(return_value={
-          "contract_value":.01,"lot_size":.0001,"minimum_order_size":.0001,"tick_size":.1,
+          "contract_value":.01,"lot_size":lot_size,"minimum_order_size":lot_size,"tick_size":.1,
         })
         service.private=AsyncMock(side_effect=[[],[{"ordId":"okx-order-1","sCode":"0","sMsg":""}]])
         payload={
           "id":"00000000-0000-0000-0000-000000000001","symbol":"BTC-USDT-SWAP",
-          "execution_mode":"PRODUCTION","side":"BUY","type":"MARKET","quantity":.84,
+          "execution_mode":"PRODUCTION","side":"BUY","type":"MARKET","quantity":quantity,
           "leverage":1,"margin_mode":"cross","stop_loss_price":99,
           "take_profit_prices":[102,103],"target_allocations":[.5,.5],"break_even_rule":"OFF",
         }
+        if expected_sizes is None:
+            with pytest.raises(ValueError,match="below OKX minSz"):
+                await service.place_order(payload)
+            service.private.assert_not_awaited()
+            service.db.execute.assert_not_awaited()
+            return
         result=await service.place_order(payload)
         assert result=={"order_id":payload["id"],"exchange_order_id":"okx-order-1","status":"ACCEPTED"}
         order_call=service.private.await_args_list[1]
@@ -165,8 +209,13 @@ def test_production_order_converts_base_quantity_to_okx_contracts_with_protectio
         request=order_call.args[2]
         assert request["instId"]=="BTC-USDT-SWAP" and request["tdMode"]=="cross"
         assert request["side"]=="buy" and request["ordType"]=="market"
-        assert Decimal(request["sz"])==Decimal("84")
-        assert len(request["attachAlgoOrds"])==3
+        assert Decimal(request["sz"])==Decimal(str(quantity))/Decimal(".01")
+        attached=request["attachAlgoOrds"]
+        targets=[item for item in attached if "tpTriggerPx" in item]
+        assert [Decimal(item["sz"]) for item in targets]==[Decimal(size) for size in expected_sizes]
+        assert targets[-1]["tpTriggerPx"]==("102.0" if len(expected_sizes)==1 else "103.0")
+        assert len([item for item in attached if item.get("slTriggerPx")=="99.0"])==1
+        assert service.private.await_args_list[0].args[2]["lever"]=="1"
         event=json.loads(service.redis.xadd.await_args.args[1]["data"])
         assert event["event_type"]=="exchange.order_updated"
         assert event["payload"]["exchange_order_id"]=="okx-order-1"
