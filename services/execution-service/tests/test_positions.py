@@ -125,6 +125,32 @@ def test_unprotected_partial_fill_forces_reduce_only_exit():
         service.request_position_close.assert_awaited_once_with(position,1,"UNPROTECTED_PARTIAL")
     asyncio.run(check())
 
+def test_confirmed_atom_full_fill_and_duplicate_do_not_force_exit_or_double_quantity():
+    async def check():
+        service=ExecutionService("unused","unused")
+        order=Order(symbol="ATOM-USDT-SWAP",side="SELL",type="MARKET",quantity=2,
+          status="SUBMITTING",execution_mode="PRODUCTION",stop_loss_price=1.454,
+          take_profit_prices=[1.265,1.202],target_allocations=[.5,.5],
+          taker_fee_percent=.05,lot_size=1,minimum_order_size=1)
+        service.orders[order.id]=order;service.redis=AsyncMock()
+        service.save_order=AsyncMock();service.save_position=AsyncMock();service.publish=AsyncMock()
+        service.request_position_close=AsyncMock()
+        event={"order_id":order.id,"status":"FILLED","filled_price":1.369,
+          "filled_quantity":2,"exec_type":"T","executed_at":1793919661791,
+          "unprotected_partial":False}
+        await service.on_exchange_order(event)
+        await service.on_exchange_order(event)
+        assert len(service.positions)==1
+        position=next(iter(service.positions.values()))
+        assert position.quantity==position.initial_quantity==order.filled_quantity==2
+        assert position.direction=="SHORT" and position.entry_price==1.369
+        assert position.opened_at==1793919661791 and position.entry_fee_percent==.05
+        assert position.stop_loss_price==1.454 and position.take_profit_prices==[1.265,1.202]
+        assert position.target_allocations==[.5,.5] and not position.force_exit
+        service.request_position_close.assert_not_awaited()
+        service.save_position.assert_awaited_once()
+    asyncio.run(check())
+
 def test_missing_exchange_stop_forces_exit_without_browser():
     async def check():
         service=ExecutionService("unused","unused")
